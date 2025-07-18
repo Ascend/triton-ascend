@@ -1,13 +1,5 @@
 # 安装指南
 
-本文档提供了2种安装方式以满足不同用户的需求。您可以根据自己的具体需求选择最合适的安装方法。
-
-1. Python wheel安装：
-通过 Python Wheel 安装包进行安装是最快捷、最简便的方式，适用于希望快速部署 Triton-Ascend 的用户。
-2. 源代码编译安装：
-如果您需要对 triton-ascend 进行开发或自定义修改，则应采用源代码编译安装的方法。这种方式允许您根据项目需求调整源代码，并编译安装定制化的 
-triton-ascend 版本。
-
 ## 环境准备
 
 ### Python版本要求
@@ -22,7 +14,7 @@ triton-ascend 版本。
 
 您可以访问昇腾社区官网，根据其提供的软件安装指引完成 CANN 的安装配置。
 
-在安装过程中，请选择 CANN 版本 **8.2.RC1.alpha002**，并根据实际环境指定CPU架构(AArch64/X86_64)，NPU硬件型号对应的软件包。
+在安装过程中，请选择 CANN 版本 **8.2.RC1.alpha003**，并根据实际环境指定CPU架构(AArch64/X86_64)，NPU硬件型号对应的软件包。
 
 建议下载安装:
 
@@ -66,23 +58,6 @@ pip install attrs==24.2.0 numpy==1.26.4 scipy==1.13.1 decorator==5.1.1 psutil==6
 
 ```bash
 pip install torch_npu==2.6.0rc1
-```
-
-## Python wheel 安装 Triton-Ascend
-
-通过 Python Wheel 安装包安装 Triton-Ascend 是最快捷、最简便的方式。使用下面命令安装：
-
-```bash
-pip install triton-ascend
-```
-
-运行Triton示例
-
-```bash
-# 设置CANN环境变量（以root用户默认安装路径`/usr/local/Ascend`为例）
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
-# 运行tutorials示例：
-python3 ./triton-ascend/ascend/examples/tutorials/01-vector-add.py
 ```
 
 ## 源代码安装 Triton-Ascend
