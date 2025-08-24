@@ -14,13 +14,14 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <utility>
-
-namespace mlir {
-
+namespace mlir{
 // this class helps build Operations
 class OpBuilder;
+}
+namespace triton_adapter {
+using namespace mlir;
+using namespace triton;
 
-namespace triton {
 // use to decode the pattern in a mask used for load and store
 
 class MaskState {
@@ -119,8 +120,8 @@ private:
                                 const Location &loc, OpBuilder &builder);
 };
 
-} // namespace triton
+} // namespace triton_adapter
 
-} // namespace mlir
+
 
 #endif

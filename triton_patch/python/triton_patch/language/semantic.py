@@ -804,3 +804,63 @@ def make_tensor_descriptor(
     handle = builder.create_make_tensor_descriptor(base_handle, [s.handle for s in shape],
                                                     [s.handle for s in strides], block_shape, is_signed_int)
     return tensor_descriptor(handle, shape, strides, desc_block_type)
+
+
+def add(input: tl.tensor | numbers.Number, other: tl.tensor | numbers.Number, sanitize_overflow: bool,
+        builder: ir.builder) -> tl.tensor:
+    input, other = binary_op_type_checking_impl(input, other, builder, True, True)
+    input_scalar_ty = input.type.scalar
+    other_scalar_ty = other.type.scalar
+    if input_scalar_ty.is_ptr() and other_scalar_ty.is_ptr():
+        raise TypeError("cannot add pointers together")
+
+    # offset + ptr
+    # ptr + offset
+    if other_scalar_ty.is_ptr() and not input_scalar_ty.is_ptr():
+        input, other = other, input
+        input_scalar_ty = input.type.scalar
+        other_scalar_ty = other.type.scalar
+    if input_scalar_ty.is_ptr():
+        return tl.tensor(builder.create_addptr(input.handle, other.handle), input.type)
+    # float + float
+    elif input_scalar_ty.is_floating():
+        return tl.tensor(builder.create_fadd(input.handle, other.handle), input.type)
+    # int + int
+    elif input_scalar_ty.is_int():
+        # if sanitize_overflow:
+        #     binary_op_sanitize_overflow_impl(input, other, builder, add)
+        return tl.tensor(builder.create_add(input.handle, other.handle), input.type)
+    raise TypeError(f"unexpected type {input_scalar_ty}")
+
+
+def sub(input: tl.tensor | numbers.Number, other: tl.tensor | numbers.Number, sanitize_overflow: bool,
+        builder: ir.builder) -> tl.tensor:
+    input, other = binary_op_type_checking_impl(input, other, builder, True, False)
+    scalar_ty = input.type.scalar
+    # ptr - offset
+    if scalar_ty.is_ptr():
+        return tl.tensor(builder.create_addptr(input.handle, minus(other, builder).handle), input.type)
+    # float - float
+    if scalar_ty.is_floating():
+        return tl.tensor(builder.create_fsub(input.handle, other.handle), input.type)
+    # int - int
+    elif scalar_ty.is_int():
+        #if sanitize_overflow:
+        #    binary_op_sanitize_overflow_impl(input, other, builder, sub)
+        return tl.tensor(builder.create_sub(input.handle, other.handle), input.type)
+    raise TypeError(f"unexpected type {scalar_ty}")
+
+
+def mul(input: tl.tensor | numbers.Number, other: tl.tensor | numbers.Number, sanitize_overflow: bool,
+        builder: ir.builder) -> tl.tensor:
+    input, other = binary_op_type_checking_impl(input, other, builder)
+    scalar_ty = input.type.scalar
+    # float * float
+    if scalar_ty.is_floating():
+        return tl.tensor(builder.create_fmul(input.handle, other.handle), input.type)
+    # int * int
+    elif scalar_ty.is_int():
+        #if sanitize_overflow:
+        #    binary_op_sanitize_overflow_impl(input, other, builder, mul)
+        return tl.tensor(builder.create_mul(input.handle, other.handle), input.type)
+    raise TypeError(f"unexpected type {scalar_ty}")

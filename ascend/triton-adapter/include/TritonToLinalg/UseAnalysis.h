@@ -13,8 +13,9 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
-namespace mlir {
-namespace triton {
+namespace triton_adapter {
+using namespace mlir;
+using namespace triton;
 
 enum class UseType {
   Undefined, // Initial state
@@ -121,8 +122,7 @@ public:
 
 LogicalResult runUseAnalysis(triton::FuncOp &funcOp);
 
-} // namespace triton
+} // namespace triton_adapter
 
-} // namespace mlir
 
 #endif // TRITON_CONVERSION_TRITONTOAFFINE_TRITONUSEANALYSIS_H

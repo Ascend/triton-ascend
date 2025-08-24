@@ -16,6 +16,7 @@
 
 #define GEN_PASS_CLASSES
 #include "../../include/TritonToLinalg/Passes.h.inc"
+#include "Conversion/ConversionCommon.h"
 
 extern int nd2nzFlag;
 
@@ -24,7 +25,6 @@ namespace triton {
 
 std::unique_ptr<OperationPass<ModuleOp>> createTritonToLinalgPass();
 
-enum TensorKind { NONE = -1, INPUT = 0, OUTPUT = 1, INPUT_OUTPUT = 2 };
 
 } // namespace triton
 } // namespace mlir

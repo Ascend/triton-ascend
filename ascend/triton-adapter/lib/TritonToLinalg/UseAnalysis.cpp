@@ -16,11 +16,12 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 
-using namespace mlir;
-using namespace triton;
-using namespace dataflow;
 
 #define DEBUG_TYPE "triton-use-analysis"
+namespace triton_adapter {
+using namespace mlir;
+using namespace triton; 
+using namespace dataflow;
 
 std::string stringifyUseType(UseType useTy) {
   std::string ret;
@@ -38,10 +39,10 @@ std::string stringifyUseType(UseType useTy) {
 
 #if LLVM_VERSION_MAJOR >= 20
 LogicalResult
-triton::UseAnalysis::visitOperation(Operation *op, ArrayRef<UseInfo *> operands,
+UseAnalysis::visitOperation(Operation *op, ArrayRef<UseInfo *> operands,
                                     ArrayRef<const UseInfo *> results) {
 #else
-void triton::UseAnalysis::visitOperation(Operation *op,
+void UseAnalysis::visitOperation(Operation *op,
                                          ArrayRef<UseInfo *> operands,
                                          ArrayRef<const UseInfo *> results) {
 #endif
@@ -125,7 +126,7 @@ void triton::UseAnalysis::visitOperation(Operation *op,
 #endif
 }
 
-LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
+LogicalResult runUseAnalysis(triton::FuncOp &funcOp) {
   MLIRContext *context = funcOp.getContext();
   SymbolTableCollection symbolTable;
 
@@ -374,3 +375,4 @@ LogicalResult MetaUseEraser::matchAndRewrite(Operation *op,
   }
   return rewriter.notifyMatchFailure(op, "requires meta ops");
 }
+} // namespace triton_adapter

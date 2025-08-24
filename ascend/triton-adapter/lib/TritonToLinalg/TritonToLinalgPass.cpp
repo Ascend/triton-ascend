@@ -487,7 +487,7 @@ void TritonToLinalgPass::populateTritonToLinalgConversionPatterns(
   populateFunctionOpInterfaceTypeConversionPattern<triton::FuncOp>(
       patterns, typeConverter);
 
-  patterns.add<triton::MetaUseEraser>(patterns.getContext());
+  patterns.add<triton_adapter::MetaUseEraser>(patterns.getContext());
   patterns.add<LoadStoreConverter::StoreConverter>(patterns.getContext());
   patterns.add<LoadStoreConverter::AddPtrConverter>(patterns.getContext());
   patterns.add<FunctionConverter::GetProgramIDConverter>(patterns.getContext());
@@ -626,7 +626,7 @@ void TritonToLinalgPass::runOnOperation() {
 
   // 2.使用分析
   moduleOp.walk([this](triton::FuncOp op) {
-    if (failed(runUseAnalysis(op))) {
+    if (failed(triton_adapter::runUseAnalysis(op))) {
       signalPassFailure();
     }
   });

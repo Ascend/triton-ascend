@@ -17,9 +17,9 @@
 
 #define DEBUG_TYPE "mask-analysis"
 
-namespace mlir {
-
-namespace triton {
+namespace triton_adapter {
+using namespace mlir;
+using namespace triton; 
 
 LogicalResult MaskState::parse(Value operand, const Location &loc,
                                OpBuilder &builder) {
@@ -494,6 +494,5 @@ void MaskState::eraseInsertedOps(Operation *rawOp, PatternRewriter &rewriter) {
   }
 }
 
-} // namespace triton
+} // namespace triton_adapter
 
-} // namespace mlir

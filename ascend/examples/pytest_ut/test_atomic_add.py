@@ -132,4 +132,4 @@ def test_atomic_add_2d_supply(dtype, shape):
 
 if __name__ == "__main__":
     param_list = ['float32', (32, 32), 2]
-    test_atomic_add_2d(param_list)
+    test_atomic_add(param_list)

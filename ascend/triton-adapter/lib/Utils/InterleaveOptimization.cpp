@@ -206,7 +206,7 @@ DeinterleaveStatusOptimization(triton::LoadOp op,
 
 LogicalResult DeinterleaveStatusWithMaskOptimization(
     triton::LoadOp op, triton::LoadOp::Adaptor adaptor,
-    ConversionPatternRewriter &rewriter, MaskState &mstate,
+    ConversionPatternRewriter &rewriter, triton_adapter::MaskState &mstate,
     memref::AllocOp originAllocOp) {
   auto ptr = adaptor.getPtr();
   if (auto reinterpretCast = ptr.getDefiningOp<memref::ReinterpretCastOp>()) {

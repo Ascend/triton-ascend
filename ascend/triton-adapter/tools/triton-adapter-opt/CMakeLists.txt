@@ -6,9 +6,13 @@ add_llvm_executable(triton-adapter-opt triton-adapter-opt.cpp PARTIAL_SOURCES_IN
 # TODO: what's this?
 llvm_update_compile_flags(triton-adapter-opt)
 target_link_libraries(triton-adapter-opt PRIVATE
+  TritonToStructured
+  StructuredToMemref
+  TritonArithToLinalg
   TritonToAnnotation
   TritonToHIVM
   TritonToLinalg
+  TritonToLinalgExperimental
   TritonTransforms
   ${dialect_libs}
   ${conversion_libs}

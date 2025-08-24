@@ -272,7 +272,7 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
     return this->toTensorAndReplace(op, tensorType, allocOp, loc, rewriter);
   }
 
-  MaskState mstate;
+  triton_adapter::MaskState mstate;
   auto isContMask = mstate.parse(mask, loc, rewriter);
   if (isContMask.failed()) {
     return rewriter.notifyMatchFailure(
@@ -388,7 +388,7 @@ AtomicRMWConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor,
       rewriter.create<bufferization::ToMemrefOp>(loc, dstType, val);
 
   // 2. handle the mask for the atomic op
-  MaskState mstate;
+  triton_adapter::MaskState mstate;
   auto mask = op.getMask();
 
   // When the dsl do not pass the mask to this op like
@@ -900,7 +900,7 @@ StoreConverter::matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
   // 3. Continuous masked stores.
   // Analyze the mask operand to determine at runtime the size of the data we
   // are moving.
-  MaskState mstate;
+  triton_adapter::MaskState mstate;
   auto isContMask = mstate.parse(mask, loc, rewriter);
 
   if (isContMask.failed()) {

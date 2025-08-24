@@ -318,7 +318,7 @@ SelectCanonicalizer::matchAndRewrite(arith::SelectOp op,
   // 1. Check for continuous masked loads.
   // Analyze the mask operand to determine at runtime the size of the data we
   // are moving.
-  MaskState mstate;
+  triton_adapter::MaskState mstate;
   auto isContMask = mstate.parse(mask, loc, rewriter);
 
   if (isContMask.failed()) {

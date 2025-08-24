@@ -81,9 +81,15 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             triton_adapter_opt_path,
             src_path,
             "--triton-to-annotation",
-            "--triton-to-hivm",
-            f"--triton-to-linalg=global-kernel=false named-ops={named_ops} "\
+            f"--triton-to-linalg-experimental=global-kernel=false named-ops={named_ops} "\
             f"enable-nd2nz-on-vector={enable_nd2nz_on_vector}",
+            "--triton-to-hivm",
+            #f"--triton-to-linalg=global-kernel=false named-ops={named_ops} "\
+            
+            # fixme, need to migrate options to experimental
+            #f"--triton-to-linalg=global-kernel=false named-ops={named_ops} "\
+            #f"enable-nd2nz-on-vector={enable_nd2nz_on_vector}",
+
             "-o",
             dst_path,
         ]
