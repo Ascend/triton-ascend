@@ -255,7 +255,7 @@ LogicalResult PtrState::broadcastIfNeeded(SmallVector<StateInfo> &infoPerDim,
 
       readSize *= std::min(divDim, remsiDim);
     }
-
+    // (0,8)%2 : real read size can not fill original size
     if (readSize < staticSize.value()) {
       // 补维
       int64_t brcDim = (staticSize.value() - 1) / readSize + 1;
@@ -287,10 +287,6 @@ LogicalResult PtrState::removeConstDim(SmallVector<StateInfo> &infoPerDim,
 
     for (auto x : infoPerDim) {
       offsetDim = addOFRs(offsetDim, x.offset, loc, builder);
-      if(shouldRemove(x)){
-        assert(dimLenth[x.dim] > 0);
-        --dimLenth[x.dim];
-      }
     }
 
     infoPerDim.erase(
@@ -299,11 +295,12 @@ LogicalResult PtrState::removeConstDim(SmallVector<StateInfo> &infoPerDim,
         infoPerDim.end()
     );
 
-    if(infoPerDim.empty()){
+    if(infoPerDim.empty()){ // this dim is all constants
       StateInfo placeHolder(offsetDim, defaultAttr, defaultAttr, defaultAttr);
       infoPerDim.push_back(placeHolder);
     }
 
+    // collect all offsets to dim0
     for(size_t i = 0;  i < infoPerDim.size(); ++i){
       if(i == 0)  infoPerDim[i].offset = offsetDim;
       else        infoPerDim[i].offset = defaultAttr;
@@ -330,20 +327,30 @@ LogicalResult PtrState::ExpandInfo(SmallVector<StateInfo> &infoPerDim,
     assert(staticPreMask.has_value() && staticPreShape.has_value()  &&
            staticSize.has_value() && "PtrAnalysis: do not support dymic mask/shape");
 
-    if(staticMask.value() % staticSize.value() == 0 && staticMask != 0) continue;
-
+    // shape=128 stride=33 mask(divval)=256 can not convert to structured access
+    // only support (0,128)//x*y,
+    // if (0,128)*y//x can move *y after //x, it will be converted to scene above before this func
+    if(staticMask.value() % staticSize.value() == 0 && staticMask != 0) continue; 
+    
+    // after sort, mask will be monotonically increasing,
+    // so that if dim0 compatible with dim1, dim1 compatible with dim2, dim2 also comatible with dim0
+    // we just check previous dim.
     int64_t prevDimSize = staticPreShape.value() * (staticPreMask.value() == 0 ? 1 : staticPreMask.value());
     if(staticMask.value() == 0 && i != 0){
+      // (0,8)%8 + (0,8)%4 -> [ 0 1 2 3 4 5 6 7 ] + [ 0 1 2 3 0 1 2 3 ]-> Unstruct
        op->emitRemark(
             "PtrAnalysis: do not support index % a + index % b in same dim without div");
         return failure();
     }
     if(staticMask.value() % prevDimSize != 0){
+      // (0,8)//2%2 + (0,8)//5 = [0 0 1 1 2 2 3 3] + [0 0 0 0 0 1 1 1] -> mask=5,prevDimSize= 2*2=4 -> unstruct
       op->emitError(
             "Unstructured memory access cannot be transformed into an equivalent structured memory access pattern.");
         return failure();
     }
 
+    // (0,8)//4 -> prevDimSize | staticMask && staticMask//prevDimSize > 1 -> has broadcast
+    // (0,8)//4 -> [0,0,0,0,1,1,1,1]
     if(staticMask.value() / prevDimSize != 1 && staticMask.value() != 0){
       auto mask = builder.getIndexAttr(prevDimSize);
       auto shape = builder.getIndexAttr(staticMask.value() / prevDimSize);
@@ -380,8 +387,6 @@ LogicalResult PtrState::addPtrState(const PtrState &lhsState,
     return failure();
   }
 
-  source = lhsState.source ? lhsState.source : rhsState.source;
-
   PtrState const *lhs = &lhsState;
   PtrState const *rhs = &rhsState;
   if (!(lhs->source && !rhs->source)) {
@@ -390,23 +395,22 @@ LogicalResult PtrState::addPtrState(const PtrState &lhsState,
 
   assert(lhs->source && "Addptr must contain one pointer!");
 
-  stateInfo = rhs->stateInfo;
-  sizes = rhs->sizes;
+  if(this->addState(*lhs, *rhs, op, builder).failed()){
+    op->emitError("can not merge ptrState and offsetState");
+    return failure();
+  }
+  
+  // scenario for load(in_ptr + arange(0,1)) ->  pure scalar 
+  if(this->sizes.size()==0){
+    assert(source && scalar && this->getRank()==0 && "this branch only support tl.load(a_ptr + scalar)");
 
-  if(rhs->scalar){
-    sizes.push_back(builder.getIndexAttr(1));
-    auto defaultAttr = builder.getIndexAttr(0);
-    StateInfo placeHolder(rhsState.scalar, builder.getIndexAttr(1),
-                           defaultAttr, defaultAttr);
-    stateInfo.push_back(placeHolder);
-    dimLenth.push_back(1);
-    scalar = rhs->scalar;
     if(!isa<mlir::RankedTensorType>(dyn_cast<triton::AddPtrOp>(op).getOffset().getType())){
       ptrIsTensor = false;
     }
     return success();
   }
 
+  assert(stateInfo.size() && "No information could be analyzed in the state");
 
   std::sort(stateInfo.begin(), stateInfo.end(), [](const StateInfo& a, const StateInfo& b) {
     auto staticL = getIntAttr(a.mask);
@@ -416,7 +420,13 @@ LogicalResult PtrState::addPtrState(const PtrState &lhsState,
   });
   this->countDims();
 
-  assert(stateInfo.size() && "No information could be analyzed in the state");
+  /*
+    infoInDifDim:{
+      dim0:{stateInfo[0],stateInfo[1]},
+      dim1:{stateInfo[2]},
+      ...
+    }
+  */
   SmallVector<SmallVector<StateInfo>> infoInDifDim;
   size_t startIndex = 0;
   for(auto lenth : dimLenth){
@@ -437,6 +447,7 @@ LogicalResult PtrState::addPtrState(const PtrState &lhsState,
   this->stateInfo.clear();
 
   for(auto infoPerDim : infoInDifDim){
+    // change dim0:{stateInfo[0],stateInfo[1],....}, to decreasing order.
     std::reverse(infoPerDim.begin(), infoPerDim.end());
     for(auto info : infoPerDim){
       this->stateInfo.push_back(info);
@@ -444,16 +455,6 @@ LogicalResult PtrState::addPtrState(const PtrState &lhsState,
   }
   this->countDims();
 
-  if(lhs->scalar){
-    assert(getIntAttr(stateInfo.back().stride).has_value() &&
-      getIntAttr(stateInfo.back().stride).value() == 1 && "lastDim stride must be 1");
-    stateInfo.back().offset = addOFRs(stateInfo.back().offset, lhsState.scalar, loc, builder);
-  }
-
-  auto leftState = const_cast<PtrState&>(lhsState) ;
-  auto rightState = const_cast<PtrState&>(rhsState) ;
-  this->getMemAccTypeRef().merge(leftState.getMemAccTypeRef());
-  this->getMemAccTypeRef().merge(rightState.getMemAccTypeRef());
 
   return success();
 }
@@ -470,6 +471,7 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
     return failure();
   }
 
+  assert(lhsState.isSameSizeAs(rhsState) && "The original size of the addition should be the same");
 
   source = lhsState.source ? lhsState.source : rhsState.source;
 
@@ -477,43 +479,62 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
     auto addOp =
         builder.create<arith::AddIOp>(loc, lhsState.scalar, rhsState.scalar);
     scalar = addOp.getResult();
-  } else if (lhsState.getRank() == 0) { // both lhs and rhs are scalars
-    scalar = lhsState.scalar ? lhsState.scalar : rhsState.scalar;
+    sizes = lhsState.sizes;
+    auto leftState = const_cast<PtrState&>(lhsState) ;
+    auto rightState = const_cast<PtrState&>(rhsState) ;
+    this->getMemAccTypeRef().merge(leftState.getMemAccTypeRef());
+    this->getMemAccTypeRef().merge(rightState.getMemAccTypeRef());
+    return success();
   }
 
-  assert(lhsState.isSameSizeAs(rhsState) && "The original size of the addition should be the same");
-
-  if(lhsState.scalar || rhsState.scalar){
+  // (scalar,emptystateInfo) (emptystateInfo,scalar) (scalar,filledStateInfo) (filledStateInfo,scalar)
+  if (lhsState.scalar || rhsState.scalar) {
     auto scalarState = lhsState.scalar ? lhsState : rhsState;
     auto normalState = lhsState.scalar ? rhsState : lhsState;
+    // scalar is Null and no stateInfo -> is a source ->
+    if (normalState.stateInfo.size() == 0) { 
+      // size = 0 : source + scalar
+      scalar = scalarState.scalar;
+      sizes = normalState.sizes;
+      auto leftState = const_cast<PtrState&>(lhsState) ;
+      auto rightState = const_cast<PtrState&>(rhsState) ;
+      this->getMemAccTypeRef().merge(leftState.getMemAccTypeRef());
+      this->getMemAccTypeRef().merge(rightState.getMemAccTypeRef());
+      return success();
+    } 
+
     auto offset = normalState.stateInfo[0].offset;
 
     normalState.stateInfo[0].offset = addOFRs(offset, scalarState.scalar, loc, builder);
     stateInfo = normalState.stateInfo;
     sizes = normalState.sizes;
 
-  }else if (!lhsState.hasDivision() && !lhsState.hasModulo() &&
-      !rhsState.hasDivision() && !rhsState.hasModulo() &&
-      lhsState.stateInfo[0].dim == rhsState.stateInfo[0].dim) {
-
-    // assert(lhsState.getRank() == rhsState.getRank());
-    if (lhsState.getRank() != rhsState.getRank()) {
-      llvm::dbgs() << "\033[34m" << "lhstate中存储的维度为:"<<  lhsState.getRank() << "\n\033[0m";
-      llvm::dbgs() << "\033[34m" << "rhstate中存储的维度为:"<<  rhsState.getRank() << "\n\033[0m";
-      op->emitRemark(
-          "PtrAnalysis: only support multiplying pointer states when one of "
-          "them represent a scalar");
-      return failure();
-    }
+  } else if (!lhsState.hasDivision() && !lhsState.hasModulo() &&
+    !rhsState.hasDivision() && !rhsState.hasModulo()) {
+    std::unordered_map<size_t, size_t>  dimIndex;
     for (uint64_t i = 0; i < lhsState.getRank(); i++) {
-      auto newOffset = addOFRs(lhsState.stateInfo[i].offset, rhsState.stateInfo[i].offset,
-                                                  loc, builder);
-      auto newStride = addOFRs(lhsState.stateInfo[i].stride, rhsState.stateInfo[i].stride,
-                                                  loc, builder);
-      StateInfo newStateInfo(newOffset, newStride, lhsState.stateInfo[i].shape,
-                               lhsState.stateInfo[i].mask, lhsState.stateInfo[i].dim);
-      this->stateInfo.push_back(newStateInfo);
+      dimIndex[lhsState.stateInfo[i].dim] = i;
     }
+    for (uint64_t i = 0; i < rhsState.getRank(); i++) {
+      size_t dimId = rhsState.stateInfo[i].dim;
+      if (dimIndex.count(dimId)) {
+        size_t lhsId = dimIndex[dimId];
+        auto newOffset = addOFRs(lhsState.stateInfo[lhsId].offset, rhsState.stateInfo[i].offset, 
+                                                loc, builder);
+        auto newStride = addOFRs(lhsState.stateInfo[lhsId].stride, rhsState.stateInfo[i].stride,
+                                                    loc, builder);
+        StateInfo newStateInfo(newOffset, newStride, lhsState.stateInfo[lhsId].shape, 
+                                lhsState.stateInfo[lhsId].mask, lhsState.stateInfo[lhsId].dim);
+        this->stateInfo.push_back(newStateInfo);
+        dimIndex.erase(dimId);
+      } else {
+        this->stateInfo.push_back(rhsState.stateInfo[i]);
+      }
+    }
+    for (auto [_, lhsId] : dimIndex) {
+      this->stateInfo.push_back(lhsState.stateInfo[lhsId]);
+    }
+ 
     this->sizes = lhsState.sizes;
   }else{
     for (uint64_t i = 0; i < lhsState.getRank(); this->stateInfo.push_back(lhsState.stateInfo[i++]));
@@ -594,7 +615,7 @@ tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
   SmallVector<int64_t> tensorSizes;
   SmallVector<OpFoldResult> tensorStrides;
   SmallVector<OpFoldResult> tensorOffsets;
-  SmallVector<OpFoldResult> tensorShape;
+  SmallVector<OpFoldResult> tensorShape; // compare mode: only 0/1
   // [BEG] changed
   for(auto info : stateInfo){
     auto staticMask = getIntAttr(info.mask); // div rhs
@@ -617,6 +638,16 @@ tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
     tensorShape.push_back(builder.getIndexAttr(0)); // after this, tensorShape express maskmode <|>
     tensorStrides.push_back(info.stride);
     tensorOffsets.push_back(info.offset);
+  }
+
+  if(this->scalar){ // isa pure scalar || isa splated scalar 
+    assert(this->stateInfo.size()==0 && "scalar and stateInfo can not exist at same time.");
+    assert(this->sizes.size()==0 && "load/store a splated scalar is not supported yet.");
+
+    tensorSizes.push_back(1);
+    tensorShape.push_back(builder.getIndexAttr(0));
+    tensorStrides.push_back(builder.getIndexAttr(1));
+    tensorOffsets.push_back(this->scalar);
   }
 
   assert(tensorSizes.size() && tensorStrides.size() && tensorOffsets.size() && tensorShape.size());
@@ -937,10 +968,6 @@ LogicalResult PtrAnalysis::visitOperandSplat(triton::SplatOp splatOp,
 
   if(isa<IntegerType, IndexType, triton::PointerType>(src.getType())){
     for (size_t i = 0; i < dstShape.size(); ++i) {
-      if(dstShape[i] != 1){
-        StateInfo newStateInfo(defaultAttr, defaultAttr, defaultAttr, defaultAttr, i);
-        state.stateInfo.push_back(newStateInfo);
-      }
       state.sizes.push_back(builder.getIndexAttr(dstShape[i]));
     }
   } else {
@@ -948,10 +975,7 @@ LogicalResult PtrAnalysis::visitOperandSplat(triton::SplatOp splatOp,
     return failure();
   }
 
-  // If we splat a integer value, scalar should become the offset of the outer
-  // most dimension
-  if (state.scalar)
-    state.stateInfo[0].offset = state.scalar;
+
 
   if (state.hasModulo() && state.getRank() > 2) {
     LLVM_DEBUG({
@@ -992,15 +1016,6 @@ LogicalResult PtrAnalysis::visitOperandAddptr(triton::AddPtrOp addptrOp,
     offsetState.removeSource();
   }
 
-  // handle for loop & scalar
-  if (ptrState.getRank() == 1 && offsetState.getRank() == 0) {
-    auto size  = builder.getIndexAttr(1) ;
-    auto offset = offsetState.scalar ;
-    auto stride = builder.getIndexAttr(0);
-    StateInfo newStateInfo(offset, stride, builder.getIndexAttr(0), builder.getIndexAttr(0));
-    offsetState.stateInfo.push_back(newStateInfo);
-    offsetState.sizes.push_back(size);
-  }
 
   return state.addPtrState(ptrState, offsetState, addptrOp, builder);
 }
@@ -1026,15 +1041,6 @@ LogicalResult PtrAnalysis::visitOperandConstSplat(arith::ConstantOp op,
 
   auto resultType = cast<ShapedType>(op.getResult().getType());
   for (size_t i = 0; i < resultType.getShape().size(); i++) {
-    OpFoldResult offset;
-    if (i == 0) {
-      offset = constOp.getResult();
-    } else {
-      offset = defaultAttr;
-    }
-    StateInfo newStateInfo(offset, defaultAttr, defaultAttr, defaultAttr);
-
-    state.stateInfo.push_back(newStateInfo);
     state.sizes.push_back(builder.getIndexAttr(resultType.getShape()[i]));
   }
 

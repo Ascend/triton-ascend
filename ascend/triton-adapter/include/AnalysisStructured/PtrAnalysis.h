@@ -72,7 +72,7 @@ const extern std::string ptrAnalysisAttr;
 // modulo); a constant 0 indicates no modulo for the dimension.
 
 struct StateInfo{
-  OpFoldResult offset;
+  OpFoldResult offset; // final offset with base address
   OpFoldResult stride;
   OpFoldResult shape; // rem value
   OpFoldResult mask; //  div value
@@ -85,27 +85,28 @@ struct StateInfo{
         : offset(offset), stride(stride), shape(shape), mask(mask), dim(dim) {}
 };
 
+
+/*
+limits:
+
+sizes.size() can greater than stateInfo.size()
+dimLenth.size() = sizes.size() + 1, which initialized in countDims() called by addPtrState(), only triggered when meeting addptrOp.
+when sizes.size()==1 or stateInfo.size()==0 : (scalar || source) must be True.
+*/
 struct PtrState {
 
-  SmallVector<StateInfo> stateInfo; // shape info when load
-  SmallVector<OpFoldResult> sizes; // original shape
-  Attribute blockedAttr;
+  SmallVector<StateInfo> stateInfo; // shape info when load , maintained with visitOps
+  SmallVector<OpFoldResult> sizes; // original shape, maintained with visitOps
+  Attribute blockedAttr; // mark if isa tt.make_block_ptr, maintained TODO: maybe unused
 
-  // SmallVector<OpFoldResult> constOffset;
 
-  // TODO 0.1 删除这部分注释
-  // SmallVector<OpFoldResult> offsets;
-  // SmallVector<OpFoldResult> sizes;
-  // SmallVector<OpFoldResult> strides;
-  // SmallVector<OpFoldResult> shape;
-  // SmallVector<OpFoldResult> mask;
-  SmallVector<int32_t> order;
-  SmallVector<size_t> dimLenth;
-  bool ptrIsTensor = true;
+  SmallVector<int32_t> order; // maintained in makeTensorPtr and advance
+  SmallVector<size_t> dimLenth; // maintained only in countDim()
+  bool ptrIsTensor = true; // maintained in addPtrState and Splat
   MemAccType memAccTy;
 
-  Value source;
-  Value scalar;
+  Value source; // base address (ptr), maintained with visitOps
+  Value scalar; // scalar offset (int), maintained with visitOps
 
   int32_t getRank() const;
   bool isLegal() const;
