@@ -399,12 +399,20 @@ LogicalResult PtrState::addPtrState(const PtrState &lhsState,
     op->emitError("can not merge ptrState and offsetState");
     return failure();
   }
-  
+
   // scenario for load(in_ptr + arange(0,1)) ->  pure scalar 
   if(this->sizes.size()==0){
     assert(source && scalar && this->getRank()==0 && "this branch only support tl.load(a_ptr + scalar)");
+    
+    auto addptrOp = dyn_cast<triton::AddPtrOp>(op);
+    if(auto resultTensor = dyn_cast<mlir::RankedTensorType>(addptrOp.getResult().getType())){
+      for(size_t i = 0; i < resultTensor.getRank(); ++i){
+        assert(resultTensor.getDimSize(i) == 1 && "In this branch, resultTensor.size must be 1");
+        this->sizes.push_back(builder.getIndexAttr(1));
+      }
+    }
 
-    if(!isa<mlir::RankedTensorType>(dyn_cast<triton::AddPtrOp>(op).getOffset().getType())){
+    if(!isa<mlir::RankedTensorType>(addptrOp.getResult().getType())){
       ptrIsTensor = false;
     }
     return success();
@@ -642,12 +650,19 @@ tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
 
   if(this->scalar){ // isa pure scalar || isa splated scalar 
     assert(this->stateInfo.size()==0 && "scalar and stateInfo can not exist at same time.");
-    assert(this->sizes.size()==0 && "load/store a splated scalar is not supported yet.");
-
-    tensorSizes.push_back(1);
-    tensorShape.push_back(builder.getIndexAttr(0));
-    tensorStrides.push_back(builder.getIndexAttr(1));
-    tensorOffsets.push_back(this->scalar);
+    if (this->sizes.size()) { // splated scalar
+      for(auto [i, sz] : llvm::enumerate(this->sizes)){
+        tensorSizes.push_back(getIntAttr(sz).value());
+        tensorShape.push_back(builder.getIndexAttr(0));
+        tensorStrides.push_back(builder.getIndexAttr(1));
+        i?tensorOffsets.push_back(builder.getIndexAttr(0)):tensorOffsets.push_back(this->scalar);
+      }
+    } else { //pure scalar
+      tensorSizes.push_back(1);
+      tensorShape.push_back(builder.getIndexAttr(0));
+      tensorStrides.push_back(builder.getIndexAttr(1));
+      tensorOffsets.push_back(this->scalar);
+    }
   }
 
   assert(tensorSizes.size() && tensorStrides.size() && tensorOffsets.size() && tensorShape.size());
@@ -1231,15 +1246,6 @@ LogicalResult PtrAnalysis::visitOperandIndirectLoad(OpTy op,
 LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
                                         const Location loc,
                                         OpBuilder &builder) {
-  // to fix UT gather_flip. 当pointertype, 而且来自AddPtr
-  // 将source 指向自己
-  if (isa<triton::PointerType>(operand.getType()))
-  {
-    if (auto op = operand.getDefiningOp<triton::AddPtrOp>()) {
-      state.source = operand ;
-      return success();
-    }
-  }
 
   if (knownPtrs.find(operand) != knownPtrs.end()) {
     state = knownPtrs.lookup(operand);
@@ -1817,65 +1823,50 @@ LogicalResult PtrAnalysis::analysisSplat(Operation *op, OpBuilder &builder, Valu
       return failure();
   }
   PtrState tempState;
-  if(!isa<mlir::RankedTensorType>(ptr.getType())){
-    tempState.ptrIsTensor = false;
-  }
+
   if (auto splatOp = ptr.getDefiningOp<triton::SplatOp>()) {
     auto splatPtr = splatOp.getSrc();
-    // auto dst = splatOp.getResult();
-    // auto dstShape = cast<ShapedType>(dst.getType()).getShape();
-    // if((dstShape.size() != 1 || dstShape[0] != 1) && dstShape){
-    //   op->emitRemark("Non-scalar pointers are not supported from splat");
-    //   return failure();
-    // }
-    // auto tensorPtr = ptrMap.lookupOrNull(splatPtr);
-    tempState.source = splatPtr;
+    if (auto addptrOp = splatPtr.getDefiningOp<triton::AddPtrOp>()) {
+      if (knownPtrs.find(addptrOp)==knownPtrs.end()) {
+        op->emitError("can not find addptrOp's state!");
+        return failure();
+      }
+      tempState = knownPtrs[addptrOp];
+    }
+    else tempState.source = splatPtr;
+
+    auto tensorType = dyn_cast<mlir::RankedTensorType>(ptr.getType());
+    if (tensorType) {
+      for(size_t i = 0; i < tensorType.getRank(); ++i){
+        tempState.sizes.push_back(builder.getIndexAttr(tensorType.getDimSize(i)));
+      }
+      tempState.ptrIsTensor=true;
+    }else{
+      op->emitError("SplatOp's result must be a Tensor");
+      return failure();
+    }
   } else if(auto bitcastOp = ptr.getDefiningOp<triton::BitcastOp>()){
     auto bitcastPtr = bitcastOp.getSrc();
-    tempState.source = bitcastPtr;
     if(auto addptrOp = bitcastPtr.getDefiningOp<triton::AddPtrOp>()){
-      auto sourceType = ptr.getType();
-      if(auto rankedType = dyn_cast<mlir::RankedTensorType>(sourceType)){
-        sourceType = rankedType.getElementType();
+      if (knownPtrs.find(addptrOp)==knownPtrs.end()) {
+        op->emitError("can not find addptrOp's state!");
+        return failure();
       }
-      tempState = knownPtrs[bitcastPtr];
-      auto bitCastOp = builder.create<triton::BitcastOp>(op->getLoc(), sourceType, tempState.source);
+      tempState = knownPtrs[addptrOp];
+      auto resultType = ptr.getType();
+      if(auto rankedType = dyn_cast<mlir::RankedTensorType>(resultType)){
+        resultType = rankedType.getElementType();
+      }
+      auto bitCastOp = builder.create<triton::BitcastOp>(op->getLoc(), resultType, tempState.source);
       tempState.source = bitCastOp.getResult();
-
-      auto maketptrOp = tempState.createTTSMakeTensorPtrOp(builder, op->getLoc());
-      knownPtrs[ptr] = tempState;
-      ptrMap.map(ptr, maketptrOp);
-      ptr = maketptrOp;
-      ptrState = tempState;
-      return success();
     }
+    else tempState.source = bitcastPtr;
   } else {
     op->emitError("PtrAnalysis: pointer is not replace with tts.make_tptr so "
                   "loadOp cannot be rewritten");
     return failure();
   }
-  auto tensorType = dyn_cast<mlir::RankedTensorType>(ptr.getType());
-  auto defaultAttr = builder.getIndexAttr(0);
-  if(tensorType){
-    for(size_t i = 0; i < tensorType.getRank(); ++i){
-      tempState.sizes.push_back(builder.getIndexAttr(1));
-      StateInfo placeHolder(defaultAttr, builder.getIndexAttr(1),
-                          defaultAttr, defaultAttr, i);
-      tempState.stateInfo.push_back(placeHolder);
-      tempState.dimLenth.push_back(1);
-    }
-  }else{
-    tempState.source = ptr;
-    tempState.sizes.push_back(builder.getIndexAttr(1));
-    StateInfo placeHolder(defaultAttr, builder.getIndexAttr(1),
-                        defaultAttr, defaultAttr, 0);
-    tempState.stateInfo.push_back(placeHolder);
-    tempState.dimLenth.push_back(1);
-  }
-  if(tempState.sizes.empty()){
-    op->emitRemark("state is empty");
-    return failure();
-  }
+
   auto maketptrOp = tempState.createTTSMakeTensorPtrOp(builder, op->getLoc());
   knownPtrs[ptr] = tempState;
   ptrMap.map(ptr, maketptrOp.getResult());
@@ -2106,7 +2097,9 @@ LogicalResult PtrAnalysis::generateMask(Operation * op, PtrState &ptrState, Smal
   if(remainMask != 0){
     //op->emitWarning("Mask-Pointer inconsistency detected");
   }
-  dims = tempDim;
+  if(ptrState.stateInfo.size()){
+    dims = tempDim;
+  }
   return success();
 }
 
@@ -2371,8 +2364,10 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op) {
   // if(!ptrState.ptrIsTensor){
   //   return rewriteScalarLoadOp(op, builder, loadResult, loc);
   // }
-  if(!ptrState.ptrIsTensor){
-    if(extractScalarFromLoadedTensor(op, builder, loadResult, loc).failed())
+
+  
+  if(ptrState.scalar){ // pure scalar or splated tensor
+    if((!ptrState.ptrIsTensor) && extractScalarFromLoadedTensor(op, builder, loadResult, loc).failed())
       return failure();
     op.replaceAllUsesWith(loadResult);
     op->erase();
@@ -2736,9 +2731,8 @@ LogicalResult PtrAnalysis::rewriteAtomicRMWOp(triton::AtomicRMWOp op) {
   }
 
 
-  // splat的情况下不会直接访问addptr，此时load后的元素类型正确，无需调整，因此当找不到addptr的时候说明使用了splat
-  if(!ptrState.ptrIsTensor){
-    if(extractScalarFromLoadedTensor(op, builder, loadResult, loc).failed())
+  if(ptrState.scalar){ // pure scalar || splated tensor
+    if((!ptrState.ptrIsTensor) && extractScalarFromLoadedTensor(op, builder, loadResult, loc).failed())
       return failure();
     op.replaceAllUsesWith(loadResult);
     op->erase();
@@ -2895,8 +2889,8 @@ LogicalResult PtrAnalysis::rewriteAtomicCASOp(triton::AtomicCASOp op) {
 
 
   // splat的情况下不会直接访问addptr，此时load后的元素类型正确，无需调整，因此当找不到addptr的时候说明使用了splat
-  if(!ptrState.ptrIsTensor){
-    if(extractScalarFromLoadedTensor(op, builder, loadResult, loc).failed())
+  if(ptrState.scalar){
+    if((!ptrState.ptrIsTensor) && extractScalarFromLoadedTensor(op, builder, loadResult, loc).failed())
       return failure();
     op.replaceAllUsesWith(loadResult);
     op->erase();

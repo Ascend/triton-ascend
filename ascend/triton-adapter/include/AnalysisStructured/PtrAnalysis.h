@@ -102,7 +102,7 @@ struct PtrState {
 
   SmallVector<int32_t> order; // maintained in makeTensorPtr and advance
   SmallVector<size_t> dimLenth; // maintained only in countDim()
-  bool ptrIsTensor = true; // maintained in addPtrState and Splat
+  bool ptrIsTensor = true; // maintained in addPtrState and Splat // TODO refactor ptrIsTensor
   MemAccType memAccTy;
 
   Value source; // base address (ptr), maintained with visitOps
