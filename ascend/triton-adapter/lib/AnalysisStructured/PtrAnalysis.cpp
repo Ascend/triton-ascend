@@ -1367,8 +1367,8 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
 
   knownPtrs[op.getResult()] = state;
 
-  if(state.sizes.empty()){
-    op->emitRemark("state is empty");
+  if(state.sizes.empty() && !(state.source && state.scalar)){
+    op->emitError("After addptr, state is empty or missing source/scalar.");
     return failure();
   }
 
