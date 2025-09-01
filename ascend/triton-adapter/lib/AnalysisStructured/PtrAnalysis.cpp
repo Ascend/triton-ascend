@@ -2074,8 +2074,10 @@ LogicalResult PtrAnalysis::generateMask(Operation * op, PtrState &ptrState, Smal
           if(mask.value() == 0 || mask.value() % size.value() != 0) ++trueLenth;
         }
         if(trueLenth == 1)  findMask = true;
+        // When mask analysis fails, return a remark and use select to handle the mask.
         if(findMask && msShape.value() + msDiv.value() != 0){
-           // op->emitWarning("Mask-Pointer inconsistency detected");
+           op->emitRemark("Mask-Pointer inconsistency detected");
+           return failure();
         }
       }
       if(findMask){
@@ -2094,8 +2096,10 @@ LogicalResult PtrAnalysis::generateMask(Operation * op, PtrState &ptrState, Smal
       dimMode.emplace_back(0);
     }
   }
+  // When mask analysis fails, return a remark and use select to handle the mask.
   if(remainMask != 0){
-    //op->emitWarning("Mask-Pointer inconsistency detected");
+    op->emitRemark("Mask-Pointer inconsistency detected");
+    return failure();
   }
   if(ptrState.stateInfo.size()){
     dims = tempDim;
@@ -2323,12 +2327,15 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op) {
   Value scalarOther;
 
   // Analyze the mask operand to determine at runtime the size of the data we
-  // are moving.
+  // are moving.If the mask analysis fails, skip subsequent mask processing 
+  // and fall back to using select to handle the mask.
+  bool generateMaskSuccess = true;
   if (mask && generateMask(op, ptrState, dims, dimMode).failed()) {
-    op.emitError("Failed to generate mask");
-    return failure();
+    op.emitRemark("Failed to generate structured mask");
+    generateMaskSuccess = false;
+    dims.clear();
   }
-  if (other) {
+  if (generateMaskSuccess && other) {
     assert(mask && "other value used while no masks are specified");
 
     scalarOther = getScalarValue(other, loc, builder);
@@ -2418,6 +2425,28 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op) {
   //         loc, loadResult, transposeInit, permuteOrder).getResults()[0];
   //   }
   // }
+
+  // When mask analysis fails, we perform a full load 
+  // and subsequently use a select operation to choose the valid data from the mask.
+  if (!generateMaskSuccess && mask) {
+    auto resultTensorShape = cast<ShapedType>(loadResult.getType()).getShape();
+    assert(cast<ShapedType>(mask.getType()).getShape() == resultTensorShape && 
+                            "load mask shape is not same as load result");
+    if (!other) {
+      auto loadResultType = cast<RankedTensorType>(loadResult.getType());
+      auto elementType = loadResultType.getElementType();
+      Attribute zeroAttr;
+      if (isa<FloatType>(elementType)) {
+        zeroAttr = builder.getFloatAttr(elementType, 0.0);
+      } else {
+        zeroAttr = builder.getIntegerAttr(elementType, 0);
+      }
+      auto denseAttr = DenseElementsAttr::get(loadResultType, zeroAttr);
+      other = builder.create<arith::ConstantOp>(loc, denseAttr);
+    }
+    loadResult = builder.create<arith::SelectOp>(loc, mask, loadResult, other);
+  }
+  
   op.replaceAllUsesWith(loadResult);
   op->erase();
   return success();
