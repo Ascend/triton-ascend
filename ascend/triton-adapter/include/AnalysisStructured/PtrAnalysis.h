@@ -157,6 +157,10 @@ struct PtrState {
   LogicalResult mulState(const PtrState &lhsState, const PtrState &rhsState,
                          Operation *op, OpBuilder &builder);
 
+  LogicalResult subState(const PtrState &lhsState,
+                                 const PtrState &rhsState, Operation *op,
+                                 OpBuilder &builder);
+
   // Process addition of ptr and offset.
   LogicalResult addPtrState(const PtrState &lhsState, const PtrState &rhsState,
                             Operation *op, OpBuilder &builder);
@@ -240,6 +244,10 @@ OpBuilder &builder);
   //  strides[i] = tensorState.strides[i] * scalar
   LogicalResult visitOperandMul(arith::MulIOp mulOp, PtrState &state,
                                 const Location loc, OpBuilder &builder);
+  
+  LogicalResult visitOperandSub(arith::SubIOp subOp, PtrState &state,
+                                           const Location loc,
+                                           OpBuilder &builder);
 
   LogicalResult visitOperandRem(arith::RemSIOp mulOp, PtrState &state,
                                 const Location loc, OpBuilder &builder);

@@ -618,6 +618,46 @@ LogicalResult PtrState::mulState(const PtrState &lhsState,
   return success();
 }
 
+LogicalResult PtrState::subState(const PtrState &lhsState,
+                                 const PtrState &rhsState, Operation *op,
+                                 OpBuilder &builder) {
+  assert(isEmpty() && lhsState.isSameSizeAs(rhsState));
+
+  auto loc = op->getLoc();
+  // neither lhs nor rhs should have source, since multiplying base pointer
+  // does not make sense
+
+  if (lhsState.hasSource() && rhsState.hasSource()) {
+    op->emitRemark("PtrAnalysis: do not support both sides have base inters in sub");
+    return failure();
+  }
+
+  if(lhsState.scalar && rhsState.scalar){
+    auto subOp =
+        builder.create<arith::SubIOp>(loc, lhsState.scalar, rhsState.scalar);
+    this->scalar = subOp.getResult();
+  } else {
+    // currently do not support right tensors are effectively non-scalar
+    if (!rhsState.scalar) {
+      op->emitRemark(
+          "PtrAnalysis: only support sub when one of "
+          "them represent a scalar");
+      return failure();
+    }
+
+    sizes = lhsState.sizes;
+    assert(!lhsState.stateInfo.empty() && "non-scalar should have stateInfo");
+    stateInfo = lhsState.stateInfo;
+    stateInfo[0].offset = subOFRs(stateInfo[0].offset, rhsState.scalar, loc, builder);
+  }
+
+  auto leftState = const_cast<PtrState&>(lhsState) ;
+  auto rightState = const_cast<PtrState&>(rhsState) ;
+  this->getMemAccTypeRef().merge(leftState.getMemAccTypeRef());
+  this->getMemAccTypeRef().merge(rightState.getMemAccTypeRef());
+  return success();
+}
+
 tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
                                                         Location loc) {
   SmallVector<int64_t> tensorSizes;
@@ -709,6 +749,22 @@ LogicalResult PtrAnalysis::visitOperandMul(arith::MulIOp mulOp, PtrState &state,
   }
 
   return state.mulState(lhsState, rhsState, mulOp, builder);
+}
+
+LogicalResult PtrAnalysis::visitOperandSub(arith::SubIOp subOp, PtrState &state,
+                                           const Location loc,
+                                           OpBuilder &builder) {
+  PtrState lhsState;
+  if (visitOperand(subOp.getLhs(), lhsState, loc, builder).failed()) {
+    return failure();
+  }
+
+  PtrState rhsState;
+  if (visitOperand(subOp.getRhs(), rhsState, loc, builder).failed()) {
+    return failure();
+  }
+
+  return state.subState(lhsState, rhsState, subOp, builder);
 }
 
 LogicalResult PtrAnalysis::visitOperandDiv(arith::DivSIOp divOp,
@@ -1310,6 +1366,8 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
     return visitOperandAdd(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<arith::MulIOp>()) {
     return visitOperandMul(op, state, loc, builder);
+  } else if (auto op = operand.getDefiningOp<arith::SubIOp>()) {
+    return visitOperandSub(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<triton::MakeRangeOp>()) {
     return visitOperandMakeRange(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<triton::BroadcastOp>()) {
