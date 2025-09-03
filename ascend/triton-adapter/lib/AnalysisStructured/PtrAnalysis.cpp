@@ -1861,6 +1861,10 @@ LogicalResult PtrAnalysis::analysisSplat(Operation *op, OpBuilder &builder, Valu
       tempState.source = bitCastOp.getResult();
     }
     else tempState.source = bitcastPtr;
+  } else if (isa<triton::PointerType>(ptr.getType())) {
+    tempState.source = ptr;
+    tempState.ptrIsTensor = false;
+    tempState.scalar = builder.create<arith::ConstantOp>(op->getLoc(), builder.getI32Type(), builder.getIndexAttr(0)).getResult();
   } else {
     op->emitError("PtrAnalysis: pointer is not replace with tts.make_tptr so "
                   "loadOp cannot be rewritten");
