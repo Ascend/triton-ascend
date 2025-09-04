@@ -54,7 +54,7 @@ def get_build_type():
     elif check_env_flag("TRITON_BUILD_WITH_O1"):
         return "TritonBuildWithO1"
     else:
-        return "Release"
+        return "TritonRelBuildWithAsserts"
 
 
 @dataclass

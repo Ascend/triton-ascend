@@ -50,7 +50,6 @@ registerKernel(const char *name, const void *data, size_t data_size, int shared,
   if (rtRet != RT_ERROR_NONE) {
     printf("rtFunctionRegister failed(stubName = %s), 0x%x\n", stubName.c_str(),
            rtRet);
-    exit(1);
     return {NULL, NULL};
   }
 
