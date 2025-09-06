@@ -56,7 +56,7 @@ fi
 # triton-ascend
 cd $WORKSPACE
 
-git submodule set-url third_party/triton https://gitee.com/shijingchang/triton.git
+git submodule set-url third_party/triton https://github.com/triton-lang/triton.git
 git submodule sync && git submodule update --init --recursive
 # In the future, we will propose a PR to apply the following change.
 
