@@ -175,6 +175,11 @@ bool PtrState::isEmpty() const {
   return (getRank() == 0 && !source && !scalar);
 }
 
+bool PtrState::opFoldResultIsZero(OpFoldResult op) const {
+  auto staticStride = getIntAttr(op);
+  return staticStride.has_value() && staticStride == 0;
+}
+
 bool PtrState::hasModulo() const {
   for (int32_t i = 0; i < getRank(); i++) {
     if (dimHasModulo(i)) {
@@ -249,8 +254,11 @@ LogicalResult PtrState::broadcastIfNeeded(SmallVector<StateInfo> &infoPerDim,
       auto staticMask = getIntAttr(info.mask);
 
       assert(staticShape.has_value() && staticMask.has_value() && "do not support dynamic shape/mask");
-
-      int64_t divDim = staticMask.value() ? (staticSize.value() - 1) / staticMask.value() + 1 : staticSize.value();
+      // when rem after div:
+      // range(0, 8) // 4 -> div_size = (8 - 1) // 4 + 1 = 2
+      // but if rem before div:
+      // (range(0, 8) % 4) // 4 -> div_size = (4 - 1) // 4 + 1 = 1
+      int64_t divDim = staticMask.value() ? ((info.remIsBeforeDiv ? staticShape.value() : staticSize.value()) - 1) / staticMask.value() + 1 : staticSize.value();
       int64_t remsiDim = staticShape.value() ? staticShape.value() : staticSize.value();
 
       readSize *= std::min(divDim, remsiDim);
@@ -317,25 +325,21 @@ LogicalResult PtrState::ExpandInfo(SmallVector<StateInfo> &infoPerDim,
   SmallVector<size_t> insertPos;
   auto defaultAttr = builder.getIndexAttr(0);
   auto staticPreMask = getIntAttr(defaultAttr);
-  auto staticPreShape = getIntAttr(builder.getIndexAttr(1));
+  // use prevDimSize to cache the previous dimension size
+  int64_t prevDimSize = 1;
 
   for(size_t i = 0; i < infoPerDim.size(); i++){
     auto staticMask = getIntAttr(infoPerDim[i].mask);
     assert(staticMask.has_value() && "PtrAnalysis: do not support dymic mask/size");
     auto staticShape = getIntAttr(infoPerDim[i].shape);
     auto staticSize = getIntAttr(sizes[infoPerDim[i].dim]);
-    assert(staticPreMask.has_value() && staticPreShape.has_value()  &&
+    assert(staticPreMask.has_value()  &&
            staticSize.has_value() && "PtrAnalysis: do not support dymic mask/shape");
 
     // shape=128 stride=33 mask(divval)=256 can not convert to structured access
     // only support (0,128)//x*y,
     // if (0,128)*y//x can move *y after //x, it will be converted to scene above before this func
     if(staticMask.value() % staticSize.value() == 0 && staticMask != 0) continue; 
-    
-    // after sort, mask will be monotonically increasing,
-    // so that if dim0 compatible with dim1, dim1 compatible with dim2, dim2 also comatible with dim0
-    // we just check previous dim.
-    int64_t prevDimSize = staticPreShape.value() * (staticPreMask.value() == 0 ? 1 : staticPreMask.value());
     if(staticMask.value() == 0 && i != 0){
       // (0,8)%8 + (0,8)%4 -> [ 0 1 2 3 4 5 6 7 ] + [ 0 1 2 3 0 1 2 3 ]-> Unstruct
        op->emitRemark(
@@ -359,7 +363,12 @@ LogicalResult PtrState::ExpandInfo(SmallVector<StateInfo> &infoPerDim,
       insertPos.push_back(i);
     }
     staticPreMask = staticMask;
-    staticPreShape = staticShape;
+
+    // after sort, mask will be monotonically increasing,
+    // so that if dim0 compatible with dim1, dim1 compatible with dim2, dim2 also comatible with dim0
+    // we just check previous dim.
+    // ((0, 8) // 2) % 4 ..., preDim = 8 * 2; ((0, 8) % 4) // 2 + ..., preDim = 4
+    prevDimSize = staticShape.value() * ((staticMask.value() == 0 || infoPerDim[i].remIsBeforeDiv) ? 1 : staticMask.value());
   }
 
 
@@ -399,7 +408,7 @@ LogicalResult PtrState::addPtrState(const PtrState &lhsState,
     op->emitError("can not merge ptrState and offsetState");
     return failure();
   }
-
+  
   // scenario for load(in_ptr + arange(0,1)) ->  pure scalar 
   if(this->sizes.size()==0){
     assert(source && scalar && this->getRank()==0 && "this branch only support tl.load(a_ptr + scalar)");
@@ -545,9 +554,24 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
  
     this->sizes = lhsState.sizes;
   }else{
-    for (uint64_t i = 0; i < lhsState.getRank(); this->stateInfo.push_back(lhsState.stateInfo[i++]));
-    for (uint64_t i = 0; i < rhsState.getRank(); this->stateInfo.push_back(rhsState.stateInfo[i++]));
+    // In addptrState, we add stride=0 dimensions. 
+    // For consecutive addptr calls, remove previous call's extra stride=0 dimensions. 
+    // Scalar handling ensures no stride=0 dimensions in this branch. 
+
+    // offset = range(0, 8) % 2
+    // ptr1 = src + offset # addptrstate adds stride=0 dimension -> size [4,2], strides [0,1] 
+    // ptr2 = ptr1 + range(0, 8) // 2 * 2
+    // load(ptr2)
+    for (auto info : lhsState.stateInfo) {
+      if (opFoldResultIsZero(info.stride))  continue;
+      this->stateInfo.push_back(info);
+    }
+    for (auto info : rhsState.stateInfo) {
+      if (opFoldResultIsZero(info.stride))  continue;
+      this->stateInfo.push_back(info);
+    }
     this->sizes = rhsState.sizes;
+    
   }
   auto leftState = const_cast<PtrState&>(lhsState) ;
   auto rightState = const_cast<PtrState&>(rhsState) ;
@@ -598,10 +622,11 @@ LogicalResult PtrState::mulState(const PtrState &lhsState,
     OpFoldResult newStride = mulOFRValue(info.stride, rhs->scalar, loc, builder);
 
     StateInfo newStateInfo(newOffset, newStride, info.shape, info.mask, info.dim);
+    newStateInfo.remIsBeforeDiv = info.remIsBeforeDiv;
 
     stateInfo.push_back(newStateInfo);
   }
-
+  
   sizes = lhs->sizes;
 
   if (rhs->hasModulo()) {
@@ -675,8 +700,11 @@ tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
 
     if(staticMask.has_value() && staticShape.has_value() ){
       if(staticStride.has_value() && staticStride == 0) continue;
-
-      int64_t divDim = staticMask.value() ? (staticSize.value() - 1) / staticMask.value() + 1 : staticSize.value();
+      // when rem after div:
+      // range(0, 8) // 4 -> div_size = (8 - 1) // 4 + 1 = 2
+      // but if rem before div:
+      // (range(0, 8) % 4) // 4 -> div_size = (4 - 1) // 4 + 1 = 1
+      int64_t divDim = staticMask.value() ? ((info.remIsBeforeDiv ? staticShape.value() : staticSize.value()) - 1) / staticMask.value() + 1 : staticSize.value();
       int64_t remsiDim = staticShape.value() ? staticShape.value() : staticSize.value();
       int64_t trueDim = std::min(divDim, remsiDim);
       tensorSizes.push_back(trueDim);
@@ -805,6 +833,10 @@ LogicalResult PtrAnalysis::visitOperandDiv(arith::DivSIOp divOp,
     auto staticStride = getIntAttr(info.stride);
     auto staticShape = getIntAttr(info.shape);
     auto preMask = getIntAttr(info.mask);
+
+    if (staticShape.value() != 0) {
+      info.remIsBeforeDiv = true;
+    }
 
     assert(staticShape.has_value() && preMask.has_value());
 
@@ -1919,6 +1951,12 @@ LogicalResult PtrAnalysis::analysisSplat(Operation *op, OpBuilder &builder, Valu
       tempState.source = bitCastOp.getResult();
     }
     else tempState.source = bitcastPtr;
+  } else if (isa<triton::PointerType>(ptr.getType())) { // load from arg
+    tempState.source = ptr;
+    tempState.ptrIsTensor=false;
+    tempState.scalar = builder.create<arith::ConstantOp>(op->getLoc(), 
+                                            builder.getIndexType(), 
+                                            builder.getIndexAttr(0)).getResult();
   } else {
     op->emitError("PtrAnalysis: pointer is not replace with tts.make_tptr so "
                   "loadOp cannot be rewritten");
@@ -2054,27 +2092,30 @@ LogicalResult PtrAnalysis::createReshape(Operation *op, Value &srcResult, SmallV
     srcResult = reshapeOp.getResult();
   }
 
-  if(!std::equal(flatSizes.begin(), flatSizes.end(), validSizes.begin())){
-    auto sourceTy = cast<mlir::RankedTensorType>(srcResult.getType());
-    mlir::Type elementTy = sourceTy.getElementType();
-    auto resultTy = mlir::RankedTensorType::get(validSizes, elementTy);
-    SmallVector<int64_t> staticOffsets(sourceTy.getRank(), 0);
-    SmallVector<int64_t> staticStrides(sourceTy.getRank(), 1);
+  // Excess data handled by mask. 
+  // block_size, rem, and div are aligned, requiring no extra handling.
+  // TODO delete
+  // if(!std::equal(flatSizes.begin(), flatSizes.end(), validSizes.begin())){
+  //   auto sourceTy = cast<mlir::RankedTensorType>(srcResult.getType());
+  //   mlir::Type elementTy = sourceTy.getElementType();
+  //   auto resultTy = mlir::RankedTensorType::get(validSizes, elementTy);
+  //   SmallVector<int64_t> staticOffsets(sourceTy.getRank(), 0);
+  //   SmallVector<int64_t> staticStrides(sourceTy.getRank(), 1);
 
-    auto extractSliceOp = builder.create<mlir::tensor::ExtractSliceOp>(
-      loc,
-      resultTy,
-      srcResult,
-      /*offsets=*/ValueRange{},
-      /*sizes=*/ValueRange{},
-      /*strides=*/ValueRange{},
-      staticOffsets,
-      validSizes,
-      staticStrides
-  );
+  //   auto extractSliceOp = builder.create<mlir::tensor::ExtractSliceOp>(
+  //     loc,
+  //     resultTy,
+  //     srcResult,
+  //     /*offsets=*/ValueRange{},
+  //     /*sizes=*/ValueRange{},
+  //     /*strides=*/ValueRange{},
+  //     staticOffsets,
+  //     validSizes,
+  //     staticStrides
+  // );
 
-    srcResult = extractSliceOp.getResult();
-  }
+  //   srcResult = extractSliceOp.getResult();
+  // }
   return success();
 }
 
@@ -2595,11 +2636,14 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op) {
   SmallVector<OpFoldResult> dims;
   SmallVector<int64_t> dimMode;
 
-  // Analyze the mask operand to determine at runtime the size of the data
-  // are moving.
+  // Analyze the mask operand to determine at runtime the size of the data we
+  // are moving.If the mask analysis fails, skip subsequent mask processing 
+  // and fall back to using select to handle the mask.
+  bool generateMaskSuccess = true;
   if (mask && generateMask(op, ptrState, dims, dimMode).failed()) {
-    op.emitError("Failed to generate mask");
-    return failure();
+    op.emitRemark("Failed to generate structured mask");
+    generateMaskSuccess = false;
+    dims.clear();
   }
 
   if (!isa<mlir::RankedTensorType>(val.getType())) {
@@ -2637,7 +2681,6 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op) {
   }
   for(auto x : storeShape) storeLen *= x;
 
-
   // assert(valLen == storeLen && "Unaligned writes are not currently supported");
   if(valLen != storeLen){
     llvm::dbgs() << "\033[34m" << "valDims.size() = " << valDims.size() << "\033[0m\n";
@@ -2665,15 +2708,36 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op) {
       RankedTensorType::get({static_cast<int64_t>(storeShape.size())}, builder.getI64Type()), storeShape);
     auto targetShape = builder.create<arith::ConstantOp>(loc, targetShapeAttr);
     auto reshapeOp = builder.create<tensor::ReshapeOp>(loc, targetShapeType, val, targetShape);
+    if (mask) {
+      auto targetMaskShapeType = RankedTensorType::get(storeShape, cast<ShapedType>(mask.getType()).getElementType());
+      mask = builder.create<tensor::ReshapeOp>(loc, targetMaskShapeType, mask, targetShape);
+    }
     val = reshapeOp.getResult();
   }
 
-  auto storeOp = builder.create<tts::StoreOp>(loc, ptr, val, dims);
-
-  LLVM_DEBUG({
-    llvm::dbgs() << "creating tts::store:\n";
-    storeOp->dump();
-  });
+  // When mask analysis fails, we perform a full load 
+  // and subsequently use a select operation to choose the valid data from the mask.
+  // TODO Atomic operations are currently unsupported; this store method is single-core only. 
+  // Atomic operation support will be added in future updates.
+  if (!generateMaskSuccess && mask) {
+    auto resultTensorShape = cast<ShapedType>(val.getType()).getShape();
+    assert(cast<ShapedType>(mask.getType()).getShape() == resultTensorShape && 
+                            "store mask shape is not same as store result");
+    Value scalarOther;
+    auto loadOp = builder.create<tts::LoadOp>(loc, ptr, dims, dimMode, scalarOther);
+    val = builder.create<arith::SelectOp>(loc, mask, val, loadOp.getResult());
+    auto storeOp = builder.create<tts::StoreOp>(loc, ptr, val, dims);
+    LLVM_DEBUG({
+      llvm::dbgs() << "creating tts::store:\n";
+      storeOp->dump();
+    });
+  } else {
+    auto storeOp = builder.create<tts::StoreOp>(loc, ptr, val, dims);
+    LLVM_DEBUG({
+      llvm::dbgs() << "creating tts::store:\n";
+      storeOp->dump();
+    });
+  }
 
   op->erase();
   return success();

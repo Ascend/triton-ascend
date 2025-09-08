@@ -115,6 +115,8 @@ struct PtrState {
 
   bool shouldRemove(const StateInfo& x) const;
 
+  bool opFoldResultIsZero(OpFoldResult op) const;
+
   bool isEmpty() const;
 
   bool hasModulo() const;
