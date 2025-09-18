@@ -36,6 +36,9 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
+#include "Utils/InterleaveOptimization.h"
+#include "Utils/Utils.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -721,6 +724,38 @@ private:
       rewriter.eraseOp(unrealizedCast);
 
     } else {
+
+
+      auto memRefType = dyn_cast<MemRefType>(ptr.getType());
+      if (!memRefType) {
+          return rewriter.notifyMatchFailure(
+            op, "LoadOp expects a memref, not a memref of pointers");
+      }
+
+
+      if (mixedDims.size() == memRefType.getRank() &&
+          /*isConstantIntValue(mstate.offsets.back(), 0) &&*/
+          isConstantIntValue(mixedDims.back(), memRefType.getShape().back())) {
+          auto [ptrStrides, ptrOffsets] = getStridesAndOffset(memRefType);
+          
+          // auto reinterpretCast = ptr.getDefiningOp<memref::ReinterpretCastOp>();
+          // auto originCastOffset = reinterpretCast.getConstifiedMixedOffset();
+
+          // SmallVector<OpFoldResult> subviewOffsets(memRefType.getRank(), rewriter.getIndexAttr(0));
+          // subviewOffsets.back() = originCastOffset;
+          
+          // if (ptrStrides.back() == 2 && (memRefType.getShape().back() % 2 == 0) &&
+          //   DeinterleaveStatusWithMaskOptimization(op, adaptor.getPtr(), rewriter,
+          //   subviewOffsets, mixedDims,
+          //    alloc).succeeded()) {
+          //   return success();
+          // }
+        
+          if (ptrStrides.back() == 2 && (memRefType.getShape().back() % 2 == 0) &&
+            DeinterleaveStatusOptimization(op, adaptor.getPtr(), rewriter).succeeded()) {
+            return success();
+          }
+      }
       memref::SubViewOp srcSubview =
           getSubview(tensorType.getRank(), mixedDims, dimMode, ptr, loc, rewriter);
       memref::SubViewOp dstSubview =

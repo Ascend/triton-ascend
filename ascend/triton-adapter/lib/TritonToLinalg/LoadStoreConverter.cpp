@@ -262,7 +262,7 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
       // If last dimension stride equals 2, try deinterleave optimization.
       auto [ptrStrides, ptrOffsets] = getStridesAndOffset(memRefType);
       if (ptrStrides.back() == 2 && (memRefShape.back() % 2 == 0) &&
-          mlir::triton::DeinterleaveStatusOptimization(op, adaptor, rewriter)
+          mlir::triton::DeinterleaveStatusOptimization(op, adaptor.getPtr(), rewriter)
               .succeeded()) {
         return success();
       }
@@ -301,7 +301,8 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
       isConstantIntValue(mstate.dims.back(), memRefType.getShape().back())) {
     auto [ptrStrides, ptrOffsets] = getStridesAndOffset(memRefType);
     if (ptrStrides.back() == 2 && (memRefType.getShape().back() % 2 == 0) &&
-        DeinterleaveStatusWithMaskOptimization(op, adaptor, rewriter, mstate,
+        DeinterleaveStatusWithMaskOptimization(op, adaptor.getPtr(), rewriter, 
+                                              mstate.offsets, mstate.dims,
                                                allocOp)
             .succeeded()) {
       return success();

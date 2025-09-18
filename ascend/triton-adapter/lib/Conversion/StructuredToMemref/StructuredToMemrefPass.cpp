@@ -34,6 +34,9 @@
 #include <cassert>
 #include <optional>
 
+#include "Utils/InterleaveOptimization.h"
+#include "Utils/Utils.h"
+
 #define DEBUG_TYPE "structured-to-memref"
 
 using namespace mlir;
@@ -240,151 +243,6 @@ struct BitcastConverter : public OpConversionPattern<triton::BitcastOp> {
     return success();
   }
 
-  // LogicalResult matchAndRewrite(
-  //     triton::BitcastOp op, OpAdaptor adaptor,
-  //     ConversionPatternRewriter &rewriter) const override {
-  //   Value src = adaptor.getSrc();
-  //   Type srcType = src.getType();
-  //   Type dstType = getTypeConverter()->convertType(op.getType());
-
-
-
-  //   // if (auto dstUnrankedType = dyn_cast<UnrankedMemRefType>(dstType)) { // original
-  //   if (auto dstUnrankedType = dyn_cast<MemRefType>(dstType)) {
-  //     // 关键修改：确保生成的memref使用静态offset(0)和固定步长
-  //     Value offset;
-  //     if(auto addptrOp = dyn_cast<triton::AddPtrOp>(op.getSrc().getDefiningOp())){
-  //       Value originalOffset = addptrOp.getOffset();
-  //       rewriter.setInsertionPoint(addptrOp);
-    
-  //       // 类型检测与转换
-  //       if (originalOffset.getType().isSignlessInteger(32)) {
-  //           // 创建index类型转换
-  //           offset = rewriter.create<arith::IndexCastOp>(
-  //               op.getLoc(),
-  //               rewriter.getIndexType(),  // 目标类型：index
-  //               originalOffset            // 源操作数
-  //           );
-  //       } else {
-  //           offset = originalOffset;  // 已经是正确类型
-  //       }
-  //       // TODO 将src切换为addptr的src
-  //       src = addptrOp.getPtr();
-    
-  //       if (auto ptrType = dyn_cast<triton::PointerType>(src.getType())) {
-  //           // 手动执行类型转换逻辑
-  //           Type elemType = ptrType.getPointeeType();
-            
-  //           // 处理元素类型符号
-  //           if (auto intTy = dyn_cast<IntegerType>(elemType)) {
-  //               if (!intTy.isSignless()) {
-  //                   // 创建无符号版本（假设context可用）
-  //                   elemType = IntegerType::get(ptrType.getContext(), 
-  //                                             intTy.getWidth());
-  //               }
-  //           }
-            
-  //           // 构建目标类型（保留address space）
-  //           // Type targetType = UnrankedMemRefType::get(elemType, 0); original
-  //           Type targetType = MemRefType::get({ShapedType::kDynamic}, elemType); // changed
-            
-  //           // 插入显式类型转换操作
-  //           rewriter.setInsertionPointAfterValue(src);
-  //           Value convertedSrc = rewriter.create<UnrealizedConversionCastOp>(
-  //               op.getLoc(),
-  //               targetType,
-  //               src
-  //           ).getResult(0);
-            
-  //           src = convertedSrc;  // 使用转换后的值
-  //       }
-  //     }
-  //     // original
-  //     // assert(isa<UnrankedMemRefType>(src.getType()) && 
-  //     //  "Pointer type not converted!");
-  //     // auto srcUnrankedType = cast<UnrankedMemRefType>(src.getType());
-  //     // >>>>>
-  //     assert(isa<MemRefType>(src.getType()) && "Pointer type not converted!");
-  //     auto srcUnrankedType = cast<MemRefType>(src.getType());
-  //     // <<<<< changed
-  //     Type elementType = dstUnrankedType.getElementType();
-  //     Attribute memorySpace = srcUnrankedType.getMemorySpace();
-
-  //     // 将unranked memref转换为ranked memref
-  //     Value dynamicSize = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
-  //     // 创建静态尺寸的MemRefType（shape=[1]）
-  //     // TODO 如果offset有值，将下面两个type静态的0改为offset
-  //     SmallVector<int64_t> staticOffsets{0};  // 默认静态偏移0
-  //     SmallVector<Value> dynamicOffsets;
-  //     // 如果offset存在且非常量，转为动态参数
-  //     if (offset) {
-  //         if (auto constOp = offset.getDefiningOp<arith::ConstantIndexOp>()) {
-  //             // 静态偏移可直接设置值
-  //             staticOffsets[0] = constOp.value();
-  //         } else {
-  //             // 动态偏移需要设置标记并传递值
-  //             staticOffsets[0] = ShapedType::kDynamic;
-  //             dynamicOffsets.push_back(offset);
-  //         }
-  //     }
-  //     MemRefType srcTargetType = MemRefType::get(
-  //         /*shape=*/{1},  // 明确的静态尺寸
-  //         srcUnrankedType.getElementType(),
-  //         /*layout=*/StridedLayoutAttr::get(
-  //             rewriter.getContext(), 0, {1}),
-  //         srcUnrankedType.getMemorySpace()
-  //     );
-
-  //     MemRefType dstTargetType = MemRefType::get(
-  //         /*shape=*/{1},  // 明确的静态尺寸
-  //         dstUnrankedType.getElementType(),
-  //         /*layout=*/StridedLayoutAttr::get(
-  //             rewriter.getContext(), 0, {1}),
-  //         dstUnrankedType.getMemorySpace()
-  //     );
-  //     // 使用全静态参数创建ReinterpretCastOp
-  //     if(offset)
-  //       rewriter.setInsertionPointAfter(offset.getDefiningOp());
-  //     Value castedSrc = rewriter.create<memref::ReinterpretCastOp>(
-  //       op.getLoc(),
-  //       srcTargetType,
-  //       src,
-  //       /*offsets=*/dynamicOffsets,         
-  //       /*sizes=*/ValueRange{},
-  //       /*strides=*/ValueRange{},
-  //       /*static_offsets=*/rewriter.getDenseI64ArrayAttr(staticOffsets), 
-  //       /*static_sizes=*/rewriter.getDenseI64ArrayAttr({1}),
-  //       /*static_strides=*/rewriter.getDenseI64ArrayAttr({1})
-  //     );
-
-  //     // 创建加载/存储操作
-  //     Value zero = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-  //     Value loaded = rewriter.create<memref::LoadOp>(op.getLoc(), castedSrc, zero);
-
-      
-  //     // 类型扩展逻辑
-  //     Value castedVal = rewriter.create<arith::ExtUIOp>(
-  //         op.getLoc(), elementType, loaded);
-  //     // 分配新的ranked memref
-  //     Value newMemref = rewriter.create<memref::AllocOp>(
-  //         op.getLoc(), dstTargetType, ValueRange{});
-      
-  //     rewriter.create<memref::StoreOp>(op.getLoc(), castedVal, newMemref, zero);
-      
-  //     // 将结果转换回unranked类型（如需保持类型一致）
-  //     Value result = rewriter.create<memref::CastOp>(
-  //         op.getLoc(), dstUnrankedType, newMemref);
-      
-  //     rewriter.replaceOp(op, result);
-  //     return success();
-  //   }
-
-  //   // 处理非指针类型的常规bitcast
-  //   Value newBitcast = rewriter.create<arith::BitcastOp>(
-  //       op.getLoc(), dstType, src);
-  //   rewriter.replaceOp(op, newBitcast);
-  //   return success();
-  // }
 };
 
 
@@ -572,74 +430,80 @@ public:
     return success();
   }
 
- LogicalResult convertBitCast() {
-  auto moduleOp = getOperation();
+  LogicalResult convertBitCast() {
+      auto moduleOp = getOperation();
+    
+      RewritePatternSet patterns(&getContext());
+      ConversionTarget target(getContext());
+      BoolTypeConverter converter;
+    
+      target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op){
+        return converter.isSignatureLegal(op.getFunctionType());
+      });
+      target.addIllegalOp<triton::BitcastOp>();
+    
+      populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
+        patterns, converter);
+      patterns.add<BitcastConverter>(converter, &getContext());
+    
+      return applyPartialConversion(moduleOp, target, std::move(patterns));
+  }
 
-  RewritePatternSet patterns(&getContext());
-  ConversionTarget target(getContext());
-  BoolTypeConverter converter;
-
-  target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op){
-    return converter.isSignatureLegal(op.getFunctionType());
-  });
-  target.addIllegalOp<triton::BitcastOp>();
-
-  populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
-    patterns, converter);
-  patterns.add<BitcastConverter>(converter, &getContext());
-
-  return applyPartialConversion(moduleOp, target, std::move(patterns));
-
-  // auto moduleOp = getOperation();
-  // MLIRContext *context = &getContext();
-
-  // // 类型转换器配置
-  // TypeConverter converter;
-  // converter.addConversion([](Type type) -> Type { return type; });
-  
-  // // 关键：处理指针类型转换并确保元素类型signless
-  // // converter.addConversion([context](triton::PointerType ptrType) -> Type {
-  // //   Type elemType = ptrType.getPointeeType();
-  // //   if (auto intTy = dyn_cast<IntegerType>(elemType)) {
-  // //     if (!intTy.isSignless()) {
-  // //       elemType = IntegerType::get(context, intTy.getWidth());
-  // //     }
-  // //   }
-  // //   return UnrankedMemRefType::get(elemType, ptrType.getAddressSpace());
-  // // });
-  // converter.addConversion([](triton::PointerType ptrType) {
-  //     // return UnrankedMemRefType::get(ptrType.getPointeeType(), 0);
-  //     return MemRefType::get({ShapedType::kDynamic}, ptrType.getPointeeType());
-  //   });
-
-  // // 材料化处理
-  // converter.addSourceMaterialization([](OpBuilder &b, Type t, ValueRange vs, Location loc) {
-  //   return b.create<UnrealizedConversionCastOp>(loc, t, vs).getResult(0);
-  // });
-  // converter.addTargetMaterialization([](OpBuilder &b, Type t, ValueRange vs, Location loc) {
-  //   return b.create<UnrealizedConversionCastOp>(loc, t, vs).getResult(0);
-  // });
-
-  // // 转换目标配置
-  // ConversionTarget target(*context);
-  // target.addLegalDialect<arith::ArithDialect, memref::MemRefDialect>();
-  // target.addIllegalOp<triton::BitcastOp>(); // 明确标记原始操作为非法
-
-  // // 添加转换模式
-  // RewritePatternSet patterns(context);
-  // patterns.add<BitcastConverter>(converter, context);
-
-  // // 应用转换
-  // if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
-  //   signalPassFailure();
-  // }
-
-  // // 必须运行规范化消除临时cast
-  // PassManager pm(context);
-  // pm.addPass(createCSEPass());
-  // pm.addPass(createCanonicalizerPass());
-  // return pm.run(moduleOp);
-}
+  void InterLeaveOptimization(mlir::ModuleOp &moduleOp) {
+      // Try interleave optimization
+      llvm::DenseMap<BlockArgument, SmallVector<Operation *>> interleaveCandidate;
+      llvm::DenseMap<BlockArgument, SmallVector<Operation *>>
+          interleaveCandidateWithMask;
+      moduleOp.walk([&](bufferization::MaterializeInDestinationOp materializeOp) {
+        if (auto reinterpretCastOp =
+                materializeOp.getDest()
+                    .getDefiningOp<memref::ReinterpretCastOp>()) {
+          if (llvm::isa<BlockArgument>(reinterpretCastOp.getSource()) &&
+              reinterpretCastOp.getStaticStrides().back() == 2) {
+            interleaveCandidate[llvm::cast<BlockArgument>(
+                                    reinterpretCastOp.getSource())]
+                .push_back(materializeOp);
+          }
+        }
+    
+        // Difference is that converted op chain of store with mask has
+        // `memref::SubViewOp`
+        if (auto subviewOp =
+                materializeOp.getDest().getDefiningOp<memref::SubViewOp>()) {
+          if (!llvm::isa<tensor::ExtractSliceOp>(
+                  materializeOp.getSource().getDefiningOp()))
+            return WalkResult::advance();
+    
+          if (auto reinterpretCastOp =
+                  subviewOp.getSource()
+                      .getDefiningOp<memref::ReinterpretCastOp>()) {
+            if (llvm::isa<BlockArgument>(reinterpretCastOp.getSource()) &&
+                reinterpretCastOp.getStaticStrides().back() == 2) {
+              interleaveCandidateWithMask[llvm::cast<BlockArgument>(
+                                              reinterpretCastOp.getSource())]
+                  .push_back(materializeOp);
+            }
+          }
+        }
+    
+        return WalkResult::advance();
+      });
+    
+      for (auto [blockArg, materializeVec] : interleaveCandidate) {
+        // Just enable optimization where exists double materializeOp with same
+        // block argument destination.
+        if (materializeVec.size() != 2)
+          continue;
+        auto result = InterleaveStatusOptimization(materializeVec);
+      }
+    
+      for (auto [blockArg, materializeVec] : interleaveCandidateWithMask) {
+        if (materializeVec.size() != 2)
+          continue;
+        auto result = InterleaveStatusWithMaskOptimization(materializeVec);
+      }
+      
+  }
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
@@ -705,6 +569,8 @@ public:
     if (failed(runPipeline(pm, getOperation()))) {
       signalPassFailure();
     }
+
+    InterLeaveOptimization(moduleOp);
   }
 };
 } // namespace
