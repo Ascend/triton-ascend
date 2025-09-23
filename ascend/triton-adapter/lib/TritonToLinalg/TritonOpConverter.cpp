@@ -467,7 +467,7 @@ MakeRangeConverter::matchAndRewrite(triton::MakeRangeOp op, OpAdaptor adaptor,
                         ValueRange blockArgs) {
     Value index = nestedBuilder.create<linalg::IndexOp>(loc, 0);
     Value res = nestedBuilder.create<arith::IndexCastOp>(
-        loc, elementType, index);
+        loc, type.getElementType(), index);
     nestedBuilder.create<linalg::YieldOp>(loc, res);
   };
 
@@ -475,21 +475,7 @@ MakeRangeConverter::matchAndRewrite(triton::MakeRangeOp op, OpAdaptor adaptor,
       loc, op->getResultTypes(), /* operands */ ValueRange{}, ValueRange{init},
       indexingMaps, ConverterUtils::getNParallelLoopsAttrs(1), nestedBody);
 
-  int32_t startVal = op.getStartAttr().getInt();
-  if (startVal == 0) {
-    rewriter.replaceOp(op, linalgOp->getResults());
-    return success();
-  }
-
-  // Apply start offset
-  Value startScaler = rewriter.create<arith::ConstantOp>(
-      loc, rewriter.getI32IntegerAttr(static_cast<int32_t>(startVal)));
-  auto startInit = rewriter.create<tensor::EmptyOp>(loc, shape, elementType);
-  Value startTensor = rewriter.create<linalg::FillOp>(
-      loc, ValueRange{startScaler}, ValueRange{startInit}).getResult(0);
-  auto addOp = rewriter.create<arith::AddIOp>(loc, linalgOp->getResults(),
-                                              startTensor);
-  rewriter.replaceOp(op, addOp);
+  rewriter.replaceOp(op, linalgOp->getResults());
   return success();
 }
 

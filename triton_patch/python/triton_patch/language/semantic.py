@@ -7,7 +7,6 @@ from triton.language.semantic import wrap_tensor, _str_to_rounding_mode, not_equ
     bitwise_op_type_checking_impl, shl, ashr, lshr, fdiv, sub, mul, to_tensor
 import triton.language.math as math
 import triton.language.core as core
-from triton.language._utils import TRITON_MAX_TENSOR_NUMEL
 
 from .tensor_descriptor import (
     _unwrap_if_constexpr,
@@ -27,8 +26,6 @@ def arange(start: int, end: int, builder: ir.builder) -> tl.tensor:
     if end <= start:
         raise ValueError("arange's end argument must be greater than the start argument")
     range = end - start
-    if range > TRITON_MAX_TENSOR_NUMEL:
-        raise ValueError(f"end - start must be less than or equal to TRITON_MAX_TENSOR_NUMEL = {TRITON_MAX_TENSOR_NUMEL}")
     shape = [range]
     ret_ty = tl.block_type(tl.int32, shape)
     return tl.tensor(builder.create_make_range(start, end), ret_ty)

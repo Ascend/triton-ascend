@@ -1,4 +1,4 @@
-// RUN: triton-adapter-opt --discrete-mask-access-conversion --triton-to-annotation --triton-to-unstructure --triton-to-hivm --bubble-up-operation '--triton-to-linalg=global-kernel=false named-ops=True enable-nd2nz-on-vector=False' %s | FileCheck %s
+// RUN: triton-adapter-opt --triton-to-annotation --triton-to-linalg %s | FileCheck %s
 module {
   tt.func @kernel(
   %arg0 : !tt.ptr<bf16>,
@@ -37,8 +37,7 @@ module {
 }
 // CHECK-LABEL:   func.func @kernel(
 // CHECK-SAME:    %[[ARG_0:.*]]: memref<?xi8>, %[[ARG_1:.*]]: memref<?xi8>,
-// CHECK-SAME:    %[[VAL_0:.*]]: memref<?xbf16>, %[[VAL_1:.*]]: memref<?xbf16> {tt.tensor_kind = 2 : i32}, %[[VAL_2:.*]]: memref<?xi32> {tt.tensor_kind = 1 : i32}, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32, %arg9: i32, %arg10: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "local", mix_mode = "aiv"} {
-// CHECK-DAG:     %[[VAL_7:.*]] = arith.constant 512 : i32
+// CHECK-SAME:    %[[VAL_0:.*]]: memref<?xbf16>, %[[VAL_1:.*]]: memref<?xbf16> {tt.tensor_kind = 2 : i32}, %[[VAL_2:.*]]: memref<?xi32> {tt.tensor_kind = 1 : i32}, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32, %arg9: i32, %arg10: i32) attributes {SyncBlockLockArgIdx = 0 : i64, WorkspaceArgIdx = 1 : i64, global_kernel = "", mix_mode = "aiv"} {
 // CHECK:           %[[VAL_8:.*]] = tensor.empty() : tensor<256xi32>
 // CHECK:           %[[VAL_9:.*]] = linalg.generic {indexing_maps = [#map], iterator_types = ["parallel"]} outs(%[[VAL_8]] : tensor<256xi32>) {
 // CHECK:           ^bb0(%[[VAL_10:.*]]: i32):
@@ -46,10 +45,8 @@ module {
 // CHECK:             %[[VAL_12:.*]] = arith.index_cast %[[VAL_11]] : index to i32
 // CHECK:             linalg.yield %[[VAL_12]] : i32
 // CHECK:           } -> tensor<256xi32>
-// CHECK:           %[[VAL_13:.*]] = linalg.fill ins(%[[VAL_7]] : i32) outs(%[[VAL_8]] : tensor<256xi32>) -> tensor<256xi32>
-// CHECK:           %[[VAL_14:.*]] = arith.addi %[[VAL_9]], %[[VAL_13]] : tensor<256xi32>
 // CHECK:           %[[VAL_15:.*]] = tensor.empty() : tensor<256x128xi32>
-// CHECK:           %[[VAL_16:.*]] = linalg.broadcast ins(%[[VAL_14]] : tensor<256xi32>) outs(%[[VAL_15]] : tensor<256x128xi32>) dimensions = [1]
+// CHECK:           %[[VAL_16:.*]] = linalg.broadcast ins(%[[VAL_9]] : tensor<256xi32>) outs(%[[VAL_15]] : tensor<256x128xi32>) dimensions = [1]
 
 // CHECK:           %[[VAL_19:.*]] = memref.reinterpret_cast %[[VAL_1]] to offset: {{\[}}6656], sizes: [256, 128], strides: [1, 6] : memref<?xbf16> to memref<256x128xbf16, strided<[1, 6], offset: 6656>>
 // CHECK:           %[[VAL_20:.*]] = memref.alloc() : memref<256x128xbf16>
