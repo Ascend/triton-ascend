@@ -730,8 +730,14 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
   // base_ptr offset shape and stride are not used, arbitrarily set for now
   std::string name = "";
   name.append(kernelName);
-  {'auto launch_call = [=]() -> rtError_t' if enable_taskqueue else ''} {{
-    uint32_t blockNum = gridX * gridY * gridZ;
+  void *workspace_addr_ptr = NULL;
+  uint32_t blockNum = gridX * gridY * gridZ;
+ 	uint64_t totalWorkSpaceSize = {workspace_size} * blockNum;
+ 	auto optionsWorkspace = at::TensorOptions().device(at::kPrivateUse1).dtype(at::kByte);
+ 	at::Tensor workspace_tensor = at::empty(totalWorkSpaceSize, optionsWorkspace);  
+ 	workspace_addr_ptr = const_cast<void *>(workspace_tensor.storage().data());
+
+ 	{'auto launch_call = [=]() -> rtError_t' if enable_taskqueue else ''} {{
 
     #ifdef ENABLE_GRID_WARN_PRINT
       static bool warned = false;
@@ -752,7 +758,6 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
     {'if (ret != RT_ERROR_NONE) return ret;' if (target_support_ffts and enable_taskqueue) else 'if (ret != RT_ERROR_NONE) return;' if (target_support_ffts and (not enable_taskqueue)) else ''}
     // stub argument for workspace
     void *syncBlockLock_ptr = NULL;
-    void *workspace_addr_ptr = NULL;
     auto optionsWorkspace = at::TensorOptions().device(at::kPrivateUse1).dtype(at::kByte);
     uint16_t ModuleId = 0;
     {f'''
@@ -773,9 +778,6 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
     }}
     ''' if lock_num > 0 else ''}
     {f'''
-    uint64_t totalWorkSpaceSize = {workspace_size} * blockNum;
-    at::Tensor workspace_tensor = at::empty(totalWorkSpaceSize, optionsWorkspace);
-    workspace_addr_ptr = const_cast<void *>(workspace_tensor.storage().data());
     if (!workspace_addr_ptr) {{
       {alloc_success_code if enable_taskqueue else workspace_fail_code}
     }}
