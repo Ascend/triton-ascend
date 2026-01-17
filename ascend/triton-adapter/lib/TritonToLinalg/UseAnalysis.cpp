@@ -154,6 +154,11 @@ void triton::UseAnalysis::visitOperation(Operation *op,
           propagateUse(operands[2], UseType::DataUse);
         }
       })
+      .Case<triton::ReduceOp>([&](auto reduce) {
+        for (auto operand : operands) {
+          propagateUse(operand, UseType::DataUse);
+        }
+      })
       .Case<LoopLikeOpInterface>([&](auto loopOp) {
         for (const auto &[yield, init, result]: llvm::zip_equal(loopOp.getYieldedValues(), loopOp.getInits(), results)) {
           propagateResults(getLatticeElement(yield), {result});
