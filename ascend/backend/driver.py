@@ -732,11 +732,15 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
   name.append(kernelName);
   void *workspace_addr_ptr = NULL;
   uint32_t blockNum = gridX * gridY * gridZ;
- 	uint64_t totalWorkSpaceSize = {workspace_size} * blockNum;
  	auto optionsWorkspace = at::TensorOptions().device(at::kPrivateUse1).dtype(at::kByte);
- 	at::Tensor workspace_tensor = at::empty(totalWorkSpaceSize, optionsWorkspace);  
- 	workspace_addr_ptr = const_cast<void *>(workspace_tensor.storage().data());
-
+  {f'''
+    uint64_t totalWorkSpaceSize = {workspace_size} * blockNum;
+    at::Tensor workspace_tensor = at::empty(totalWorkSpaceSize, optionsWorkspace);  
+    workspace_addr_ptr = const_cast<void *>(workspace_tensor.storage().data());
+    if (!workspace_addr_ptr) {{
+      {alloc_success_code if enable_taskqueue else workspace_fail_code}
+    }}
+  ''' if workspace_size > 0 else ''}
  	{'auto launch_call = [=]() -> rtError_t' if enable_taskqueue else ''} {{
 
     #ifdef ENABLE_GRID_WARN_PRINT
@@ -777,11 +781,6 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
       return {'ret' if enable_taskqueue else ''};
     }}
     ''' if lock_num > 0 else ''}
-    {f'''
-    if (!workspace_addr_ptr) {{
-      {alloc_success_code if enable_taskqueue else workspace_fail_code}
-    }}
-    ''' if workspace_size > 0 else ''}
     {'if (ret != RT_ERROR_NONE) return ret;' if (workspace_size > 0 and enable_taskqueue) else 'if (ret != RT_ERROR_NONE) return;' if (workspace_size > 0 and not enable_taskqueue) else ''}
     struct __attribute__((packed)) {{
       {'void* ffts_addr __attribute__((aligned(8)));' if target_support_ffts else ''}
