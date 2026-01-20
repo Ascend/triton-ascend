@@ -731,15 +731,15 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
   std::string name = "";
   name.append(kernelName);
   void *workspace_addr_ptr = NULL;
-  uint32_t blockNum = gridX * gridY * gridZ;
+  uint32_t blockNum4Workspace = gridX * gridY * gridZ;
  	auto optionsWorkspace = at::TensorOptions().device(at::kPrivateUse1).dtype(at::kByte);
   {f'''
-    uint64_t totalWorkSpaceSize = {workspace_size} * blockNum;
+    uint64_t totalWorkSpaceSize = {workspace_size} * blockNum4Workspace;
     at::Tensor workspace_tensor = at::empty(totalWorkSpaceSize, optionsWorkspace);  
     workspace_addr_ptr = const_cast<void *>(workspace_tensor.storage().data());
   ''' if workspace_size > 0 else ''}
  	{'auto launch_call = [=]() -> rtError_t' if enable_taskqueue else ''} {{
-
+    uint32_t blockNum = gridX * gridY * gridZ;
     #ifdef ENABLE_GRID_WARN_PRINT
       static bool warned = false;
       if (!warned && blockNum > (uint32_t){num_physical_blocks}) {{
