@@ -17,7 +17,7 @@ Triton Ascend是面向昇腾平台构建的Triton编译框架，旨在让Triton�
 
 - #### 已支持平台
 
-昇腾设备：Atlas 800T/I A2产品
+昇腾设备：Ascend Atlas A2/A3
 
 主机CPU架构：x86/ARM
 
