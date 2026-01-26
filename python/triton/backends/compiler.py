@@ -1,13 +1,13 @@
 import os
 import re
-import hashlib
 import subprocess
-
-from abc import ABCMeta, abstractmethod, abstractclassmethod
+import sysconfig
+from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Union
+from typing import Dict, Union
 from types import ModuleType
 
+<<<<<<< HEAD
 # Table that associates strings to AttrsDescriptor (sub)classes.
 # In this way we can dynamically select the correct class
 # constructor
@@ -213,6 +213,8 @@ class AttrsDescriptor:
     def __repr__(self):
         return f"AttrsDescriptor.from_dict({self.to_dict()!r})"
 
+=======
+>>>>>>> 523a1b2
 
 @dataclass(frozen=True)
 class GPUTarget(object):
@@ -231,22 +233,23 @@ class BaseBackend(metaclass=ABCMeta):
 
     @staticmethod
     def _path_to_binary(binary: str):
+        binary += sysconfig.get_config_var("EXE")
         base_dir = os.path.join(os.path.dirname(__file__), os.pardir)
         paths = [
             os.environ.get(f"TRITON_{binary.upper()}_PATH", ""),
             os.path.join(base_dir, "third_party", "cuda", "bin", binary),
         ]
-        for p in paths:
-            bin = p.split(" ")[0]
-            if os.path.exists(bin) and os.path.isfile(bin):
-                result = subprocess.check_output([bin, "--version"], stderr=subprocess.STDOUT)
+        for path in paths:
+            if os.path.exists(path) and os.path.isfile(path):
+                result = subprocess.check_output([path, "--version"], stderr=subprocess.STDOUT)
                 if result is not None:
                     version = re.search(r".*release (\d+\.\d+).*", result.decode("utf-8"), flags=re.MULTILINE)
                     if version is not None:
-                        return p, version.group(1)
+                        return path, version.group(1)
         raise RuntimeError(f"Cannot find {binary}")
 
-    @abstractclassmethod
+    @classmethod
+    @abstractmethod
     def supports_target(target: GPUTarget):
         raise NotImplementedError
 
@@ -289,16 +292,21 @@ class BaseBackend(metaclass=ABCMeta):
         """
         raise NotImplementedError
 
-    def get_attrs_descriptor(self, params, args):
-        """
-        Return an attribute descriptor: given a set of parameters and arguments
-        the descriptor stores a set of compile time properties that can improve code
-        generation. Different backends might benefit from different properties
-        """
-        return AttrsDescriptor(params, args)
+    @staticmethod
+    def parse_attr(desc):
+        assert isinstance(desc, str)
+        ret = []
+        if "D" in desc:
+            ret += [["tt.divisibility", 16]]
+        return ret
 
-    def compute_spec_key(self, arg, align):
+    @staticmethod
+    def get_arg_specialization(arg, ty, **kwargs):
         """
-        Return the ascii key for a given argument with a given set of properties
+        Return a string unique to each possible specialization of the argument
         """
-        return AttrsDescriptor.get_property_key(arg, align)
+        if ty == "int" and arg % 16 == 0 and kwargs.get("align", False):
+            return "D"
+        if ty == "tensor" and arg.data_ptr() % 16 == 0 and kwargs.get("align", False):
+            return "D"
+        return ""

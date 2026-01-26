@@ -20,6 +20,7 @@ from .runtime import (
 from .runtime.jit import jit
 from .compiler import compile, CompilationError
 from .errors import TritonError
+from .runtime._allocation import set_allocator
 
 from . import language
 from . import testing
@@ -32,7 +33,6 @@ __all__ = [
     "compile",
     "Config",
     "heuristics",
-    "impl",
     "InterpreterError",
     "jit",
     "JITFunction",
@@ -40,10 +40,10 @@ __all__ = [
     "language",
     "MockTensor",
     "next_power_of_2",
-    "ops",
     "OutOfResources",
     "reinterpret",
     "runtime",
+    "set_allocator",
     "TensorWrapper",
     "TritonError",
     "testing",

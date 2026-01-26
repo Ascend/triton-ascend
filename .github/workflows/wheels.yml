@@ -3,9 +3,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 8 * * *"
-  pull_request:
-    paths:
-      - .github/workflows/wheels_v2.yml
 
 permissions: read-all
 
@@ -53,26 +50,26 @@ jobs:
       - name: Build wheels
         if: ${{ steps.check-version.outputs.new_commit == 'true' }}
         run: |
-          python3 -m  pip install cibuildwheel --upgrade --user
+          # Make sure cibuildwheel is updated to latest, this will enable latest python builds
+          python3 -m pip install cibuildwheel --upgrade --user
           export LATEST_DATE=$(TZ=UTC0 git show --quiet --date='format-local:%Y%m%d%H%M%S' --format="%cd")
           # Pass MAX_JOBS=4 because, at time of writing, the VM "only" has 32GB
           # of RAM and OOMs while building if we give it the default number of
           # workers (2 * NUM_CPUs).
           export CIBW_ENVIRONMENT="MAX_JOBS=4 \
+                  TRITON_WHEEL_NAME=triton-nightly \
+                  TRITON_WHEEL_VERSION_SUFFIX=-$LATEST_DATE \
                   TRITON_BUILD_WITH_CLANG_LLD=1"
           export CIBW_MANYLINUX_X86_64_IMAGE="quay.io/pypa/manylinux_2_28_x86_64:latest"
           #export CIBW_MANYLINUX_PYPY_X86_64_IMAGE="quay.io/pypa/manylinux_2_28_x86_64:latest"
           # many_linux_2_28 image comes with GCC 12.2.1, but not clang.
           # With this install, it gets clang 16.0.6.
           export CIBW_BEFORE_ALL="dnf install clang lld -y";
-          export CIBW_SKIP="cp{35,36,37}-*"
-          export CIBW_BUILD="cp3{9,10,11,12,13}-manylinux_x86_64"
-          python3 -m cibuildwheel python --output-dir wheelhouse
+          export CIBW_SKIP="cp{35,36,37,38}-*"
+          export CIBW_BUILD="cp3{9,10,11,12,13,13t}-manylinux_x86_64"
+          export CIBW_FREE_THREADED_SUPPORT=1
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cibw-wheels-manylinux_2_28_x86_64-wheels-upload
-          path: ./wheelhouse/*.whl
+          python3 -m cibuildwheel python --output-dir wheelhouse
 
       - name: Install Azure CLI
         if: ${{ steps.check-version.outputs.new_commit == 'true' }}
