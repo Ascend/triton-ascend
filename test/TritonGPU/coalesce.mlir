@@ -160,8 +160,6 @@ module {
     tt.return
   }
 }
-<<<<<<< HEAD
-=======
 
 // -----
 
@@ -201,4 +199,3 @@ tt.func @coalesce_poison(%arg0: !tt.ptr<f16> {tt.divisibility = 16 : i32}, %arg1
 }
 
 }
->>>>>>> 523a1b2

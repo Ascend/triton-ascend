@@ -95,16 +95,6 @@ struct ConvertTritonAMDGPUToLLVM
     int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(mod);
     int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
 
-<<<<<<< HEAD
-    // Hack: WSLowering may have changed the effective number of warps,
-    // in a way that isn't reflected in triton_gpu.num-warps.  If so, we have to
-    // respect that here.
-    if (Attribute attr = mod->getAttr("triton_gpu.num-warp-groups-per-cta")) {
-      numWarps *= cast<IntegerAttr>(attr).getInt();
-    }
-
-=======
->>>>>>> 523a1b2
     // Allocate shared memory and set barrier
     ModuleAllocation allocation(mod);
     ModuleMembarAnalysis membarPass(&allocation);

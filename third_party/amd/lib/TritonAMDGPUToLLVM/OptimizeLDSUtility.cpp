@@ -79,16 +79,11 @@ createTmpLayout(triton::gpu::DistributedEncodingTrait layout,
     return triton::gpu::SliceEncodingAttr::get(
         ctx, src.getDim(), createTmpLayout(src.getParent(), parentWarpsPerCTA));
   }
-<<<<<<< HEAD
-  assert("Encountered unsupported layout");
-  return Attribute();
-=======
   // TODO: support linear layout if needed.
   if (isa<triton::gpu::LinearEncodingAttr>(layout))
     return {};
   assert(false && "Encountered unsupported layout");
   return {};
->>>>>>> 523a1b2
 }
 
 std::pair<triton::gpu::ConvertLayoutOp, triton::gpu::ConvertLayoutOp>

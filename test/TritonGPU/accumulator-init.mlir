@@ -27,24 +27,15 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
 
 // CHECK-LABEL: @constant_init_integer
 // CHECK-DAG: %[[FALSE:.+]] = arith.constant false
-<<<<<<< HEAD
-// CHECK: triton_nvidia_gpu.warp_group_dot {{.*}}, {{.*}}, {{.*}}, %[[FALSE]]
-  tt.func @constant_init_integer(%A: !tt.memdesc<128x64xi8, #shared, #triton_gpu.shared_memory>, %B: !tt.memdesc<64x16xi8, #shared1, #triton_gpu.shared_memory>, %arg0: !tt.ptr<i8> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<i8> {tt.divisibility = 16 : i32}, %ext: i32, %inc: tensor<64x16xi32, #blocked> {tt.divisibility = 16 : i32}) -> tensor<128x16xi32, #mma1> {
-=======
 // CHECK: ttng.warp_group_dot {{.*}}, {{.*}}, {{.*}}, %[[FALSE]]
   tt.func @constant_init_integer(%A: !ttg.memdesc<128x64xi8, #shared, #smem>, %B: !ttg.memdesc<64x16xi8, #shared1, #smem>, %arg0: !tt.ptr<i8> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<i8> {tt.divisibility = 16 : i32}, %ext: i32, %inc: tensor<64x16xi32, #blocked> {tt.divisibility = 16 : i32}) -> tensor<128x16xi32, #mma1> {
->>>>>>> 523a1b2
     %c0_i32 = arith.constant 0 : i32
     %cst_2 = arith.constant dense<0> : tensor<128x16xi32, #mma1>
     %c1_i32 = arith.constant 1 : i32
     %c8_i32 = arith.constant 8 : i32
     %17 = scf.for %arg3 = %c0_i32 to %c8_i32 step %c1_i32 iter_args(%arg4 = %cst_2) -> (tensor<128x16xi32, #mma1>)  : i32 {
       %cnd = arith.cmpi slt, %arg3, %ext : i32
-<<<<<<< HEAD
-      %acc = triton_nvidia_gpu.warp_group_dot %A, %B, %cst_2 : !tt.memdesc<128x64xi8, #shared, #triton_gpu.shared_memory> * !tt.memdesc<64x16xi8, #shared1, #triton_gpu.shared_memory> -> tensor<128x16xi32, #mma1>
-=======
       %acc = ttng.warp_group_dot %A, %B, %cst_2 : !ttg.memdesc<128x64xi8, #shared, #smem> * !ttg.memdesc<64x16xi8, #shared1, #smem> -> tensor<128x16xi32, #mma1>
->>>>>>> 523a1b2
       scf.yield %acc: tensor<128x16xi32, #mma1>
     }
     tt.return %17 : tensor<128x16xi32, #mma1>

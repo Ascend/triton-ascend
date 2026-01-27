@@ -81,13 +81,6 @@ struct ConvertTritonGPUToLLVM
     ModuleOp mod = getOperation();
     TargetInfo targetInfo(computeCapability, ptxVersion);
 
-    // Hack: WSLowering may have changed the effective number of warps,
-    // in a way that isn't reflected in triton_gpu.num-warps.  If so, we have to
-    // respect that here.
-    if (Attribute attr = mod->getAttr("triton_gpu.num-warp-groups-per-cta")) {
-      numWarps *= cast<IntegerAttr>(attr).getInt();
-    }
-
     // Allocate shared memory and set barrier
     ModuleAllocation allocation(mod);
     ModuleMembarAnalysis membarPass(&allocation);
@@ -172,18 +165,11 @@ struct ConvertTritonGPUToLLVM
         typeConverter, patterns, benefit);
     mlir::triton::populateMakeRangeOpToLLVMPattern(typeConverter, targetInfo,
                                                    patterns, benefit);
-<<<<<<< HEAD
-    mlir::triton::NVIDIA::populateUpcastMXFPToLLVMPatterns(
-        typeConverter, patterns, targetInfo, benefit);
-    mlir::triton::populateRegReallocOpToLLVMPatterns(typeConverter, patterns,
-                                                     benefit);
-=======
     mlir::triton::NVIDIA::populateTCGen5MMAOpToLLVMPattern(typeConverter,
                                                            patterns, benefit);
     mlir::triton::NVIDIA::populateFp4ToFpToLLVMPatterns(typeConverter, patterns,
                                                         benefit);
     TritonLLVMConversionTarget convTarget(*context);
->>>>>>> 523a1b2
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
 

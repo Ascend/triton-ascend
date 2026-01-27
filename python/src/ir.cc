@@ -33,21 +33,15 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 
-<<<<<<< HEAD
-#include "ir.h"
-=======
 #include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
 
->>>>>>> 523a1b2
+#include "ir.h"
 namespace {
 
 namespace py = pybind11;
 using namespace mlir;
 using namespace triton;
 
-<<<<<<< HEAD
-// FIXME:modify community
-=======
 llvm::raw_fd_ostream &mlir_dumps() {
   std::error_code EC;
   static llvm::raw_fd_ostream S(::triton::tools::getStrEnv("MLIR_DUMP_PATH"),
@@ -64,7 +58,7 @@ llvm::raw_ostream &mlir_dumps_or_dbgs() {
   }
 }
 
->>>>>>> 523a1b2
+// FIXME:modify community
 // A custom op builder that keeps track of the last location
 // class TritonOpBuilder {
 // public:
@@ -73,12 +67,8 @@ llvm::raw_ostream &mlir_dumps_or_dbgs() {
 //     lastLoc = std::make_unique<Location>(builder->getUnknownLoc());
 //   }
 
-<<<<<<< HEAD
-//   OpBuilder &getBuilder() { return *builder; }
-=======
-  OpBuilder &getBuilder() { return *builder; }
-  MLIRContext *getContext() { return builder->getContext(); }
->>>>>>> 523a1b2
+// OpBuilder &getBuilder() { return *builder; }
+// MLIRContext *getContext() { return builder->getContext(); }
 
 //   bool isLineInfoEnabled() { return lineInfoEnabled; }
 
@@ -316,16 +306,6 @@ void init_triton_ir(py::module &&m) {
       .value("IEEE", InputPrecision::IEEE)
       .export_values();
 
-<<<<<<< HEAD
-  py::enum_<F8F6F4Type>(m, "F8F6F4TY", py::module_local())
-      .value("E4M3", F8F6F4Type::E4M3)
-      .value("E5M2", F8F6F4Type::E5M2)
-      .value("E2M3", F8F6F4Type::E2M3)
-      .value("E3M2", F8F6F4Type::E3M2)
-      .value("E2M1", F8F6F4Type::E2M1)
-      .value("BF16", F8F6F4Type::BF16)
-      .value("FP16", F8F6F4Type::FP16)
-=======
   py::enum_<ScaleDotElemType>(m, "ScaleDotElemTypeTY", py::module_local())
       .value("E4M3", ScaleDotElemType::E4M3)
       .value("E5M2", ScaleDotElemType::E5M2)
@@ -334,7 +314,6 @@ void init_triton_ir(py::module &&m) {
       .value("E2M1", ScaleDotElemType::E2M1)
       .value("BF16", ScaleDotElemType::BF16)
       .value("FP16", ScaleDotElemType::FP16)
->>>>>>> 523a1b2
       .export_values();
 
   py::class_<MLIRContext>(m, "context", py::module_local())
@@ -508,11 +487,8 @@ void init_triton_ir(py::module &&m) {
   py::class_<IntegerAttr, Attribute>(m, "integer_attr", py::module_local());
   py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
   py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
-<<<<<<< HEAD
   py::class_<StringAttr, Attribute>(m, "str_attr", py::module_local());
   py::class_<ArrayAttr, Attribute>(m, "array_attr", py::module_local());
-=======
->>>>>>> 523a1b2
 
   // Ops
   py::class_<OpState>(m, "OpState", py::module_local())
@@ -821,10 +797,6 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, std::string value) {
              return self.getBuilder().getStringAttr(value);
            })
-      .def("get_unit_attr",
-          [](TritonOpBuilder &self) {
-            return self.getBuilder().getUnitAttr();
-          })
       .def("get_i64_array_attr",
           [](TritonOpBuilder &self, const std::vector<int64_t>& array) {
             return self.getBuilder().getI64ArrayAttr(array);
@@ -1469,10 +1441,16 @@ void init_triton_ir(py::module &&m) {
                                   evictionPolicy);
            })
       .def("create_tensor_descriptor_type",
-<<<<<<< HEAD
            [](TritonOpBuilder &self, Type blockTy, bool isSigned) -> Type {
                auto ctx = self.getBuilder().getContext();
                return triton::TensorDescType::get(ctx, cast<RankedTensorType>(blockTy), isSigned);
+           })
+      .def("create_reinterpret_tensor_descriptor",
+           [](TritonOpBuilder &self, Value desc_ptr, Type blockTy) -> Value {
+             auto ctx = self.getContext();
+             auto resultTy = triton::TensorDescType::get(
+                 ctx, cast<RankedTensorType>(blockTy));
+             return self.create<ReinterpretTensorDescOp>(resultTy, desc_ptr);
            })
       .def("create_descriptor_load",
            [](TritonOpBuilder &self, Value desc, std::vector<Value> &indices, CacheModifier cacheModifier,
@@ -1480,6 +1458,12 @@ void init_triton_ir(py::module &&m) {
                 auto descTy = cast<triton::TensorDescType>(desc.getType());
                 auto resTy = descTy.getSignlessBlockType();
                 return self.create<DescriptorLoadOp>(resTy, desc, indices, cacheModifier, evictionPolicy);
+           })
+      .def("create_descriptor_gather",
+           [](TritonOpBuilder &self, Value desc, Value x_indices, Value y_index,
+              Type type) -> Value {
+             return self.create<ExperimentalDescriptorGatherOp>(
+                 type, desc, x_indices, y_index);
            })
       .def("create_descriptor_store",
            [](TritonOpBuilder &self, Value desc, Value value, std::vector<Value> &indices) -> void {
@@ -1490,45 +1474,12 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &shape, std::vector<Value> &strides,
               std::vector<int32_t> &tensorShape, bool isSignedInteger) -> Value {
                 return self.create<MakeTensorDescOp>(base, shape, strides, tensorShape, isSignedInteger);
-=======
-           [](TritonOpBuilder &self, Type blockTy) -> Type {
-             auto ctx = self.getContext();
-             return triton::TensorDescType::get(
-                 ctx, cast<RankedTensorType>(blockTy));
-           })
-      .def("create_reinterpret_tensor_descriptor",
-           [](TritonOpBuilder &self, Value desc_ptr, Type blockTy) -> Value {
-             auto ctx = self.getContext();
-             auto resultTy = triton::TensorDescType::get(
-                 ctx, cast<RankedTensorType>(blockTy));
-             return self.create<ReinterpretTensorDescOp>(resultTy, desc_ptr);
-           })
-      .def("create_descriptor_load",
-           [](TritonOpBuilder &self, Value desc, std::vector<Value> &indices,
-              CacheModifier cacheModifier,
-              EvictionPolicy evictionPolicy) -> Value {
-             auto descTy = cast<triton::TensorDescType>(desc.getType());
-             auto resTy = descTy.getBlockType();
-             return self.create<ExperimentalDescriptorLoadOp>(
-                 resTy, desc, indices, cacheModifier, evictionPolicy);
-           })
-      .def("create_descriptor_gather",
-           [](TritonOpBuilder &self, Value desc, Value x_indices, Value y_index,
-              Type type) -> Value {
-             return self.create<ExperimentalDescriptorGatherOp>(
-                 type, desc, x_indices, y_index);
-           })
-      .def("create_descriptor_store",
-           [](TritonOpBuilder &self, Value desc, Value value,
-              std::vector<Value> &indices) -> void {
-             self.create<ExperimentalDescriptorStoreOp>(desc, value, indices);
            })
       .def("create_descriptor_scatter",
            [](TritonOpBuilder &self, Value desc, Value value, Value x_indices,
               Value y_index) -> void {
              self.create<ExperimentalDescriptorScatterOp>(desc, x_indices,
                                                           y_index, value);
->>>>>>> 523a1b2
            })
       .def("create_tensormap_create",
            [](TritonOpBuilder &self, Value desc_ptr, Value global_address,
