@@ -1040,7 +1040,6 @@ class tensor(base_value):
         """
         Alias for :py:func:`tensor.cast`.
         """
-<<<<<<< HEAD
         # Triton doesn't like core functions calling other core functions, so we
         # just copy-paste the implementation of cast here.  It's not too bad.
         dtype = _unwrap_if_constexpr(dtype)
@@ -1048,9 +1047,6 @@ class tensor(base_value):
         if bitcast:
             return semantic.bitcast(self, dtype, _builder)
         return semantic.cast(self, dtype, _builder, fp_downcast_rounding, overflow_mode)
-=======
-        return cast(self, dtype, fp_downcast_rounding, bitcast, _builder=_builder)
->>>>>>> 523a1b2
 
     # Type stubs for functions added by the _tensor_member_fn decorator.
     # (Unfortunately these can't be created automatically.)
@@ -1567,7 +1563,6 @@ def trans(input: tensor, *dims, _builder=None):
     dims = _unwrap_iterable(dims)
     if not dims:
         dims = (1, 0)
-    dims = _unwrap_iterable(dims)
     return semantic.permute(input, dims, _builder)
 
 
@@ -1826,12 +1821,7 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
 
 
 @builtin
-<<<<<<< HEAD
-def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, out_dtype=float32, lhs_k_pack=True, rhs_k_pack=True, _builder=None):
-=======
-def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, fast_math=False, out_dtype=float32,
-               _builder=None):
->>>>>>> 523a1b2
+def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, fast_math=False, lhs_k_pack=True, rhs_k_pack=True, out_dtype=float32, _builder=None):
     """
     Returns the matrix product of two blocks in microscaling format.
 
@@ -1861,12 +1851,7 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
     """
     out_dtype = _constexpr_to_value(out_dtype)
     assert out_dtype == float32, "Only float32 is supported for out_dtype at the moment"
-<<<<<<< HEAD
-    return semantic.dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, out_dtype, lhs_k_pack, rhs_k_pack, _builder)
-=======
-    return semantic.dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, fast_math, out_dtype,
-                               _builder)
->>>>>>> 523a1b2
+    return semantic.dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, fast_math, lhs_k_pack, rhs_k_pack, out_dtype, _builder)
 
 
 # -----------------------
@@ -2557,19 +2542,6 @@ def histogram(input, num_bins, _builder=None, _generator=None):
     num_bins = _constexpr_to_value(num_bins)
     return semantic.histogram(input, num_bins, _builder)
 
-@_tensor_member_fn
-@builtin
-def gather(src, index, axis, _builder=None):
-    """Gather from a tensor along a given dimension.
-    :param src: the source tensor
-    :type src: Tensor
-    :param index: the index tensor
-    :type index: Tensor
-    :param axis: the dimension to gather along
-    :type axis: int
-    """
-    axis = _constexpr_to_value(axis)
-    return semantic.gather(src, index, axis, _builder)
 
 @_tensor_member_fn
 @builtin
@@ -2974,7 +2946,6 @@ class range:
     :param flatten: automatically flatten the loop nest starting at this loop to
         create a single flattened loop. The compiler will try to pipeline the
         flattened loop which can avoid stage stalling.
-<<<<<<< HEAD
     :param warp_specialize: Enable automatic warp specialization on the loop.
         The compiler will attempt to partition memory, MMA, and vector
         operations in the loop into separate async partitions. This will
@@ -2990,12 +2961,6 @@ class range:
 
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
                  disallow_acc_multi_buffer=False, flatten=False, warp_specialize=False, disable_licm=False):
-=======
-    """
-
-    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
-                 disallow_acc_multi_buffer=False, flatten=False):
->>>>>>> 523a1b2
         if step is None:
             self.step = constexpr(1)
         else:
@@ -3010,11 +2975,8 @@ class range:
         self.loop_unroll_factor = loop_unroll_factor
         self.disallow_acc_multi_buffer = disallow_acc_multi_buffer
         self.flatten = flatten
-<<<<<<< HEAD
         self.warp_specialize = warp_specialize
         self.disable_licm = disable_licm
-=======
->>>>>>> 523a1b2
 
     def __iter__(self):
         raise RuntimeError("tl.range can only be used in @triton.jit'd functions")
