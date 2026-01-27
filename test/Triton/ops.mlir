@@ -244,9 +244,30 @@ tt.func @histogram(%0: tensor<512xi32>) {
 }
 
 // CHECK-LABEL: experimental_descriptor_load
-tt.func @experimental_descriptor_load(%0: !tt.ptr<i8>) {
-  // CHECK: tt.experimental_descriptor_load %{{.+}}[%{{.+}}] : !tt.ptr<i8> -> tensor<128xf32>
+tt.func @experimental_descriptor_load(%0: !tt.tensordesc<tensor<128xf32>>) {
+  // CHECK: tt.experimental_descriptor_load %{{.+}}[%{{.+}}] : !tt.tensordesc<tensor<128xf32>> -> tensor<128xf32>
   %c0_i32 = arith.constant 0 : i32
-  %1 = tt.experimental_descriptor_load %0[%c0_i32] : !tt.ptr<i8> -> tensor<128xf32>
+  %1 = tt.experimental_descriptor_load %0[%c0_i32] : !tt.tensordesc<tensor<128xf32>> -> tensor<128xf32>
+  tt.return
+}
+
+// CHECK-LABEL: @gather_op
+tt.func @gather_op(%arg0: tensor<128x16xf32>, %arg1: tensor<512x16xi32>) -> tensor<512x16xf32> {
+  // CHECK-NEXT: %0 = tt.gather %arg0[%arg1] {axis = 0 : i32} : (tensor<128x16xf32>, tensor<512x16xi32>) -> tensor<512x16xf32>
+  %0 = tt.gather %arg0[%arg1] {axis = 0 : i32} : (tensor<128x16xf32>, tensor<512x16xi32>) -> tensor<512x16xf32>
+  tt.return %0 : tensor<512x16xf32>
+}
+
+// CHECK-LABEL: @tma_gather
+tt.func @tma_gather(%arg0: !tt.tensordesc<tensor<1x128xbf16>>, %arg1: tensor<32xi32>, %arg2: i32) {
+  // CHECK-NEXT: %0 = tt.experimental_descriptor_gather %arg0[%arg1, %arg2] : (!tt.tensordesc<tensor<1x128xbf16>>, tensor<32xi32>, i32) -> tensor<32x128xbf16>
+  %0 = tt.experimental_descriptor_gather %arg0[%arg1, %arg2] : (!tt.tensordesc<tensor<1x128xbf16>>, tensor<32xi32>, i32) -> tensor<32x128xbf16>
+  tt.return
+}
+
+// CHECK-LABEL: @tma_scatter
+tt.func @tma_scatter(%arg0: !tt.tensordesc<tensor<1x128xbf16>>, %arg1: tensor<32xi32>, %arg2: i32, %arg3: tensor<32x128xbf16>) {
+  // CHECK-NEXT: tt.experimental_descriptor_scatter %arg0[%arg1, %arg2], %arg3 : !tt.tensordesc<tensor<1x128xbf16>>, tensor<32xi32>, i32, tensor<32x128xbf16>
+  tt.experimental_descriptor_scatter %arg0[%arg1, %arg2], %arg3 : !tt.tensordesc<tensor<1x128xbf16>>, tensor<32xi32>, i32, tensor<32x128xbf16>
   tt.return
 }

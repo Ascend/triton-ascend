@@ -33,6 +33,7 @@ using namespace mlir;
 using namespace mlir::triton;
 
 namespace {
+<<<<<<< HEAD
 struct BarrierOpConversion
     : public ConvertOpToLLVMPattern<mlir::gpu::BarrierOp> {
   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
@@ -126,6 +127,8 @@ struct NamedBarrierWaitOpConversion
   }
 };
 
+=======
+>>>>>>> 523a1b2
 struct FenceAsyncSharedOpConversion
     : public ConvertOpToLLVMPattern<triton::nvidia_gpu::FenceAsyncSharedOp> {
   using ConvertOpToLLVMPattern<
@@ -149,6 +152,7 @@ struct InitBarrierOpConversion
   matchAndRewrite(triton::nvidia_gpu::InitBarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto smemObj = LLVM::getSharedMemoryObjectFromStruct(
         loc, adaptor.getAlloc(),
         typeConverter->convertType(op.getAlloc().getType().getElementType()),
@@ -165,7 +169,11 @@ struct InitBarrierOpConversion
     }
 
     auto id = getThreadId(rewriter, loc);
+<<<<<<< HEAD
     auto pred = icmp_eq(id, i32_val(executingThreadId));
+=======
+    auto pred = b.icmp_eq(id, b.i32_val(0));
+>>>>>>> 523a1b2
     ::mlir::triton::PTXBuilder ptxBuilder;
     const std::string ptx = "@$0 mbarrier.init.shared::cta.b64 [$1], " +
                             std::to_string(op.getCount()) + ";";
@@ -188,6 +196,7 @@ struct InvalBarrierOpConversion
   matchAndRewrite(triton::nvidia_gpu::InvalBarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto smemObj = LLVM::getSharedMemoryObjectFromStruct(
         loc, adaptor.getAlloc(),
         typeConverter->convertType(op.getAlloc().getType().getElementType()),
@@ -203,7 +212,11 @@ struct InvalBarrierOpConversion
       executingThreadId = asyncTaskIds[0] * numWarps * warpSize;
     }
     auto id = getThreadId(rewriter, loc);
+<<<<<<< HEAD
     Value pred = icmp_eq(id, i32_val(executingThreadId));
+=======
+    Value pred = b.icmp_eq(id, b.i32_val(0));
+>>>>>>> 523a1b2
     ::mlir::triton::PTXBuilder ptxBuilder;
     const std::string ptx = "@$0 mbarrier.inval.shared::cta.b64 [$1];";
     auto &barSyncOp = *ptxBuilder.create<>(ptx);
@@ -225,6 +238,7 @@ struct BarrierExpectConversion
   matchAndRewrite(triton::nvidia_gpu::BarrierExpectOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
     auto smemObj = LLVM::getSharedMemoryObjectFromStruct(
         loc, adaptor.getAlloc(),
         typeConverter->convertType(op.getAlloc().getType().getElementType()),
@@ -240,8 +254,13 @@ struct BarrierExpectConversion
       executingThreadId = asyncTaskIds[0] * numWarps * warpSize;
     }
     auto id = getThreadId(rewriter, loc);
+<<<<<<< HEAD
     Value pred = icmp_eq(id, i32_val(executingThreadId));
     pred = and_(pred, adaptor.getPred());
+=======
+    Value pred = b.icmp_eq(id, b.i32_val(0));
+    pred = b.and_(pred, adaptor.getPred());
+>>>>>>> 523a1b2
     ::mlir::triton::PTXBuilder ptxBuilder;
     const std::string ptx =
         "@$0 mbarrier.arrive.expect_tx.shared.b64 _, [$1], " +
@@ -269,18 +288,33 @@ struct WaitBarrierOpConversion
         typeConverter->convertType(op.getAlloc().getType().getElementType()),
         rewriter);
     auto loc = op.getLoc();
-    const std::string ptx =
+    const std::string ptxNoPred =
         "{                                                           \n\t"
         ".reg .pred P1;                                              \n\t"
         "waitLoop:                                                   \n\t"
         "mbarrier.try_wait.parity.shared.b64 P1, [$0], $1;           \n\t"
         "@!P1 bra.uni waitLoop;                                      \n\t"
         "}                                                           \n\t";
+    const std::string ptxPred =
+        "{                                                           \n\t"
+        "@!$2 bra.uni skipWait;                                      \n\t"
+        ".reg .pred P1;                                              \n\t"
+        "waitLoop:                                                   \n\t"
+        "mbarrier.try_wait.parity.shared.b64 P1, [$0], $1;           \n\t"
+        "@!P1 bra.uni waitLoop;                                      \n\t"
+        "skipWait:                                                   \n\t"
+        "}                                                           \n\t";
     ::mlir::triton::PTXBuilder ptxBuilder;
+    bool predicated = adaptor.getPred() != nullptr;
+    std::string ptx = predicated ? ptxPred : ptxNoPred;
     auto &waitLoop = *ptxBuilder.create<>(ptx);
-    waitLoop({ptxBuilder.newOperand(smemObj.getBase(), "r"),
-              ptxBuilder.newOperand(adaptor.getPhase(), "r")},
-             /*onlyAttachMLIRArgs=*/true);
+    SmallVector<::mlir::triton::PTXBuilder::Operand *, 3> operands = {
+        ptxBuilder.newOperand(smemObj.getBase(), "r"),
+        ptxBuilder.newOperand(adaptor.getPhase(), "r")};
+    if (predicated)
+      operands.push_back(ptxBuilder.newOperand(adaptor.getPred(), "b"));
+
+    waitLoop(operands, /*onlyAttachMLIRArgs=*/true);
     auto voidTy = void_ty(op->getContext());
     ptxBuilder.launch(rewriter, op->getLoc(), voidTy);
     rewriter.eraseOp(op);
@@ -292,10 +326,13 @@ struct WaitBarrierOpConversion
 void mlir::triton::NVIDIA::populateBarrierOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
+<<<<<<< HEAD
   patterns.add<BarrierOpConversion>(typeConverter, benefit);
   patterns.add<MBarrierArriveOpConversion>(typeConverter, benefit);
   patterns.add<NamedBarrierArriveOpConversion>(typeConverter, benefit);
   patterns.add<NamedBarrierWaitOpConversion>(typeConverter, benefit);
+=======
+>>>>>>> 523a1b2
   patterns.add<FenceAsyncSharedOpConversion>(typeConverter, benefit);
   patterns.add<InitBarrierOpConversion, InvalBarrierOpConversion>(typeConverter,
                                                                   benefit);

@@ -17,7 +17,7 @@ class LoadOp;
 class StoreOp;
 class FuncOp;
 namespace gpu {
-class SharedEncodingAttr;
+class SwizzledSharedEncodingAttr;
 }
 } // namespace triton
 
@@ -48,6 +48,9 @@ unsigned getElementBitWidth(RankedTensorType type);
 unsigned
 getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
                         triton::ModuleAxisInfoAnalysis &axisInfoAnalysis);
+
+// Returns whether the op is a "view op", i.e. doesn't move any data
+bool isView(Operation *op);
 
 /* Dump Triton IR in graphviz dot format.
  *
@@ -116,10 +119,10 @@ protected:
 };
 
 // Infers the encoding of the result of op given the source encoding.
-std::optional<Attribute> inferDstEncoding(Operation *op, Attribute encoding);
+Attribute inferDstEncoding(Operation *op, Attribute encoding);
 
 // Infers the encoding of the source of op given the result encoding.
-std::optional<Attribute> inferSrcEncoding(Operation *op, Attribute encoding);
+Attribute inferSrcEncoding(Operation *op, Attribute encoding);
 
 bool isExpensiveLoadOrStore(Operation *op);
 
@@ -161,9 +164,11 @@ Operation *cloneWithInferType(mlir::OpBuilder &rewriter, Operation *op,
 // Get backward slice of tensor values starting from the root node along with
 // encoding propagation.
 LogicalResult getConvertBackwardSlice(
-    Value root, SetVector<Value> &slice, Attribute rootEncoding,
+    OpOperand &root, SetVector<Value> &slice, Attribute rootEncoding,
     DenseMap<Value, Attribute> &layout,
-    std::function<bool(Operation *)> stopPropagation = nullptr);
+    std::function<bool(Operation *)> stopPropagation = nullptr,
+    std::function<Value(OpOperand &, Attribute)> getExistingConversion =
+        nullptr);
 
 // Populate pattern to remove dead cycles in ForOp.
 void populateForOpDeadArgumentElimination(RewritePatternSet &patterns);
@@ -192,102 +197,22 @@ bool isPureUnaryInlineAsm(Operation *op);
 // read the compute capability from the module attributes
 int getNVIDIAComputeCapability(Operation *module);
 
-// 0 is reserved for default sync.
-// TODO: comprehensive mechanism to globally manage namedbarrier.
-static int const nameBarrierIdBegin = 1;
-static int nameBarrierIdEnd = 16;
+// Read the amd target from the module attributes
+StringRef getAMDArch(Operation *module);
 
-/// Helper functions for async task
-typedef int AsyncTaskId;
-SmallVector<AsyncTaskId> getAsyncTaskIds(Operation *op);
-bool hasAsyncTaskId(Operation *op, AsyncTaskId asyncTaskId);
-void setAsyncTaskIds(Operation *op, ArrayRef<AsyncTaskId> asyncTaskIds);
-SmallVector<AsyncTaskId> getNestedAsyncTaskIds(Operation *op);
-void addAsyncTaskIds(Operation *op, ArrayRef<int> asyncTasks);
-void removeAsyncTaskId(Operation *op, AsyncTaskId asyncTaskId);
-void removeAsyncTaskIds(Operation *op);
+std::optional<mlir::triton::gpu::SwizzledSharedEncodingAttr>
+getSharedEncIfAllUsersAreDotEnc(Value val, bool &incompatible);
 
-class OpBuilderWithAsyncTaskIds : public OpBuilder {
-public:
-  OpBuilderWithAsyncTaskIds(MLIRContext *context) : OpBuilder(context) {}
+// Convert \param op operands and results to layout \param encoding.
+void convertOpEncoding(Attribute encoding, Operation *op);
 
-  explicit OpBuilderWithAsyncTaskIds(Operation *op) : OpBuilder(op) {
-    setAsyncTaskIdsFromOp(op);
-  }
+// Returns the original memory allocation for a memdesc value
+triton::gpu::LocalAllocOp findShmemAlloc(Value operand);
 
-  void setAsynTaskIdsFromArray(ArrayRef<AsyncTaskId> newAsyncTaskIds) {
-    asyncTaskIds = SmallVector<AsyncTaskId>(newAsyncTaskIds.begin(),
-                                            newAsyncTaskIds.end());
-  }
-
-  void setAsyncTaskIdsFromOp(Operation *op) {
-    setAsynTaskIdsFromArray(getAsyncTaskIds(op));
-  }
-
-  void setAsyncTaskIdsFromValueUsers(Value value) {
-    SetVector<AsyncTaskId> asyncTaskIdSet;
-    for (Operation *user : value.getUsers())
-      for (AsyncTaskId asyncTaskId : getAsyncTaskIds(user))
-        asyncTaskIdSet.insert(asyncTaskId);
-    setAsynTaskIdsFromArray(asyncTaskIdSet.getArrayRef());
-  }
-
-  template <typename OpTy, typename... Args>
-  OpTy createWithAsyncTaskIds(Args &&...args) {
-    OpTy op = create<OpTy>(std::forward<Args>(args)...);
-    if (!asyncTaskIds.empty())
-      setAsyncTaskIds(op, asyncTaskIds);
-    return op;
-  }
-
-private:
-  SmallVector<AsyncTaskId> asyncTaskIds;
-};
-
-class PatternRewriterWithAsyncTaskIds {
-public:
-  PatternRewriterWithAsyncTaskIds(PatternRewriter &rewriter, Operation *op)
-      : rewriter(&rewriter) {
-    setAsyncTaskIdsFromOp(op);
-  }
-
-  void setAsynTaskIdsFromArray(ArrayRef<AsyncTaskId> newAsyncTaskIds) {
-    asyncTaskIds = SmallVector<AsyncTaskId>(newAsyncTaskIds.begin(),
-                                            newAsyncTaskIds.end());
-  }
-
-  void setAsyncTaskIdsFromOp(Operation *op) {
-    setAsynTaskIdsFromArray(getAsyncTaskIds(op));
-  }
-
-  void setAsyncTaskIdsFromValueUsers(Value value) {
-    SetVector<AsyncTaskId> asyncTaskIdSet;
-    for (Operation *user : value.getUsers())
-      for (AsyncTaskId asyncTaskId : getAsyncTaskIds(user))
-        asyncTaskIdSet.insert(asyncTaskId);
-    setAsynTaskIdsFromArray(asyncTaskIdSet.getArrayRef());
-  }
-
-  template <typename OpTy, typename... Args>
-  OpTy create(Location location, Args &&...args) {
-    OpTy op = rewriter->create<OpTy>(location, std::forward<Args>(args)...);
-    if (!asyncTaskIds.empty())
-      setAsyncTaskIds(op, asyncTaskIds);
-    return op;
-  }
-
-  template <typename OpTy, typename... Args>
-  OpTy replaceOpWithNewOp(Operation *op, Args &&...args) {
-    auto newOp =
-        rewriter->replaceOpWithNewOp<OpTy>(op, std::forward<Args>(args)...);
-    return newOp;
-  }
-
-private:
-  PatternRewriter *rewriter;
-  SmallVector<AsyncTaskId> asyncTaskIds;
-};
-
+// Returns MMAs inside a for loop that are multi-buffered for pipeline analysis
+SmallVector<Operation *>
+getMMAsWithMultiBufferredOperands(scf::ForOp forOp,
+                                  SmallVector<Operation *> &mmaOps);
 } // namespace mlir
 
 #endif // TRITON_DIALECT_TRITONGPU_TRANSFORMS_UTILITY_H_
