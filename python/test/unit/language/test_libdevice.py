@@ -1,17 +1,9 @@
-<<<<<<< HEAD
-=======
 import pytest
->>>>>>> 523a1b2
 import torch
 
 import triton
 import triton.language as tl
 
-<<<<<<< HEAD
-from triton.language.extra.libdevice import fast_dividef as my_fast_dividef
-
-
-=======
 from triton.language.extra import libdevice
 from triton.language.extra.libdevice import fast_dividef as my_fast_dividef
 
@@ -48,7 +40,6 @@ def test_bessel(dtype_str, libdevice_fn, torch_special_fn, device):
     torch.testing.assert_close(y_ref, y_exp, equal_nan=True)
 
 
->>>>>>> 523a1b2
 def test_libdevice_rename(device):
     # mark the import as used by this test
     _ = my_fast_dividef

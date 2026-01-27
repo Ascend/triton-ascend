@@ -266,24 +266,17 @@ def compile(src, target=None, options=None):
     # when the source is an IR file, don't apply the passes related to this stage. This makes it easier to write IR level tests.
     if ir_source:
         first_stage += 1
-<<<<<<< HEAD
-    context = ir.context()
-    ir.load_dialects(context)
-    buffer_ir.load_dialects(context)
-    ascend_ir.load_dialects(context)
-    backend.load_dialects(context)
-    codegen_fns = backend.get_codegen_implementation()
-=======
 
     # For IRSource, we have already grabbed the context + called both
     # ir.load_dialects and backend.load_dialects.
     if not isinstance(src, IRSource):
         context = ir.context()
         ir.load_dialects(context)
+        buffer_ir.load_dialects(context)
+        ascend_ir.load_dialects(context)
         backend.load_dialects(context)
 
     codegen_fns = backend.get_codegen_implementation(options)
->>>>>>> 523a1b2
     module_map = backend.get_module_map()
     try:
         module = src.make_ir(options, codegen_fns, module_map, context)

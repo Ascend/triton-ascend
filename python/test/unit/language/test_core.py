@@ -2849,11 +2849,7 @@ scan_layouts = [
 @pytest.mark.parametrize("src_layout", scan_layouts)
 @pytest.mark.parametrize("axis", [0, 1])
 @pytest.mark.parametrize("add_overflow_check", [False, True])
-<<<<<<< HEAD
-def test_scan_layouts(M, N, src_layout, axis, add_overflow_check, device):
-=======
 def test_scan_layouts(M, N, src_layout, axis, add_overflow_check, device, tmp_path: pathlib.Path):
->>>>>>> 523a1b2
 
     overflow_check = """
         %17 = arith.extsi %arg2 : i32 to i64
@@ -2951,12 +2947,8 @@ layouts = [
 @pytest.mark.parametrize("dtype_str,add_overflow_check", [("int32", False), ("int32", True), ("float32", False),
                                                           ("float16", False)])
 @pytest.mark.parametrize("reduce_op", ["sum", "max"])
-<<<<<<< HEAD
-def test_reduce_layouts(M, N, src_layout, axis, epilogue_kind, dtype_str, add_overflow_check, reduce_op, device):
-=======
 def test_reduce_layouts(M, N, src_layout, axis, epilogue_kind, dtype_str, add_overflow_check, reduce_op, device,
                         tmp_path: pathlib.Path):
->>>>>>> 523a1b2
     if isinstance(src_layout,
                   (MfmaLayout, MmaLayout)) and (M < src_layout.instr_shape[0] or N < src_layout.instr_shape[1]):
         pytest.skip("Skipping because tensor shape is smaller than M(f)maLayout instr_shape")
@@ -2969,18 +2961,6 @@ def test_reduce_layouts(M, N, src_layout, axis, epilogue_kind, dtype_str, add_ov
 
     if isinstance(src_layout, MmaLayout) and src_layout.version == 3:
         src_layout.instr_shape[2] = 16 if dtype_str == "float16" else 8
-
-    overflow_check = """
-        %18 = arith.extsi %arg3 : i32 to i64
-        %19 = arith.extsi %arg4 : i32 to i64
-        %20 = arith.addi %18, %19 : i64
-        %i32.min = arith.constant -2147483648: i64
-        %i32.max = arith.constant 2147483647: i64
-        %21 = arith.cmpi slt, %20, %i32.max : i64
-        %22 = arith.cmpi sge, %20, %i32.min : i64
-        %23 = arith.andi %21, %22 : i1
-        tt.assert %23, "overflow detected" : i1
-    """
 
     overflow_check = """
         %18 = arith.extsi %arg3 : i32 to i64
@@ -6940,8 +6920,6 @@ def test_side_effectful_reduction_2d(device, reduce_dim):
     torch.testing.assert_close(Z, X.sum(reduce_dim).to(torch.int32))
 
 
-<<<<<<< HEAD
-=======
 def test_dtype(device):
 
     @triton.jit
@@ -6955,7 +6933,6 @@ def test_dtype(device):
     kernel[(1, )](X)
 
 
->>>>>>> 523a1b2
 def test_side_effectful_scan(device):
     if device != "cuda":
         pytest.skip()

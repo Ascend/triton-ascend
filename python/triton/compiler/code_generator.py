@@ -4,9 +4,11 @@ import re
 import warnings
 import os
 import textwrap
-<<<<<<< HEAD
+import itertools
+from types import ModuleType
 
-from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, List
+
 
 import triton.language.extra.cann.extension as extension
 from triton.extension.buffer.language import core as bl
@@ -15,35 +17,14 @@ from triton.extension.buffer.language.builder import setup_unified_builder_with_
 from .. import language
 from .._C.libtriton import ir, buffer_ir
 from .._C.libtriton.ascend import ir as ascend_ir
-from ..language import constexpr, tensor, str_to_ty
-from ..language.core import _unwrap_if_constexpr, nv_tma_desc_type, _value
-from ..runtime.jit import _normalize_ty, get_jit_fn_file_line
-=======
-import itertools
-from types import ModuleType
-from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, List
-
-from .. import language
-from .._C.libtriton import ir
 from ..language import constexpr, semantic, str_to_ty, tensor
 from ..language.core import _unwrap_if_constexpr, nv_tma_desc_type, base_value, base_type
 from ..runtime.jit import get_jit_fn_file_line
->>>>>>> 523a1b2
 # ideally we wouldn't need any runtime component
 from ..runtime import JITFunction
 from .._utils import find_paths_if, get_iterable_path, set_iterable_path
 
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
-<<<<<<< HEAD
-from types import ModuleType
-# Central registry for all 'with' statement handlers
-WITH_DISPATCH = {}
-
-# Import and register Ascend extension dispatch handlers
-from triton.language.extra.cann.extension.dispatch import ASCEND_WITH_DISPATCH
-from triton.language.extra.cann.extension.builder import setup_unified_builder
-WITH_DISPATCH.update(ASCEND_WITH_DISPATCH)
-=======
 
 
 def check_identifier_legality(name, type):
@@ -51,7 +32,13 @@ def check_identifier_legality(name, type):
     if not re.match(pattern, name):
         raise CompilationError(f"invalid {type} identifier: {name}", name)
     return name
->>>>>>> 523a1b2
+# Central registry for all 'with' statement handlers
+WITH_DISPATCH = {}
+
+# Import and register Ascend extension dispatch handlers
+from triton.language.extra.cann.extension.dispatch import ASCEND_WITH_DISPATCH
+from triton.language.extra.cann.extension.builder import setup_unified_builder
+WITH_DISPATCH.update(ASCEND_WITH_DISPATCH)
 
 
 def mangle_ty(ty):
@@ -313,7 +300,11 @@ class ASTFunction:
         # > add IR values to the template
         for i, path in enumerate(val_paths):
             ty = get_iterable_path(self.arg_types, path)
-            set_iterable_path(vals, path, language.tensor(fn.args(i), ty))
+            arg = fn.args(i)
+            if isinstance(ty, bl.buffer_type):
+                set_iterable_path(vals, path, bl.buffer(arg, ty))
+            else:
+                set_iterable_path(vals, path, language.tensor(arg, ty))
         # > add constexpr values to the template
         constants = self.constants
         for path, val in constants.items():
@@ -561,37 +552,8 @@ class CodeGenerator(ast.NodeVisitor):
         self.fn = self.builder.get_or_insert_function(self.module, self.function_name, fn_ty, visibility, self.noinline)
         self.module.push_back(self.fn)
         entry = self.fn.add_entry_block()
-<<<<<<< HEAD
-        arg_values = []
-        idx = 0
-        for i in range(len(arg_names)):
-            if i in self.constants:
-                cst = self.constants[i]
-                if not _is_constexpr(cst):
-                    cst = constexpr(self.constants[i])
-                arg_values.append(cst)
-                continue
-            else:
-                if i in self.attributes:
-                    for name, value in self.attributes[i]:
-                        self.fn.set_arg_attr(idx, name, value)
-
-                # Mark this argument as a pass-by-value TMA descriptor (nvidia)
-                if isinstance(self.prototype.param_types[idx], nv_tma_desc_type):
-                    self.fn.set_arg_attr(idx, "tt.nv_tma_desc", 1)
-
-                param_type = self.prototype.param_types[idx]
-                if isinstance(param_type, bl.buffer_type):
-                    arg_values.append(bl.buffer(self.fn.args(idx), param_type))
-                else:
-                    arg_values.append(tensor(self.fn.args(idx), param_type))
-                idx += 1
-
-        insert_pt = self.builder.get_insertion_block()
-=======
         arg_values = self.prototype.deserialize(self.fn)
         # bind arguments to symbols
->>>>>>> 523a1b2
         for arg_name, arg_value in zip(arg_names, arg_values):
             self.set_value(arg_name, arg_value)
         insert_pt = self.builder.get_insertion_block()
@@ -1112,14 +1074,10 @@ class CodeGenerator(ast.NodeVisitor):
         loop_unroll_factor = None
         disallow_acc_multi_buffer = False
         flatten = False
-<<<<<<< HEAD
         warp_specialize = False
         disable_licm = False
         bind_sub_block = None
         if IteratorClass in [language.range, extension.parallel]:
-=======
-        if IteratorClass is language.range:
->>>>>>> 523a1b2
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1131,13 +1089,10 @@ class CodeGenerator(ast.NodeVisitor):
             loop_unroll_factor = iterator.loop_unroll_factor
             disallow_acc_multi_buffer = iterator.disallow_acc_multi_buffer
             flatten = iterator.flatten
-<<<<<<< HEAD
             warp_specialize = iterator.warp_specialize
             disable_licm = iterator.disable_licm
             if (IteratorClass is extension.parallel):
                 bind_sub_block = iterator.bind_sub_block
-=======
->>>>>>> 523a1b2
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1216,15 +1171,12 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.disallow_acc_multi_buffer", self.builder.get_unit_attr())
             if flatten:
                 for_op.set_attr("tt.flatten", self.builder.get_unit_attr())
-<<<<<<< HEAD
             if warp_specialize:
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("tt.disable_licm", self.builder.get_unit_attr())
             if (IteratorClass is extension.parallel):
                 for_op.set_attr("hivm.parallel_loop", self.builder.get_unit_attr())
-=======
->>>>>>> 523a1b2
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)
@@ -1359,15 +1311,9 @@ class CodeGenerator(ast.NodeVisitor):
                 extra_kwargs['_generator'] = self
             try:
                 ret = fn(*args, **extra_kwargs, **kws)
-<<<<<<< HEAD
                 # Sync the builder's location before return.
                 ip, last_loc = self._get_insertion_point_and_loc(_builder)
                 self._set_insertion_point_and_loc(ip, last_loc)
-=======
-                # builtin functions return plain tuples for readability
-                if isinstance(ret, tuple):
-                    ret = language.tuple(ret)
->>>>>>> 523a1b2
                 return ret
             except Exception as e:
                 # Normally when we raise a CompilationError, we raise it as
@@ -1505,47 +1451,7 @@ class CodeGenerator(ast.NodeVisitor):
     }
 
 
-<<<<<<< HEAD
-def kernel_suffix(signature, specialization):
-    # suffix format:
-    # <argid><'c' if equal to 1><'d' if divisible by 16><'e' if divisible by 8>
-    suffix = ''
-    for i, _ in enumerate(signature):
-        suffix += str(i)
-        if i in specialization.equal_to_1:
-            suffix += 'c'
-        if i in specialization.divisibility_16:
-            suffix += 'd'
-    return suffix
-
-
-def ast_to_ttir(fn, specialization, context, options, codegen_fns, module_map, module=None):
-    attrs = specialization.attrs
-    # create kernel prototype
-    cst_key = lambda i: fn.arg_names.index(i) if isinstance(i, str) else i
-    constants = {cst_key(key): value for key, value in specialization.constants.items()}
-    # visit kernel AST
-    gscope = fn.__globals__.copy()
-    function_name = fn.repr(specialization)
-    tys = list(specialization.signature.values())
-    new_constants = attrs.get_constants()
-    for k in new_constants:
-        if k in tys and tys[k] == "i1" and new_constants[k] == 1:
-            new_constants[k] = True
-
-    new_attrs = attrs.filter_out_constants()
-    fn_attrs = new_attrs.get_fn_attrs()
-    all_constants = constants.copy()
-    all_constants.update(new_constants)
-    arg_types = [str_to_ty(v) for k, v in specialization.signature.items() if k not in specialization.constants]
-    file_name, begin_line = get_jit_fn_file_line(fn)
-
-    prototype = language.function_type([], arg_types)
-    generator = CodeGenerator(context, prototype, gscope=gscope, constants=all_constants, function_name=function_name,
-                              jit_fn=fn, attributes=fn_attrs, is_kernel=True, file_name=file_name,
-                               begin_line=begin_line, options=options, codegen_fns=codegen_fns, module_map=module_map, module=module)
-=======
-def ast_to_ttir(fn, src, context, options, codegen_fns, module_map):
+def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None):
     arg_types = list(map(str_to_ty, src.signature.values()))
     prototype = ASTFunction([], arg_types, src.constants, src.attrs)
     file_name, begin_line = get_jit_fn_file_line(fn)
@@ -1557,8 +1463,7 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map):
     proxy = namedtuple("SpecializationProxy", ["constants", "signature"])(constants, signature)
     generator = CodeGenerator(context, prototype, gscope=fn.__globals__.copy(), function_name=fn.repr(proxy), jit_fn=fn,
                               is_kernel=True, file_name=file_name, begin_line=begin_line, options=options,
-                              codegen_fns=codegen_fns, module_map=module_map)
->>>>>>> 523a1b2
+                              codegen_fns=codegen_fns, module_map=module_map, module=module)
     generator.visit(fn.parse())
     ret = generator.module
     # module takes ownership of the context
