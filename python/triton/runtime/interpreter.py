@@ -278,15 +278,11 @@ class InterpreterBuilder:
         self.options = InterpreterOptions()
         self.codegen_fns = {}
         self.codegen_fns["convert_custom_types"] = ExtraFunctions._convert_custom_types
-<<<<<<< HEAD
         # For interpreter mode, don't enforce GPU hardware shape constraints
         # NumPy matmul works with any size, including small matrices
         self.codegen_fns["min_dot_size"] = lambda lhsType, rhsType: (1, 1, 1)
         # Sub-vector core ID for simulating 1:2 hardware ratio
         self.sub_vec_id = 0
-=======
-        self.codegen_fns["min_dot_size"] = lambda lhsType, rhsType: (1, 1, 1)
->>>>>>> 523a1b2
 
     def set_grid_idx(self, x, y, z):
         if not x < self.grid_dim[0]:
@@ -1351,7 +1347,6 @@ def _patch_lang(fn):
             _patch_builtin(lang.math, interpreter_builder)
         _patch_lang_tensor(lang.tensor)
         _patch_lang_core(lang)
-<<<<<<< HEAD
     
     # Patch all modules in fn's globals that might be extension modules
     for name, value in list(fn.__globals__.items()):
@@ -1378,7 +1373,6 @@ def _patch_lang(fn):
     except (ImportError, AttributeError):
         # Extension module not available (e.g., non-Ascend backend)
         pass
-=======
     _patch_builtin(tl.core._experimental_tensor_descriptor_base, interpreter_builder)
 
 
@@ -1389,7 +1383,6 @@ def _tuple_create(arg, contents):
     # between them, but only NamedTuple has "_fields" and apparently this is how
     # everyone does the check.
     return type(arg)(*contents) if hasattr(arg, "_fields") else type(arg)(contents)
->>>>>>> 523a1b2
 
 
 # TODO: wrap everything in triton tensors
@@ -1420,10 +1413,8 @@ def _implicit_cvt(arg):
 
 interpreter_builder = InterpreterBuilder()
 
-<<<<<<< HEAD
 # These keywords are not supported by the interpreter
 RESERVED_KWS = ["num_warps", "num_stages", "num_ctas", "enable_fp_fusion", "grid", "maxnreg", "multibuffer"]
-=======
 
 def _unwrap_tensor(t):
     if isinstance(t, triton.runtime.jit.TensorWrapper):
@@ -1435,7 +1426,6 @@ def _rewrap_tensor(t, original_tensor):
     if isinstance(original_tensor, triton.runtime.jit.TensorWrapper):
         return triton.runtime.jit.TensorWrapper(t, original_tensor.dtype)
     return t
->>>>>>> 523a1b2
 
 
 class GridExecutor:

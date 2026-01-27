@@ -36,14 +36,10 @@ class Autotuner(KernelInterface):
             'prune_num_stages_by'(optional): a function used to prune num_stages. It takes configs:List[Config] as its input, and returns pruned configs.
         """
         if not configs:
-<<<<<<< HEAD
             self.configs = [
                 Config({}, num_warps=4, num_stages=2, num_ctas=1, num_buffers_warp_spec=0, num_consumer_groups=0,
                        reg_dec_producer=0, reg_inc_consumer=0)
             ]
-=======
-            self.configs = [Config({}, num_warps=4, num_stages=3, num_ctas=1)]
->>>>>>> 523a1b2
         else:
             self.configs = configs
         self.keys = key
@@ -276,12 +272,8 @@ class Config:
                     function are args.
     """
 
-<<<<<<< HEAD
     def __init__(self, kwargs, num_warps=4, num_stages=2, num_ctas=1, num_buffers_warp_spec=0, num_consumer_groups=0,
                  reg_dec_producer=0, reg_inc_consumer=0, maxnreg=None, pre_hook=None):
-=======
-    def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, maxnreg=None, pre_hook=None):
->>>>>>> 523a1b2
         self.kwargs = kwargs
         self.num_warps = num_warps
         self.num_ctas = num_ctas

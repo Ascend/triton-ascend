@@ -66,11 +66,7 @@ def ravel(x, can_reorder=False):
     :param x: the input tensor
     :type x: Block
     """
-<<<<<<< HEAD
     return core.reshape(x, [x.numel], can_reorder=False)
-=======
-    return core.reshape(x, [x.numel], can_reorder=can_reorder)
->>>>>>> 523a1b2
 
 
 @jit
@@ -160,7 +156,6 @@ def _argmax_combine_tie_break_left(value1, index1, value2, index2):
 @jit
 def _argmax_combine_tie_break_fast(value1, index1, value2, index2):
     return _argmax_combine(value1, index1, value2, index2, False)
-
 
 
 @jit
