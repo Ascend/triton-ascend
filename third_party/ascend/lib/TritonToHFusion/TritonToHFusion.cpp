@@ -154,7 +154,7 @@ void TritonToHFusionPass::runOnOperation() {
 
   // Apply patterns with greedy rewriting
   // This allows patterns to return failure() without causing pass failure
-  if (failed(applyPatternsAndFoldGreedily(module, std::move(patterns)))) {
+  if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
     signalPassFailure();
   }
 }
