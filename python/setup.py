@@ -35,6 +35,12 @@ from build_helpers import get_base_dir, get_cmake_dir
 
 triton_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+os.environ.setdefault("TRITON_BUILD_WITH_CCACHE", "true")
+os.environ.setdefault("TRITON_BUILD_WITH_CLANG_LLD", "true")
+os.environ.setdefault("TRITON_BUILD_PROTON", "OFF")
+os.environ.setdefault("TRITON_WHEEL_NAME", "triton-ascend")
+os.environ.setdefault("TRITON_APPEND_CMAKE_ARGS", "-DTRITON_BUILD_UT=OFF")
+
 
 @dataclass
 class Backend:
@@ -450,7 +456,8 @@ class CMakeBuild(build_ext):
             "-DTRITON_BUILD_PYTHON_MODULE=ON", "-DPython3_EXECUTABLE:FILEPATH=" + sys.executable,
             "-DPython3_INCLUDE_DIR=" + python_include_dir,
             "-DTRITON_CODEGEN_BACKENDS=" + ';'.join([b.name for b in backends if not b.is_external]),
-            "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external])
+            "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external]),
+            "-DLLVM_MAJOR_VERSION_21_COMPATIBLE=ON"
         ]
         if lit_dir is not None:
             cmake_args.append("-DLLVM_EXTERNAL_LIT=" + lit_dir)
@@ -499,8 +506,6 @@ class CMakeBuild(build_ext):
             "TRITON_PARALLEL_LINK_JOBS",
         ]
         cmake_args += [f"-D{option}={os.getenv(option)}" for option in passthrough_args if option in os.environ]
-        llvm_major = os.getenv("DLLVM_MAJOR_VERSION_21_COMPATIBLE", "ON") # Default ON
-        cmake_args += [f"-DLLVM_MAJOR_VERSION_21_COMPATIBLE={llvm_major}"]
 
         if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
             cmake_args += self.get_proton_cmake_args()
