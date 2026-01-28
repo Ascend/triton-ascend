@@ -1445,25 +1445,12 @@ void init_triton_ir(py::module &&m) {
                auto ctx = self.getBuilder().getContext();
                return triton::TensorDescType::get(ctx, cast<RankedTensorType>(blockTy), isSigned);
            })
-      .def("create_reinterpret_tensor_descriptor",
-           [](TritonOpBuilder &self, Value desc_ptr, Type blockTy) -> Value {
-             auto ctx = self.getContext();
-             auto resultTy = triton::TensorDescType::get(
-                 ctx, cast<RankedTensorType>(blockTy));
-             return self.create<ReinterpretTensorDescOp>(resultTy, desc_ptr);
-           })
       .def("create_descriptor_load",
            [](TritonOpBuilder &self, Value desc, std::vector<Value> &indices, CacheModifier cacheModifier,
               EvictionPolicy evictionPolicy) -> Value {
                 auto descTy = cast<triton::TensorDescType>(desc.getType());
                 auto resTy = descTy.getSignlessBlockType();
                 return self.create<DescriptorLoadOp>(resTy, desc, indices, cacheModifier, evictionPolicy);
-           })
-      .def("create_descriptor_gather",
-           [](TritonOpBuilder &self, Value desc, Value x_indices, Value y_index,
-              Type type) -> Value {
-             return self.create<ExperimentalDescriptorGatherOp>(
-                 type, desc, x_indices, y_index);
            })
       .def("create_descriptor_store",
            [](TritonOpBuilder &self, Value desc, Value value, std::vector<Value> &indices) -> void {
@@ -1474,12 +1461,6 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &shape, std::vector<Value> &strides,
               std::vector<int32_t> &tensorShape, bool isSignedInteger) -> Value {
                 return self.create<MakeTensorDescOp>(base, shape, strides, tensorShape, isSignedInteger);
-           })
-      .def("create_descriptor_scatter",
-           [](TritonOpBuilder &self, Value desc, Value value, Value x_indices,
-              Value y_index) -> void {
-             self.create<ExperimentalDescriptorScatterOp>(desc, x_indices,
-                                                          y_index, value);
            })
       .def("create_tensormap_create",
            [](TritonOpBuilder &self, Value desc_ptr, Value global_address,
@@ -1790,14 +1771,6 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &ptr,
               std::vector<Value> &offsets) -> Value {
              return self.create<AdvanceOp>(ptr.getType(), ptr, offsets);
-           })
-      // Make a tensor descriptor
-      .def("create_make_tensor_descriptor",
-           [](TritonOpBuilder &self, Value &base, std::vector<Value> &shape,
-              std::vector<Value> &strides,
-              std::vector<int32_t> &tensorShape) -> Value {
-             return self.create<MakeTensorDescOp>(base, shape, strides,
-                                                  tensorShape);
            })
       // Proton Ops
       .def("create_proton_record",

@@ -1207,59 +1207,6 @@ def load(ptr: tl.tensor, mask: Optional[tl.tensor], other: Optional[tl.tensor], 
         return _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, care_padding, builder)
 
 
-def reinterpret_tensor_descriptor(desc_ptr: tl.tensor, block_ty: tl.block_type, builder: ir.builder):
-    handle = builder.create_reinterpret_tensor_descriptor(desc_ptr.handle, block_ty.to_ir(builder))
-    return tl._experimental_tensor_descriptor_base(handle, block_ty)
-
-
-def descriptor_gather(desc, x_offsets, y_offset, cache_modifier: str, eviction_policy: str,
-                      builder: ir.builder) -> tl.tensor:
-    assert isinstance(desc, tl._experimental_tensor_descriptor_base)
-    assert cache_modifier == "", "cache modifier is not supported yet"
-    assert eviction_policy == "", "eviction policy is not supported yet"
-
-    # Validate descriptor.
-    assert len(desc.block_shape) == 2, f"descriptor must be 2D, but got {desc.block_shape}"
-    assert desc.block_shape[0] == 1, f"descriptor block must have 1 row, but got {desc.block_shape}"
-
-    # Validate offsets.
-    assert len(x_offsets.shape) == 1, f"x offsets must be 1D, but got {x_offsets.shape}"
-
-    # Validate minimum block size.
-    assert x_offsets.shape[0] >= 8, f"descriptor gather must have at least 8 rows, but got {x_offsets.shape}"
-    dtype = desc.dtype
-    min_cols = 32 // dtype.primitive_bitwidth * 8
-    assert desc.block_shape[
-        1] >= min_cols, f"descriptor gather of {dtype} must have at least {min_cols} columns, but got {desc.block_shape[1]}"
-
-    type = tl.block_type(desc.dtype, [x_offsets.shape[0], desc.block_shape[1]])
-    y_offset = _convert_to_ir_values(builder, (y_offset, ), require_i64=False)[0]
-    x = builder.create_descriptor_gather(desc.handle, x_offsets.handle, y_offset, type.to_ir(builder))
-    return tl.tensor(x, type)
-
-
-def descriptor_scatter(desc, value: tl.tensor, x_offsets, y_offset, builder: ir.builder) -> tl.tensor:
-    assert isinstance(desc, tl._experimental_tensor_descriptor_base)
-
-    # Validate descriptor.
-    assert len(desc.block_shape) == 2, f"descriptor must be 2D, but got {desc.block_shape}"
-    assert desc.block_shape[0] == 1, f"descriptor block must have 1 row, but got {desc.block_shape}"
-
-    # Validate offsets.
-    assert len(x_offsets.shape) == 1, f"x offsets must be 1D, but got {x_offsets.shapae}"
-
-    # Validate minimum block size.
-    assert x_offsets.shape[0] >= 8, f"descriptor scatter must have at least 8 rows, but got {x_offsets.shape}"
-    dtype = desc.dtype
-    min_cols = 32 // dtype.primitive_bitwidth * 8
-    assert desc.block_shape[
-        1] >= min_cols, f"descriptor scatter of {dtype} must have at least {min_cols} columns, but got {desc.block_shape[1]}"
-
-    y_offset = _convert_to_ir_values(builder, (y_offset, ), require_i64=False)[0]
-    builder.create_descriptor_scatter(desc.handle, value.handle, x_offsets.handle, y_offset)
-    return tl.tensor(None, tl.void)
-
-
 def tensormap_create(
     desc_ptr: tl.tensor,
     global_address: tl.tensor,
