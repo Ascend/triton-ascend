@@ -29,8 +29,6 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/InitAllPasses.h"
 
-#include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
-
 namespace mlir {
 namespace test {
 // void registerTestAliasPass();
@@ -52,12 +50,14 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   // mlir::test::registerTestMembarPass();
   // mlir::test::registerTestTritonAMDGPURangeAnalysis();
   mlir::triton::registerConvertTritonToTritonGPUPass();
-  // mlir::triton::gpu::registerAllocateSharedMemoryPass();
+  mlir::triton::gpu::registerAllocateSharedMemoryPass();
   // mlir::triton::gpu::registerTritonGPUAllocateWarpGroups();
   // mlir::triton::gpu::registerTritonGPUGlobalScratchAllocationPass();
-  mlir::triton::registerConvertWarpSpecializeToLLVM();
-  mlir::triton::registerConvertTritonGPUToLLVMPass();
-  mlir::triton::registerConvertNVGPUToLLVMPass();
+  // mlir::triton::registerConvertWarpSpecializeToLLVM();
+  // mlir::triton::registerConvertTritonGPUToLLVMPass();
+  // mlir::triton::registerConvertNVGPUToLLVMPass();
+  mlir::triton::registerTritonToLinalgPass();
+  mlir::triton::registerDiscreteMaskAccessConversion();
   mlir::registerLLVMDIScope();
 
   // TritonAMDGPUToLLVM passes
@@ -75,8 +75,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   // mlir::registerTritonAMDGPUStreamPipeline();
   // mlir::registerTritonAMDGPUCanonicalizePointers();
   // mlir::registerTritonAMDGPUConvertToBufferOps();
-  mlir::triton::registerTritonAMDGPUInsertInstructionSchedHints();
-  mlir::triton::registerTritonAMDGPULowerInstructionSchedHints();
+  // mlir::triton::registerTritonAMDGPUInsertInstructionSchedHints();
+  // mlir::triton::registerTritonAMDGPULowerInstructionSchedHints();
 
   registry
       .insert<mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
@@ -86,5 +86,5 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
               mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect,
               mlir::NVVM::NVVMDialect, /*mlir::triton::nvgpu::NVGPUDialect,*/
               /*mlir::triton::amdgpu::TritonAMDGPUDialect,*/
-              /*mlir::triton::proton::ProtonDialect*/, mlir::ROCDL::ROCDLDialect>();
+              /*mlir::triton::proton::ProtonDialect,*/ mlir::ROCDL::ROCDLDialect>();
 }
