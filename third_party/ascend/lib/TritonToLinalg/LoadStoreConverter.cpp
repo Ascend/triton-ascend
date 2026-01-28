@@ -373,7 +373,7 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
       return failure();
     } else {
       // If last dimension stride equals 2, try deinterleave optimization.
-      auto [ptrStrides, ptrOffsets] = getStridesAndOffset(memRefType);
+      auto [ptrStrides, ptrOffsets] = memRefType.getStridesAndOffset();
       if (ptrStrides.back() == 2 && (memRefShape.back() % 2 == 0) &&
           mlir::triton::DeinterleaveStatusOptimization(op, adaptor, rewriter)
               .succeeded()) {
@@ -419,7 +419,7 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
   if (mstate.getRank() == memRefType.getRank() &&
       isConstantIntValue(mstate.offsets.back(), 0) &&
       isConstantIntValue(mstate.dims.back(), memRefType.getShape().back())) {
-    auto [ptrStrides, ptrOffsets] = getStridesAndOffset(memRefType);
+    auto [ptrStrides, ptrOffsets] = memRefType.getStridesAndOffset();
     if (ptrStrides.back() == 2 && (memRefType.getShape().back() % 2 == 0) &&
         DeinterleaveStatusWithMaskOptimization(op, adaptor, rewriter, mstate,
                                                allocOp)
@@ -438,7 +438,7 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
     memref::SubViewOp dstSubView = mstate.getSubview(allocOp, loc, rewriter);
     MemRefType dstSubViewType = mlir::cast<MemRefType>(dstSubView.getType());
 
-    auto [srcStrides, srcOffset] = getStridesAndOffset(dstSubViewType);
+    auto [srcStrides, srcOffset] = dstSubViewType.getStridesAndOffset();
     MemRefType castType = MemRefType::get(
       dstSubViewType.getShape(),
       dstSubViewType.getElementType(),
