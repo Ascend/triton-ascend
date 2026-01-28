@@ -184,9 +184,9 @@ void LoadConverter::fillTensorWithOtherForMaskScenario(
     Value maskDimVal;
     if (isa<Attribute>(maskDim[i]))
       maskDimVal = rewriter.create<arith::ConstantOp>(
-          loc, cast<IntegerAttr>(maskDim[i].get<Attribute>()));
+          loc, cast<IntegerAttr>(cast<Attribute>(maskDim[i])));
     else
-      maskDimVal = maskDim[i].get<Value>();
+      maskDimVal = cast<Value>(maskDim[i]);
 
     auto curCmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
                                                  maskDimVal, shapeVal);

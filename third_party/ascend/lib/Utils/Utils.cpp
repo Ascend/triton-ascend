@@ -1001,7 +1001,7 @@ LogicalResult addReduceWithIndexAttrIfNeeded(ConversionPatternRewriter &rewriter
 OpFoldResult getOpFoldResultOfLayoutInfo(Value value, OpBuilder &builder) {
   OpFoldResult constantFold = getAsOpFoldResult(value);
   if (llvm::isa<Attribute>(constantFold)) {
-    assert(isa<IntegerAttr>(constantFold.get<Attribute>()));
+    assert(isa<IntegerAttr>(cast<Attribute>(constantFold)));
     return constantFold;
   }
 

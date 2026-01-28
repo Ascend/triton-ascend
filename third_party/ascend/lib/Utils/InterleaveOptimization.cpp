@@ -130,10 +130,10 @@ recountReinterpretCastOffset(OpFoldResult originOffset, Builder &builder) {
       newOffset = builder.getIndexAttr(0);
     }
   } else if (llvm::isa<Value>(originOffset)) {
-    if (!traceOffset(originOffset.get<Value>().getDefiningOp())) {
+    if (!traceOffset(cast<Value>(originOffset).getDefiningOp())) {
       evenOrOdd = IndexMode::ODD_MODE;
       Operation *traceResult = findFirstMatchingOperandDef(
-          originOffset.get<Value>().getDefiningOp(), traceOffset);
+          cast<Value>(originOffset).getDefiningOp(), traceOffset);
       assert(traceResult->getNumResults() == 1 &&
              "Offset defining operation must have one result");
       newOffset = traceResult->getResult(0);

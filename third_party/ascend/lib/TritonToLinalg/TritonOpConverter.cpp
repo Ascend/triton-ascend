@@ -197,8 +197,8 @@ LogicalResult SelectCanonicalizer::matchAndRewrite(
   auto offsets = mstate.offsets;
   SmallVector<Value> isNegVals;
   for (auto &o : offsets) {
-    if (o.is<Value>()) {
-      auto oVal = o.get<Value>();
+    if (isa<Value>(o)) {
+      auto oVal = cast<Value>(o);
       Value isNegative = rewriter.create<arith::CmpIOp>(
           loc, arith::CmpIPredicate::slt, oVal, zeroIndex);
       isNegVals.push_back(isNegative);
@@ -1839,10 +1839,10 @@ LogicalResult
 DotScaledConverter::matchAndRewrite(triton::DotScaledOp op, OpAdaptor adaptor,
                                     ConversionPatternRewriter &rewriter) const
                                     {
-  Value lhs = adaptor.getLhs();
-  Value lhsScale = adaptor.getLhsScale();
-  Value rhsScale = adaptor.getRhsScale();
-  Value rhs = adaptor.getRhs();
+  Value lhs = adaptor.getA();
+  Value lhsScale = adaptor.getAScale();
+  Value rhsScale = adaptor.getBScale();
+  Value rhs = adaptor.getB();
   Value c = adaptor.getC();
   RankedTensorType dstType = cast<RankedTensorType>(op.getType());
 

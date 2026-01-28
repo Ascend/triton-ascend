@@ -1470,7 +1470,7 @@ BlockDataParser::rewriteTerminator(
       // offsets other than offsets[0]. Create constants Values for those
       // zeroes.
       if (isa<Attribute>(offset)) {
-        auto constOffset = offset.get<Attribute>();
+        auto constOffset = cast<Attribute>(offset);
         assert(isa<IntegerAttr>(constOffset) &&
                dyn_cast<IntegerAttr>(constOffset).getInt() == 0 &&
                "attribute offsets should be zeroes");
@@ -1478,13 +1478,13 @@ BlockDataParser::rewriteTerminator(
             op.getLoc(), rewriter.getIndexAttr(0));
         operands.push_back(constOp.getResult());
       } else {
-        operands.push_back(offset.get<Value>());
+        operands.push_back(cast<Value>(offset));
       }
     }
 
     for (OpFoldResult stride : state.getStridesRef()) {
       if (isa<Attribute>(stride)) {
-        auto constStride = stride.get<Attribute>();
+        auto constStride = cast<Attribute>(stride);
         assert(isa<IntegerAttr>(constStride) &&
                dyn_cast<IntegerAttr>(constStride).getInt() == 1 &&
                "attribute strides should be ones");
@@ -1492,7 +1492,7 @@ BlockDataParser::rewriteTerminator(
             op.getLoc(), rewriter.getIndexAttr(1));
         operands.push_back(constOp.getResult());
       } else {
-        operands.push_back(stride.get<Value>());
+        operands.push_back(cast<Value>(stride));
       }
     }
   }
@@ -1701,7 +1701,7 @@ void BlockDataParser::rewriteLoopOp(
     // loop interation index
     for (auto &dataOffset : data.getOffsetsRef()) {
       if (isa<Attribute>(dataOffset)) {
-        auto constDataOffset = dataOffset.get<Attribute>();
+        auto constDataOffset = cast<Attribute>(dataOffset);
         assert(isa<IntegerAttr>(constDataOffset));
         auto constOp = rewriter.create<arith::ConstantOp>(
             op.getLoc(), rewriter.getIndexAttr(
@@ -1709,14 +1709,14 @@ void BlockDataParser::rewriteLoopOp(
         newInitArgs.push_back(constOp.getResult());
         dataOffset = constOp.getResult();
       } else {
-        assert(isa<IndexType>(dataOffset.get<Value>().getType()));
-        newInitArgs.push_back(dataOffset.get<Value>());
+        assert(isa<IndexType>(cast<Value>(dataOffset).getType()));
+        newInitArgs.push_back(cast<Value>(dataOffset));
       }
     }
 
     for (auto &dataStride : data.getStridesRef()) {
       if (isa<Attribute>(dataStride)) {
-        auto constDataStride = dataStride.get<Attribute>();
+        auto constDataStride = cast<Attribute>(dataStride);
         assert(isa<IntegerAttr>(constDataStride));
         auto constOp = rewriter.create<arith::ConstantOp>(
             op.getLoc(), rewriter.getIndexAttr(
@@ -1724,8 +1724,8 @@ void BlockDataParser::rewriteLoopOp(
         newInitArgs.push_back(constOp.getResult());
         dataStride = constOp.getResult();
       } else {
-        assert(isa<IndexType>(dataStride.get<Value>().getType()));
-        newInitArgs.push_back(dataStride.get<Value>());
+        assert(isa<IndexType>(cast<Value>(dataStride).getType()));
+        newInitArgs.push_back(cast<Value>(dataStride));
       }
     }
 
@@ -1886,9 +1886,9 @@ void BlockDataParser::rewriteLoopOp(
         auto key = mapping.lookup(regionArg);
         auto data = known.at(key);
         for (auto &offset : data.getOffsetsRef())
-          offset = newOp.getTiedLoopResult(cast<BlockArgument>(offset.get<Value>()));
+          offset = newOp.getTiedLoopResult(cast<BlockArgument>(cast<Value>(offset)));
         for (auto &stride : data.getStridesRef())
-          stride = newOp.getTiedLoopResult(cast<BlockArgument>(stride.get<Value>()));
+          stride = newOp.getTiedLoopResult(cast<BlockArgument>(cast<Value>(stride)));
         auto newRes = createFromData(cast<RankedTensorType>(regionArg.getType()), data, op.getLoc(), rewriter, mask);
         rewriter.replaceAllUsesWith(res, newRes);
       }
@@ -1953,9 +1953,9 @@ void BlockDataParser::rewriteLoopOp(
         auto key = mapping.lookup(regionArg);
         auto data = known.at(key);
         for (auto &offset : data.getOffsetsRef())
-          offset = newOp->getResult(cast<BlockArgument>(offset.get<Value>()).getArgNumber());
+          offset = newOp->getResult(cast<BlockArgument>(cast<Value>(offset)).getArgNumber());
         for (auto &stride : data.getStridesRef())
-          stride = newOp->getResult(cast<BlockArgument>(stride.get<Value>()).getArgNumber());
+          stride = newOp->getResult(cast<BlockArgument>(cast<Value>(stride)).getArgNumber());
         auto newRes = createFromData(cast<RankedTensorType>(regionArg.getType()), data, op.getLoc(), rewriter, mask);
         rewriter.replaceAllUsesWith(res, newRes);
       }

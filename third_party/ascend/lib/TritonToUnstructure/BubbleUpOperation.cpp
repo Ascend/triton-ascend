@@ -455,7 +455,7 @@ void BubbleUpExtract<tensor::ExtractOp>::bubbleUpOperation(
        llvm::zip_equal(parentOp.getMixedOffsets(), op.getIndices())) {
     Value offsetVal;
     if (isa<Value>(offset)) {
-      offsetVal = offset.template get<Value>();
+      offsetVal = cast<Value>(offset);
     } else {
       offsetVal = rewriter.create<arith::ConstantOp>(
           op.getLoc(), rewriter.getIndexAttr(*getConstantIntValue(offset)));

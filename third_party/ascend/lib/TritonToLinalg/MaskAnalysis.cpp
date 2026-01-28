@@ -365,8 +365,8 @@ LogicalResult MaskState::parseSel(arith::SelectOp selOp, const Location &loc,
     return failure();
   }
 
-  auto trueScalar = dyn_cast<IntegerAttr>(trueState.scalar.get<Attribute>());
-  auto falseScalar = dyn_cast<IntegerAttr>(falseState.scalar.get<Attribute>());
+  auto trueScalar = dyn_cast<IntegerAttr>(cast<Attribute>(trueState.scalar));
+  auto falseScalar = dyn_cast<IntegerAttr>(cast<Attribute>(falseState.scalar));
 
   if (trueScalar && falseScalar) {
     if(trueScalar.getInt() == 1 && falseScalar.getInt() == 0) {
@@ -483,7 +483,7 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location &loc,
   }
   case arith::CmpIPredicate::ne: {
     // only support lhs != 0
-    auto rhsScalar = dyn_cast<IntegerAttr>(rhsState.scalar.get<Attribute>());
+    auto rhsScalar = dyn_cast<IntegerAttr>(cast<Attribute>(rhsState.scalar));
     if (!rhsScalar || rhsScalar.getInt() != 0) {
       return failure();
     }
