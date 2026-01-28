@@ -102,8 +102,8 @@ void TritonToStructuredPass::runOnOperation() {
     RewritePatternSet canonicalizerPatterns(&getContext());
 
     this->populateTritonToStructuredCanonicalizationPatterns(canonicalizerPatterns);
-    if (failed(applyPatternsAndFoldGreedily(moduleOp,
-                                            std::move(canonicalizerPatterns)))) {
+    if (failed(applyPatternsGreedily(moduleOp,
+                                     std::move(canonicalizerPatterns)))) {
         moduleOp.emitWarning("Canonicalize failed");
     }
 
@@ -111,8 +111,8 @@ void TritonToStructuredPass::runOnOperation() {
     populateTritonToStructuredPatterns(tritonToStructuredPatterns,
                                        optimizeDynamicOffset,
                                        enableMaskFallbackConversion);
-    if (failed(applyPatternsAndFoldGreedily(moduleOp,
-                                            std::move(tritonToStructuredPatterns)))) {
+    if (failed(applyPatternsGreedily(moduleOp,
+                                     std::move(tritonToStructuredPatterns)))) {
         LLVM_DEBUG({
             moduleOp->emitRemark("PtrAnalysis: rewrite MemOp failed");
         });

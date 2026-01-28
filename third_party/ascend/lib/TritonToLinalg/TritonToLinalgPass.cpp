@@ -871,8 +871,8 @@ void TritonToLinalgPass::runOnOperation() {
 
   // 1. Canonicalize load/store related patterns.
   this->populateTritonToLinalgCanonicalizationPatterns(canonicalizerPatterns);
-  if (failed(applyPatternsAndFoldGreedily(moduleOp,
-                                          std::move(canonicalizerPatterns)))) {
+  if (failed(applyPatternsGreedily(moduleOp,
+                                   std::move(canonicalizerPatterns)))) {
     moduleOp->emitError("failed to apply Canonicalizer Patterns");
     signalPassFailure();
   }
