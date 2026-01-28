@@ -231,6 +231,19 @@ class NPUDriver(DriverBase):
         cache_size = 192 * 1024 * 1024
         return torch.empty(cache_size // 4, dtype=torch.int, device='npu')
 
+   
+# fixed the issue of corrupted gch header files in multi-threaded scenarios.
+def _precompile_npu_ext_with_lock(header_path):
+    import fcntl
+    src_path = os.path.dirname(header_path)
+    lock_path = os.path.join(src_path, "precompiled.lock")
+    with open(lock_path, "a+") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            _precompile_npu_ext(header_path)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
 
 def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     """
@@ -243,7 +256,7 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     # if precompile header file and its gch file not exist, do precompile
     if header_path is None and gch_path is None:
         header_path = cache.put(header_src, "precompiled.h", binary=False)
-        _precompile_npu_ext(header_path)
+        _precompile_npu_ext_with_lock(header_path)
 
     # try to get cached file
     so_cache_key = hashlib.sha256(wrapper_src.encode("utf-8")).hexdigest()
