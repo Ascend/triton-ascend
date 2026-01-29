@@ -27,8 +27,6 @@ from .standard import (
 from .core import (
     PropagateNan,
     TRITON_MAX_TENSOR_NUMEL,
-    _experimental_descriptor_load,
-    _experimental_descriptor_store,
     make_tensor_descriptor,
     load_tensor_descriptor,
     store_tensor_descriptor,
