@@ -191,6 +191,10 @@ class NPUDriver(DriverBase):
         Get current device
         """
         return get_backend_func("get_current_device")
+    
+    def get_active_torch_device(self):
+        import torch_npu
+        return torch.device("npu", self.get_current_device())
 
     def set_current_device(self, device):
         """
