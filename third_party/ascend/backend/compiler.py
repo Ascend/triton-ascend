@@ -784,7 +784,7 @@ class AscendBackend(BaseBackend):
             "tensor_kinds": metadata.tensor_kinds,
         }
 
-    def get_codegen_implementation(self):
+    def get_codegen_implementation(self, options):
         # Note: a dict of functions is required to generate vendor-specific code piecies
         #       e.g. convert custom types like fp8e4b15
         from triton.backends.ascend import _apply_ascend_patch
