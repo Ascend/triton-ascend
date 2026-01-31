@@ -24,9 +24,4 @@ set(LLVM_TARGET_DEFINITIONS TritonOpInterfaces.td)
 mlir_tablegen(OpInterfaces.h.inc -gen-op-interface-decls)
 mlir_tablegen(OpInterfaces.cpp.inc -gen-op-interface-defs)
 
-#FIXME TODO: When upgrading to Triton 3.4.0, remove the commented line below 
-set(LLVM_TARGET_DEFINITIONS TritonOpInterfaces.td)
-mlir_tablegen(OpInterfaces.h.inc -gen-op-interface-decls)
-mlir_tablegen(OpInterfaces.cpp.inc -gen-op-interface-defs)
-
 add_public_tablegen_target(TritonTableGen)

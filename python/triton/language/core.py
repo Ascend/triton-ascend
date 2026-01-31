@@ -2881,19 +2881,6 @@ def _normalize_tuple(t):
         normalized_tuple = tuple(normalized_tuple)
     return normalized_tuple
 
-
-class base_value(_value):
-    """Base class of values that exist in the triton IR (i.e. not constexprs).
-    """
-    type: base_type
-
-    def _flatten_ir(self, handles: List[ir.value]) -> None:
-        """Flatten frontend value into a sequence of mlir handles, which are appended
-        to the output list
-        """
-        raise NotImplementedError
-
-
 class base_type:
 
     def __eq__(self, other):

@@ -35,6 +35,12 @@ from build_helpers import get_base_dir, get_cmake_dir
 
 triton_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+os.environ.setdefault("TRITON_BUILD_WITH_CCACHE", "true")
+os.environ.setdefault("TRITON_BUILD_WITH_CLANG_LLD", "true")
+os.environ.setdefault("TRITON_BUILD_PROTON", "OFF")
+os.environ.setdefault("TRITON_WHEEL_NAME", "triton-ascend")
+os.environ.setdefault("TRITON_APPEND_CMAKE_ARGS", "-DTRITON_BUILD_UT=OFF")
+
 
 @dataclass
 class Backend:
@@ -450,7 +456,8 @@ class CMakeBuild(build_ext):
             "-DTRITON_BUILD_PYTHON_MODULE=ON", "-DPython3_EXECUTABLE:FILEPATH=" + sys.executable,
             "-DPython3_INCLUDE_DIR=" + python_include_dir,
             "-DTRITON_CODEGEN_BACKENDS=" + ';'.join([b.name for b in backends if not b.is_external]),
-            "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external])
+            "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external]),
+            "-DLLVM_MAJOR_VERSION_21_COMPATIBLE=ON"
         ]
         if lit_dir is not None:
             cmake_args.append("-DLLVM_EXTERNAL_LIT=" + lit_dir)
@@ -529,83 +536,83 @@ with open(nvidia_version_path, "r") as nvidia_version_file:
     NVIDIA_TOOLCHAIN_VERSION = json.load(nvidia_version_file)
 
 # FIXME:download&backend
-# exe_extension = sysconfig.get_config_var("EXE")
-# download_and_copy(
-#     name="nvcc",
-#     src_func=lambda system, arch, version: f"cuda_nvcc-{system}-{arch}-{version}-archive/bin/ptxas{exe_extension}",
-#     dst_path="bin/ptxas",
-#     variable="TRITON_PTXAS_PATH",
-#     version=NVIDIA_TOOLCHAIN_VERSION["ptxas"],
-#     url_func=lambda system, arch, version:
-#     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
-# )
-# # We download a separate ptxas for blackwell, since there are some bugs when using it for hopper
-# download_and_copy(
-#     name="nvcc",
-#     src_func=lambda system, arch, version: f"cuda_nvcc-{system}-{arch}-{version}-archive/bin/ptxas{exe_extension}",
-#     dst_path="bin/ptxas-blackwell",
-#     variable="TRITON_PTXAS_PATH",
-#     version=NVIDIA_TOOLCHAIN_VERSION["ptxas-blackwell"],
-#     url_func=lambda system, arch, version:
-#     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
-# )
-# download_and_copy(
-#     name="cuobjdump",
-#     src_func=lambda system, arch, version:
-#     f"cuda_cuobjdump-{system}-{arch}-{version}-archive/bin/cuobjdump{exe_extension}",
-#     dst_path="bin/cuobjdump",
-#     variable="TRITON_CUOBJDUMP_PATH",
-#     version=NVIDIA_TOOLCHAIN_VERSION["cuobjdump"],
-#     url_func=lambda system, arch, version:
-#     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cuobjdump/{system}-{arch}/cuda_cuobjdump-{system}-{arch}-{version}-archive.tar.xz",
-# )
-# download_and_copy(
-#     name="nvdisasm",
-#     src_func=lambda system, arch, version:
-#     f"cuda_nvdisasm-{system}-{arch}-{version}-archive/bin/nvdisasm{exe_extension}",
-#     dst_path="bin/nvdisasm",
-#     variable="TRITON_NVDISASM_PATH",
-#     version=NVIDIA_TOOLCHAIN_VERSION["nvdisasm"],
-#     url_func=lambda system, arch, version:
-#     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvdisasm/{system}-{arch}/cuda_nvdisasm-{system}-{arch}-{version}-archive.tar.xz",
-# )
-# download_and_copy(
-#     name="nvcc",
-#     src_func=lambda system, arch, version: f"cuda_nvcc-{system}-{arch}-{version}-archive/include",
-#     dst_path="include",
-#     variable="TRITON_CUDACRT_PATH",
-#     version=NVIDIA_TOOLCHAIN_VERSION["cudacrt"],
-#     url_func=lambda system, arch, version:
-#     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
-# )
-# download_and_copy(
-#     name="cudart",
-#     src_func=lambda system, arch, version: f"cuda_cudart-{system}-{arch}-{version}-archive/include",
-#     dst_path="include",
-#     variable="TRITON_CUDART_PATH",
-#     version=NVIDIA_TOOLCHAIN_VERSION["cudart"],
-#     url_func=lambda system, arch, version:
-#     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/{system}-{arch}/cuda_cudart-{system}-{arch}-{version}-archive.tar.xz",
-# )
-# download_and_copy(
-#     name="cupti",
-#     src_func=lambda system, arch, version: f"cuda_cupti-{system}-{arch}-{version}-archive/include",
-#     dst_path="include",
-#     variable="TRITON_CUPTI_INCLUDE_PATH",
-#     version=NVIDIA_TOOLCHAIN_VERSION["cupti"],
-#     url_func=lambda system, arch, version:
-#     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
-# )
-# download_and_copy(
-#     name="cupti",
-#     src_func=lambda system, arch, version: f"cuda_cupti-{system}-{arch}-{version}-archive/lib",
-#     dst_path="lib/cupti",
-#     variable="TRITON_CUPTI_LIB_PATH",
-#     version=NVIDIA_TOOLCHAIN_VERSION["cupti"],
-#     url_func=lambda system, arch, version:
-#     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
-# )
-backends = [*BackendInstaller.copy(["ascend"]), *BackendInstaller.copy_externals()]
+exe_extension = sysconfig.get_config_var("EXE")
+download_and_copy(
+    name="nvcc",
+    src_func=lambda system, arch, version: f"cuda_nvcc-{system}-{arch}-{version}-archive/bin/ptxas{exe_extension}",
+    dst_path="bin/ptxas",
+    variable="TRITON_PTXAS_PATH",
+    version=NVIDIA_TOOLCHAIN_VERSION["ptxas"],
+    url_func=lambda system, arch, version:
+    f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
+)
+# We download a separate ptxas for blackwell, since there are some bugs when using it for hopper
+download_and_copy(
+    name="nvcc",
+    src_func=lambda system, arch, version: f"cuda_nvcc-{system}-{arch}-{version}-archive/bin/ptxas{exe_extension}",
+    dst_path="bin/ptxas-blackwell",
+    variable="TRITON_PTXAS_PATH",
+    version=NVIDIA_TOOLCHAIN_VERSION["ptxas-blackwell"],
+    url_func=lambda system, arch, version:
+    f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
+)
+download_and_copy(
+    name="cuobjdump",
+    src_func=lambda system, arch, version:
+    f"cuda_cuobjdump-{system}-{arch}-{version}-archive/bin/cuobjdump{exe_extension}",
+    dst_path="bin/cuobjdump",
+    variable="TRITON_CUOBJDUMP_PATH",
+    version=NVIDIA_TOOLCHAIN_VERSION["cuobjdump"],
+    url_func=lambda system, arch, version:
+    f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cuobjdump/{system}-{arch}/cuda_cuobjdump-{system}-{arch}-{version}-archive.tar.xz",
+)
+download_and_copy(
+    name="nvdisasm",
+    src_func=lambda system, arch, version:
+    f"cuda_nvdisasm-{system}-{arch}-{version}-archive/bin/nvdisasm{exe_extension}",
+    dst_path="bin/nvdisasm",
+    variable="TRITON_NVDISASM_PATH",
+    version=NVIDIA_TOOLCHAIN_VERSION["nvdisasm"],
+    url_func=lambda system, arch, version:
+    f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvdisasm/{system}-{arch}/cuda_nvdisasm-{system}-{arch}-{version}-archive.tar.xz",
+)
+download_and_copy(
+    name="nvcc",
+    src_func=lambda system, arch, version: f"cuda_nvcc-{system}-{arch}-{version}-archive/include",
+    dst_path="include",
+    variable="TRITON_CUDACRT_PATH",
+    version=NVIDIA_TOOLCHAIN_VERSION["cudacrt"],
+    url_func=lambda system, arch, version:
+    f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/{system}-{arch}/cuda_nvcc-{system}-{arch}-{version}-archive.tar.xz",
+)
+download_and_copy(
+    name="cudart",
+    src_func=lambda system, arch, version: f"cuda_cudart-{system}-{arch}-{version}-archive/include",
+    dst_path="include",
+    variable="TRITON_CUDART_PATH",
+    version=NVIDIA_TOOLCHAIN_VERSION["cudart"],
+    url_func=lambda system, arch, version:
+    f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/{system}-{arch}/cuda_cudart-{system}-{arch}-{version}-archive.tar.xz",
+)
+download_and_copy(
+    name="cupti",
+    src_func=lambda system, arch, version: f"cuda_cupti-{system}-{arch}-{version}-archive/include",
+    dst_path="include",
+    variable="TRITON_CUPTI_INCLUDE_PATH",
+    version=NVIDIA_TOOLCHAIN_VERSION["cupti"],
+    url_func=lambda system, arch, version:
+    f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
+)
+download_and_copy(
+    name="cupti",
+    src_func=lambda system, arch, version: f"cuda_cupti-{system}-{arch}-{version}-archive/lib",
+    dst_path="lib/cupti",
+    variable="TRITON_CUPTI_LIB_PATH",
+    version=NVIDIA_TOOLCHAIN_VERSION["cupti"],
+    url_func=lambda system, arch, version:
+    f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
+)
+backends = [*BackendInstaller.copy(["ascend", "nvidia", "amd"]), *BackendInstaller.copy_externals()]
 
 
 def add_link_to_backends():

@@ -179,6 +179,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
   # Python Interpreter is used to run lit tests
   find_package(Python3 REQUIRED COMPONENTS Development.Module Interpreter)
   find_package(pybind11 CONFIG REQUIRED HINTS "${Python3_SITELIB}")
+  # need to include pybind11
+  include_directories(${Python3_INCLUDE_DIRS})
+  include_directories(${pybind11_INCLUDE_DIR})
+  link_directories(${Python3_LIBRARY_DIRS})
+  link_libraries(${Python3_LIBRARIES})
+  add_link_options(${Python3_LINK_OPTIONS})
 
   if (DEFINED TRITON_PLUGIN_DIRS)
     foreach(PLUGIN_DIR ${TRITON_PLUGIN_DIRS})
@@ -326,7 +332,7 @@ find_package(Threads REQUIRED)
 
 add_subdirectory(third_party/f2reduce)
 add_subdirectory(bin)
-# add_subdirectory(test)
+add_subdirectory(test)
 
 if(TRITON_BUILD_UT)
   add_subdirectory(unittest)

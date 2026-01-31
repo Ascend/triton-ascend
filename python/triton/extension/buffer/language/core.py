@@ -134,7 +134,7 @@ class buffer_type(tl.dtype):
 # -----------------------
 
 
-class buffer(tl._value):
+class buffer(tl.base_value):
     """Represents a region of memory.
 
     :code:`buffer` is the fundamental data structure for Triton programs using

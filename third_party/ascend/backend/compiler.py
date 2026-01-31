@@ -52,10 +52,8 @@ from triton.backends.ascend.driver import (
     NPUUtils
 )
 from triton.backends.compiler import (
-    AttrsDescriptor,
     BaseBackend,
     GPUTarget,
-    register_descriptor,
 )
 from triton.runtime import driver
 from triton.runtime.cache import get_dump_manager
@@ -703,15 +701,6 @@ class CPUOptions:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-@register_descriptor
-class AscendAttrsDescriptor(AttrsDescriptor):
-
-    # For now we collect shapes of tensor at runtime.
-    # We comment out the following func but keep it for future reference.
-    def _add_backend_properties(self, params=None, values=None):
-        pass
-
-
 def ttir_to_npubin(mod, metadata, opt):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
@@ -795,7 +784,7 @@ class AscendBackend(BaseBackend):
             "tensor_kinds": metadata.tensor_kinds,
         }
 
-    def get_codegen_implementation(self):
+    def get_codegen_implementation(self, options):
         # Note: a dict of functions is required to generate vendor-specific code piecies
         #       e.g. convert custom types like fp8e4b15
         from triton.backends.ascend import _apply_ascend_patch
@@ -805,9 +794,6 @@ class AscendBackend(BaseBackend):
 
     def load_dialects(self, ctx):
         ascend.load_dialects(ctx)
-
-    def get_attrs_descriptor(self, params, args):
-        return AscendAttrsDescriptor(params, args)
 
     def add_stages(self, stages, options):
         if self.target.backend == "npu":

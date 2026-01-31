@@ -594,7 +594,8 @@ void BlockDataParser::parseExtractSlice(
   if (!srcBlock.hasSource()) {
     llvm_unreachable(scenarioMessages.c_str());
   }
-  if (!isa<triton::LoadOp>(srcBlock.getSource().getDefiningOp())) {
+  // Use isa_and_nonnull for LLVM 21 compatibility
+  if (!isa_and_nonnull<triton::LoadOp>(srcBlock.getSource().getDefiningOp())) {
     llvm_unreachable(scenarioMessages.c_str());
   }
 
@@ -862,7 +863,8 @@ void BlockDataParser::parseReduce(
   if (!srcBlock.hasSource()) {
     llvm_unreachable(scenarioMessages.c_str());
   }
-  if (!isa<triton::LoadOp>(srcBlock.getSource().getDefiningOp())) {
+  // Use isa_and_nonnull for LLVM 21 compatibility
+  if (!isa_and_nonnull<triton::LoadOp>(srcBlock.getSource().getDefiningOp())) {
     llvm_unreachable(scenarioMessages.c_str());
   }
 
@@ -1041,8 +1043,10 @@ void BlockDataParser::rewriteAddPtr(
     inferedSize *= sizeConst.value();
   }
 
+  // Use dyn_cast_or_null to safely handle nullptr from getDefiningOp()
+  // This is necessary for LLVM 21 compatibility where dyn_cast asserts on nullptr
   if (auto intToPtrOp =
-          dyn_cast<triton::IntToPtrOp>(data.getSourceRef().getDefiningOp())) {
+          dyn_cast_or_null<triton::IntToPtrOp>(data.getSourceRef().getDefiningOp())) {
     auto rtype = cast<triton::PointerType>(intToPtrOp.getResult().getType());
     auto memrefType =
         MemRefType::get({ShapedType::kDynamic}, rtype.getPointeeType());

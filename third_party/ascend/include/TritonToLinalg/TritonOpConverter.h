@@ -312,7 +312,7 @@ protected:
   bool requiresF32Conversion(const Type elemType, Operation *redOp) const {
     return isa<FloatType>(elemType) &&
           elemType.getIntOrFloatBitWidth() <
-              Float32Type::get(elemType.getContext()).getWidth() &&
+              Float32Type::get(elemType.getContext()).getIntOrFloatBitWidth() &&
           (isa<arith::AddFOp>(redOp) || isa<arith::MulFOp>(redOp));
   }
 
