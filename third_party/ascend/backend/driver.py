@@ -124,7 +124,7 @@ class NPULauncher(object):
         cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
-        wrapper_src = generate_npu_wrapper_src(constants, signature, metadata)
+        wrapper_src = make_launcher(constants, signature, metadata)
         so_launcher_path = make_npu_launcher_stub(header_src, wrapper_src, metadata.debug)
         # setup for remote run
         # TODO: use a var to pack all vars required to run on a remote machine
@@ -385,8 +385,34 @@ def generate_npu_header_src():
 #endif
 """
 
+# ------------------------
+# Launcher
+# ------------------------
+
+
+def ty_to_cpp(ty):
+    if ty[0] == '*':
+        return "void*"
+    return {
+        "i1": "int32_t",
+        "i8": "int8_t",
+        "i16": "int16_t",
+        "i32": "int32_t",
+        "i64": "int64_t",
+        "u1": "uint32_t",
+        "u8": "uint8_t",
+        "u16": "uint16_t",
+        "u32": "uint32_t",
+        "u64": "uint64_t",
+        "fp16": "float",
+        "bf16": "float",
+        "fp32": "float",
+        "f32": "float",
+        "fp64": "double",
+    }[ty]
+
 # the template is from triton-adapter HEAD. Wrapping the generated kernel binary into a python module
-def generate_npu_wrapper_src(constants, signature, metadata):
+def make_launcher(constants, signature, metadata):
     import os
     workspace_size = int(metadata.workspace_size) \
                           if hasattr(metadata, 'workspace_size') else -1
@@ -400,63 +426,44 @@ def generate_npu_wrapper_src(constants, signature, metadata):
     parallel_mode = metadata.parallel_mode
     enable_simt = ("simt" in parallel_mode) or metadata.force_simt_only
 
-    def _ty_to_cpp(ty):
-        if ty[0] == '*':
-            return "void*"
-        return {
-            "i1": "int32_t",
-            "i8": "int8_t",
-            "i16": "int16_t",
-            "i32": "int32_t",
-            "i64": "int64_t",
-            "u1": "uint32_t",
-            "u8": "uint8_t",
-            "u16": "uint16_t",
-            "u32": "uint32_t",
-            "u64": "uint64_t",
-            "fp16": "float",
-            "bf16": "float",
-            "fp32": "float",
-            "f32": "float",
-            "fp64": "double",
-        }[ty]
+    def _serialize_signature(sig):
+      if isinstance(sig, tuple):
+          return ','.join(map(_serialize_signature, sig))
+      return sig
 
-    def _extracted_ty(ty):
+    def _extracted_type(ty):
+        if isinstance(ty, tuple):
+            val = ','.join(map(_extracted_type, ty))
+            return f"[{val}]"
         if ty[0] == '*':
             return "PyObject*"
-        return {
-            'i1': 'int32_t',
-            'i8': 'int8_t',
-            'i16': 'int16_t',
-            'i32': 'int32_t',
-            'i64': 'int64_t',
-            'u1': 'uint32_t',
-            'u8': 'uint8_t',
-            'u16': 'uint16_t',
-            'u32': 'uint32_t',
-            'u64': 'uint64_t',
-            'fp16': 'float',
-            'bf16': 'float',
-            'fp32': 'float',
-            'f32': 'float',
-            'fp64': 'double',
-        }[ty]
+        if ty in ("constexpr"):
+            return "PyObject*"
+        return ty_to_cpp(ty)
 
-    def _format_of(ty):
+    def format_of(ty):
+        if isinstance(ty, tuple):
+            val = ''.join(map(format_of, ty))
+            return f"({val})"
+        if ty[0] == '*':
+            return "O"
+        if ty in ("constexpr"):
+            return "O"
+        if ty == "void*":
+            return "O"
         return {
-            "PyObject*": "O",
             "float": "f",
             "double": "d",
             "long": "l",
             "int8_t": "b",
             "int16_t": "h",
             "int32_t": "i",
-            "int64_t": "l",
+            "int64_t": "L",
             "uint8_t": "B",
             "uint16_t": "H",
             "uint32_t": "I",
             "uint64_t": "K",
-        }[ty]
+        }[ty_to_cpp(ty)]
 
     def _format_of_msprof_task_type_ratio(bs_task_type, mix_mode):
         # Default fallback based on mix_mode
@@ -476,7 +483,6 @@ def generate_npu_wrapper_src(constants, signature, metadata):
         task_type = task_type_map.get(task_type_num, default_task_type)
         return task_type, mix_block_dim_ratio
 
-    arg_decls = ', '.join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
     """
     args:
         int gridX, gridY, gridZ;
@@ -486,7 +492,29 @@ def generate_npu_wrapper_src(constants, signature, metadata):
         PyObject* launch_enter_hook, *launch_exit_hook;
         *args_expand
     """
-    format = "iiiKKOOOO" + ''.join([_format_of(_extracted_ty(ty)) for ty in signature.values()])
+    args_format = ''.join([format_of(ty) for ty in signature.values()])
+    format = "iiiKKOOOO" + args_format
+    signature = ','.join(map(_serialize_signature, signature.values()))
+    signature = list(filter(bool, signature.split(',')))
+    signature = {i: s for i, s in enumerate(signature)}
+    args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
+    # Record the end of regular arguments;
+    # subsequent arguments are architecture-specific descriptors.
+    arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items() if ty != "constexpr")
+    internal_args_list = []
+    for i, ty in signature.items():
+        if ty[0] == "*":
+            internal_args_list.append(f"ptr_info{i}.dev_ptr")
+        elif ty != "constexpr":
+            internal_args_list.append(f"_arg{i}")
+    
+    # generate glue code
+    newline = '\n  '
+    ptr_decls = [
+        f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;"
+        for i, ty in signature.items()
+        if ty[0] == "*"
+    ]
 
     grid_info = {'X': 'i32', 'Y': 'i32', 'Z': 'i32'}
     # TODO: automatically check if gather load ops are used.
@@ -782,17 +810,17 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
       {'void* ffts_addr __attribute__((aligned(8)));' if target_support_ffts else ''}
       {'void* syncBlockLock __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
       {'void* workspace_addr __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
-      {' '.join(f'{_ty_to_cpp(ty)} arg{i} __attribute__((aligned({4 if ty[0] != "*" and ty[-2:] != "64" else 8})));' for i, ty in signature.items() if i not in constants)}
-      {' '.join(f'{_ty_to_cpp(ty)} grid{mark} __attribute__((aligned(4)));' for mark, ty in grid_info.items())}
+      {' '.join(f'{ty_to_cpp(ty)} arg{i} __attribute__((aligned({4 if ty[0] != "*" and ty[-2:] != "64" else 8})));' for i, ty in signature.items() if i not in constants and ty != "constexpr")}
+      {' '.join(f'{ty_to_cpp(ty)} grid{mark} __attribute__((aligned(4)));' for mark, ty in grid_info.items())}
       {'void* DTData __attribute__((aligned(8)));' if enable_device_print else ''}
     }} args = {{
       {'static_cast<void*>(ffts_addr),' if target_support_ffts else ''}
       {('static_cast<void*>(syncBlockLock_ptr),' if lock_num > 0 else 'nullptr,') if not metadata.force_simt_only else ''}
       {('static_cast<void*>(workspace_addr_ptr),' if workspace_size > 0 else 'nullptr,') if not metadata.force_simt_only else ''}
       {(lambda _rt: (', '.join(_rt) + ',') if _rt else '')(
-        [f'static_cast<{_ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if i not in constants]
+        [f'static_cast<{ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if i not in constants and ty != "constexpr"]
       )}
-      {', '.join(f'static_cast<{_ty_to_cpp(ty)}>(grid{mark})' for mark, ty in grid_info.items())}
+      {', '.join(f'static_cast<{ty_to_cpp(ty)}>(grid{mark})' for mark, ty in grid_info.items())}
       {', static_cast<void*>(DTData)' if enable_device_print else ''}
     }};
     {cpp_msprof_call_before_launch}
@@ -846,15 +874,13 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   PyObject *launch_enter_hook = NULL;
   PyObject *launch_exit_hook = NULL;
   std::vector<std::vector<int64_t>> tensorShapes;
-  {' '.join([f"{_extracted_ty(ty)} _arg{i}; " for i, ty in signature.items()])}
+
+  {newline.join([f"{_extracted_type(ty)} _arg{i};" for i, ty in signature.items()])}
   if(!PyArg_ParseTuple(
       args, \"{format}\",
       &gridX, &gridY, &gridZ, &stream, &function,
       &packedMetadata, &launch_metadata,
-      &launch_enter_hook, &launch_exit_hook
-      {', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''}
-      )
-    ) {{
+      &launch_enter_hook, &launch_exit_hook{args_list})) {{
     return NULL;
   }}
   if (__MsprofFlagL1)
@@ -886,8 +912,8 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   }}
 
   // raise exception asap
-  {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0]=="*" else "" for i, ty in signature.items()])};
-  _launch(kernelName, function, stream, gridX, gridY, gridZ, tensorShapes, tensorKinds{', ' + ', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''});
+  {newline.join(ptr_decls)}
+  _launch(kernelName, function, stream, gridX, gridY, gridZ, tensorShapes, tensorKinds{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
   if (PyErr_Occurred()) {{
     return NULL;
   }}
