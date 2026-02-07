@@ -384,20 +384,20 @@ def _build_npu_ext(obj_name: str, header_path, src_path, *, kernel_launcher="tor
         "-lascendcl",
     ]
     # FIXME: check why this condition works wrong in parall scene
-    # if kernel_launcher == "torch":
-    import torch
-    import torch_npu
+    if kernel_launcher == "torch":
+        import torch
+        import torch_npu
 
-    torch_path = os.path.dirname(os.path.realpath(torch.__file__))
-    torch_npu_path = os.path.dirname(os.path.realpath(torch_npu.__file__))
-    use_cxx11_abi = _check_cxx11_abi()
-    cc_cmd += [
-        f"-I{os.path.join(torch_path, 'include')}",
-        f"-I{os.path.join(torch_npu_path, 'include')}",
-        f"-L{os.path.join(torch_npu_path, 'lib')}",
-        "-ltorch_npu",
-        f"-D_GLIBCXX_USE_CXX11_ABI={use_cxx11_abi}",
-    ]
+        torch_path = os.path.dirname(os.path.realpath(torch.__file__))
+        torch_npu_path = os.path.dirname(os.path.realpath(torch_npu.__file__))
+        use_cxx11_abi = _check_cxx11_abi()
+        cc_cmd += [
+            f"-I{os.path.join(torch_path, 'include')}",
+            f"-I{os.path.join(torch_npu_path, 'include')}",
+            f"-L{os.path.join(torch_npu_path, 'lib')}",
+            "-ltorch_npu",
+            f"-D_GLIBCXX_USE_CXX11_ABI={use_cxx11_abi}",
+        ]
 
     cc_cmd += ["-std=c++17", "-shared", "-fPIC", "-Winvalid-pch", "-o", so_path]
 

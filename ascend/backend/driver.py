@@ -62,7 +62,7 @@ class NPUUtils(object):
                 tmp_src_path = os.path.join(tmpdir, "npu_utils.cpp")
                 with open(tmp_src_path, "w") as f:
                     f.write(src)
-                so = _build_npu_ext("npu_utils", None, tmp_src_path)
+                so = _build_npu_ext("npu_utils", None, tmp_src_path, kernel_launcher=None)
                 with open(so, "rb") as f:
                     cache_path = cache.put(f.read(), fname, binary=True)
         import importlib.util
@@ -281,9 +281,6 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
         return cache_path
 
     kernel_launcher_type = "torch"
-    enable_taskqueue = os.getenv("TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
-    if not enable_taskqueue:
-        kernel_launcher_type = None
 
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, f"{name}.cxx")
