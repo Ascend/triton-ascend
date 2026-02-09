@@ -524,7 +524,12 @@ void parseIndexCast(arith::IndexCastOp op, const Location &loc,
   parse(src, op.getLoc(), rewriter, offsetMap);
   // Set indexCast offset map
   auto dst = op.getOut();
-  offsetMap[dst] = offsetMap.at(src);
+  auto srcIt = offsetMap.find(src);
+  if (srcIt == offsetMap.end()) {
+    offsetMap[dst] = PtrOffsetInfo();
+  } else {
+    offsetMap.insert({dst, srcIt->second});
+  }
 }
 
 template <typename ConstOpTy>
@@ -553,7 +558,12 @@ void parseExtSI(arith::ExtSIOp op, const Location &loc, RewriterBase &rewriter,
   parse(src, op.getLoc(), rewriter, offsetMap);
   // Set extSI offset map
   auto dst = op.getOut();
-  offsetMap[dst] = offsetMap.at(src);
+  auto srcIt = offsetMap.find(src);
+  if (srcIt == offsetMap.end()) {
+    offsetMap[dst] = PtrOffsetInfo();
+  } else {
+    offsetMap.insert({dst, srcIt->second});
+  }
 }
 
 void parseBitcast(triton::BitcastOp op, const Location &loc,
@@ -958,7 +968,12 @@ void parseExtractSlice(tensor::ExtractSliceOp op, const Location &loc,
   parse(src, op.getLoc(), rewriter, offsetMap);
   // Set extractSlice offset map
   auto dst = op.getResult();
-  offsetMap[dst] = offsetMap.at(src);
+  auto srcIt = offsetMap.find(src);
+  if (srcIt == offsetMap.end()) {
+    offsetMap[dst] = PtrOffsetInfo();
+  } else {
+    offsetMap.insert({dst, srcIt->second});
+  }
 }
 
 void parseExtract(tensor::ExtractOp op, const Location &loc,
