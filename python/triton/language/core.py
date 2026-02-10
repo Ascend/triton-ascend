@@ -2961,9 +2961,7 @@ class tuple(base_value):
 
     def _flatten_ir(self, handles: List[ir.value]):
         for v in self.values:
-            print("[debug]tuple _flatten_ir: value:", v)
             v._flatten_ir(handles)
-            print("[debug]tuple _flatten_ir: handles:", handles)
 
     def __repr__(self):
         return f"({' ,'.join(repr(x) for x in self.values)})"
