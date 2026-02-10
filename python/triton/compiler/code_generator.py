@@ -1311,6 +1311,9 @@ class CodeGenerator(ast.NodeVisitor):
                 extra_kwargs['_generator'] = self
             try:
                 ret = fn(*args, **extra_kwargs, **kws)
+                # builtin functions return plain tuples for readability
+                if isinstance(ret, tuple):
+                    ret = language.tuple(ret)
                 # Sync the builder's location before return.
                 ip, last_loc = self._get_insertion_point_and_loc(_builder)
                 self._set_insertion_point_and_loc(ip, last_loc)
