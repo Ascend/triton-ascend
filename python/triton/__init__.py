@@ -18,6 +18,7 @@ from .runtime import (
     MockTensor,
 )
 from .runtime.jit import jit
+from .runtime._async_compile import AsyncCompileMode
 from .compiler import compile, CompilationError
 from .errors import TritonError
 
@@ -26,6 +27,7 @@ from . import testing
 from . import tools
 
 __all__ = [
+    "AsyncCompileMode",
     "autotune",
     "cdiv",
     "CompilationError",

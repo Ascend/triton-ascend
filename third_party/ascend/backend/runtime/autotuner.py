@@ -23,9 +23,11 @@
 from __future__ import annotations
 
 import builtins
+import functools
 import os
 import time
 import copy
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List
 from torch import Tensor
 
@@ -100,6 +102,8 @@ class AutoTilingTuner(Autotuner):
         self.is_simt_mode = False
         self.user_specified_warps = None
         self.print_autotuning = os.getenv("TRITON_PRINT_AUTOTUNING", None) == "1"
+        # Compile kernels in parallel by default
+        self.compile_parallel = os.getenv("TRITON_AUTOTUNE_PARALLEL_COMPILE", "1") == "1"
 
     def _init_axis_params(self, key, split_params, tiling_params, low_dim_axes, reduction_axes):
         if isinstance(key, list):
@@ -343,14 +347,37 @@ class AutoTilingTuner(Autotuner):
         exc = None
         exc_stack = ""
 
-        for config, fn in kernels_call.items():
-            try:
-                fn()
-                run_fns[config] = fn
-            except (CompileTimeAssertionFailure, MLIRCompilationError, OutOfResources) as e:
-                import traceback
-                exc_stack = traceback.format_exc()
-                exc = e
+        if self.compile_parallel:
+            import psutil
+            from triton import AsyncCompileMode
+
+            max_workers = min(psutil.cpu_count(logical=False) // 2, len(kernels_call))
+            future_kernels = []
+            with (
+                ThreadPoolExecutor(max_workers=max_workers) as executor,
+                AsyncCompileMode(executor),
+            ):
+                for config, fn in kernels_call.items():
+                    future_kernels.append((config, fn(warmup=True)))
+
+                for config, fut in future_kernels:
+                    try:
+                        if hasattr(fut, "result"):
+                            fut = fut.result()
+                        run_fns[config] = functools.partial(kernels_call[config], warmup=False)
+                    except (CompileTimeAssertionFailure, MLIRCompilationError) as e:
+                        import traceback
+                        exc_stack = traceback.format_exc()
+                        exc = e
+        else:
+            for config, fn in kernels_call.items():
+                try:
+                    fn(warmup=False)
+                    run_fns[config] = functools.partial(fn, warmup=False)
+                except (CompileTimeAssertionFailure, MLIRCompilationError, OutOfResources) as e:
+                    import traceback
+                    exc_stack = traceback.format_exc()
+                    exc = e
 
         if len(run_fns) == 0:
             raise RuntimeError(f"No valid triton configs. {type(exc).__name__}: {exc} \nStack trace: {exc_stack}")
@@ -380,15 +407,18 @@ class AutoTilingTuner(Autotuner):
         current = dict(meta, **config.all_kwargs())
         full_nargs = {**self.nargs, **current}
 
-        def kernel_call():
+        def kernel_call(warmup):
             if config.pre_hook:
                 config.pre_hook(full_nargs)
             self.pre_hook(full_nargs)
             try:
-                self.fn.run(
+                current.update({"warmup": warmup})
+                res = self.fn.run(
                     *args,
                     **current,
                 )
+                if warmup:
+                    return res
             except Exception as e:
                 try:
                     self.post_hook(full_nargs, exception=e)
@@ -403,12 +433,28 @@ class AutoTilingTuner(Autotuner):
         _ = self.generate_key_and_configs(*args, **kwargs)
         pruned_configs = self.prune_configs(kwargs)
         ret = []
-        for config in pruned_configs:
-            ret.append(self.fn.warmup(
-                *args,
-                **kwargs,
-                **config.all_kwargs()
-            ))
+        if self.compile_parallel:
+            import psutil
+            from triton import AsyncCompileMode
+
+            max_workers = min(psutil.cpu_count(logical=False) // 2, len(pruned_configs))
+            with (
+                ThreadPoolExecutor(max_workers=max_workers) as executor,
+                AsyncCompileMode(executor),
+            ):
+                for config in pruned_configs:
+                    ret.append(self.fn.warmup(
+                        *args,
+                        **kwargs,
+                        **config.all_kwargs()
+                    ))
+        else:
+            for config in pruned_configs:
+                ret.append(self.fn.warmup(
+                    *args,
+                    **kwargs,
+                    **config.all_kwargs()
+                ))
         self.nargs = None
         return ret
 
@@ -416,8 +462,9 @@ class AutoTilingTuner(Autotuner):
         from ..testing import do_bench_npu
 
         kernel_call = self._make_kernel_call(*args, config=config, **meta)
+        fn = functools.partial(kernel_call, warmup=False)
         do_bench_npu(
-            kernel_call, prof_dir=self.auto_profile_dir, keep_res=True
+            fn, prof_dir=self.auto_profile_dir, keep_res=True
         )
 
     def _autoparse_split_params(self, candidates_params: List[str]) -> Dict[str, str]:

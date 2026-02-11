@@ -9,8 +9,11 @@ import textwrap
 from collections import defaultdict
 from functools import cached_property
 from typing import Callable, Generic, Iterable, Optional, TypeVar, Union, overload, Dict, Any, Tuple
-from ..runtime.driver import driver
 from types import ModuleType
+
+from triton._C.libtriton import get_cache_invalidating_env_vars
+from .driver import driver
+from . import _async_compile
 
 TRITON_MODULE = __name__[:-len(".runtime.jit")]
 
@@ -616,17 +619,9 @@ class JITFunction(KernelInterface[T]):
                 if callable(arg):
                     raise TypeError(f"Callable constexpr at index {i} is not supported")
 
-            if self._call_hook(key, signature, device, constants, options, configs, warmup, before=True):
+            kernel = self._do_compile(key, signature, device, backend, target, constants, options, configs[0], warmup)
+            if kernel is None:
                 return None
-            # compile the kernel
-            src = self.ASTSource(self, signature, constants, configs[0])
-            kernel = self.compile(
-                src,
-                target=target,
-                options=options.__dict__,
-            )
-            self.cache[device][key] = kernel
-            self._call_hook(key, signature, device, constants, options, configs, warmup, before=False)
 
         # Check that used global values have not changed.
         not_present = object()
@@ -647,6 +642,8 @@ class JITFunction(KernelInterface[T]):
             grid_0 = grid[0]
             grid_1 = grid[1] if grid_size > 1 else 1
             grid_2 = grid[2] if grid_size > 2 else 1
+            if hasattr(kernel, "result"):
+                kernel = kernel.result()
 
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *non_constexpr_vals)
@@ -728,7 +725,7 @@ class JITFunction(KernelInterface[T]):
         return self.run(grid=grid, warmup=True, *map(MockTensor.wrap_dtype, args), **kwargs)
 
     def preload(self, specialization_data):
-        from ..compiler import compile, ASTSource
+        from ..compiler import make_backend
         from triton.backends.compiler import AttrsDescriptor
         import json
         import triton.language as tl
@@ -748,8 +745,47 @@ class JITFunction(KernelInterface[T]):
             for key, value in deserialized_obj['options'].items()
         }
         key = deserialized_obj['key']
-        kernel = compile(src, None, options)
-        self.cache[device][key] = kernel
+        target = driver.active.get_current_target()
+        backend = make_backend(target)
+        attrs = AttrsDescriptor.from_dict(deserialized_obj['attrs'])
+        return self._do_compile(
+            key,
+            signature,
+            device,
+            backend,
+            target,
+            constants,
+            options,
+            attrs,
+            warmup=True,
+        )
+
+    def _do_compile(self, key, signature, device, backend, target, constants, options, attrs, warmup):
+        kernel_cache = self.cache[device]
+
+        if self._call_hook(key, signature, device, constants, options, [attrs], warmup, before=True):
+            return None
+        src = self.ASTSource(self, signature, constants, attrs)
+
+        async_mode = _async_compile.active_mode.get()
+        if async_mode is not None:
+            from triton.compiler.compiler import get_cache_key
+
+            env_vars = get_cache_invalidating_env_vars()
+            cache_key = get_cache_key(src, backend, options, env_vars)
+
+            def async_compile():
+                return self.compile(src, target=target, options=options.__dict__, _env_vars=env_vars)
+
+            def finalize_compile(kernel):
+                kernel_cache[key] = kernel
+                self._call_hook(key, signature, device, constants, options, [attrs], warmup, before=False)
+
+            kernel = async_mode.submit(cache_key, async_compile, finalize_compile)
+        else:
+            kernel = self.compile(src, target=target, options=options.__dict__)
+            kernel_cache[key] = kernel
+            self._call_hook(key, signature, device, constants, options, [attrs], warmup, before=False)
         return kernel
 
     # we do not parse `src` in the constructor because

@@ -1705,6 +1705,10 @@ void init_triton_ir(py::module &&m) {
         // TODO: maybe dump module to file and print error for better
         // diagnostics
 
+        auto *context = mod.getContext();
+        if (::triton::tools::getBoolEnv("MLIR_DISABLE_MULTITHREADING"))
+          context->disableMultithreading();
+
         auto reproducerPath =
             triton::tools::getStrEnv("TRITON_REPRODUCER_PATH");
         if (!reproducerPath.empty()) {
@@ -1712,6 +1716,7 @@ void init_triton_ir(py::module &&m) {
           auto passes = self.getPasses();
           Operation *op = mod.getOperation();
           makeReproducer(anchorName, passes, op, reproducerPath);
+          context->disableMultithreading();
         }
 
         if (triton::tools::getBoolEnv("TRITON_ENABLE_LLVM_DEBUG")) {
@@ -1746,7 +1751,8 @@ void init_triton_ir(py::module &&m) {
 
         if (failed(self.run(mod.getOperation())))
           throw std::runtime_error("PassManager::run failed");
-      });
+      },
+      py::call_guard<py::gil_scoped_release>());
 }
 
 void init_triton_env_vars(py::module &m) {

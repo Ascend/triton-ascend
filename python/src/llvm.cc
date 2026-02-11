@@ -25,6 +25,7 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include <csignal>
 #include <memory>
+#include <pybind11/gil.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <stdexcept>
@@ -172,7 +173,7 @@ void init_triton_llvm(py::module &&m) {
           [](llvm::Module::FunctionListType &s) {
             return py::make_iterator(s.begin(), s.end());
           },
-          py::keep_alive<0, 1>());
+          py::keep_alive<0, 1>(), py::call_guard<py::gil_scoped_release>());
 
   // Module Flag behavior. See
   // https://llvm.org/doxygen/classllvm_1_1Module.html#a0a5c55e12c97b80021330fe82b642293
@@ -388,7 +389,8 @@ void init_triton_llvm(py::module &&m) {
       // (optional) parameters
       py::arg("arch") = "", py::arg("features") = "",
       py::arg("flags") = std::vector<std::string>{},
-      py::arg("enable_fp_fusion") = false);
+      py::arg("enable_fp_fusion") = false,
+ 	    py::call_guard<py::gil_scoped_release>());
 
   m.def(
       "translate_to_asm",
