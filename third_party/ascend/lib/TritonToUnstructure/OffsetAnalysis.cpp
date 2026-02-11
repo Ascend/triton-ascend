@@ -930,8 +930,9 @@ void parseIf(scf::IfOp op, const Location &loc, RewriterBase &rewriter,
     PtrOffsetInfo elseOffsetInfo = offsetMap.at(elseYieldedValue);
     elseStructured = elseOffsetInfo.getStructuredRef();
     dstIsScalar = dstIsScalar && elseOffsetInfo.isScalarLike();
-    assert(thenSrcPtr == elseOffsetInfo.getPtr() &&
-           "Currently ptr type from different source not supported");
+    if (thenSrcPtr != elseOffsetInfo.getPtr()) {
+      emitError(loc) << "Currently ptr type from different source not supported";
+    }
   }
   // Set if offset map
   offsetMap[dst] = PtrOffsetInfo();

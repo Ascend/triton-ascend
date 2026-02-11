@@ -26,6 +26,16 @@ import triton.language as tl
 import test_common
 
 
+@pytest.fixture(scope="function")
+def restore_npu_hf32_setting():
+    original_allow_hf32 = torch_npu.npu.matmul.allow_hf32
+    try:
+        torch_npu.npu.matmul.allow_hf32 = True
+        yield
+    finally:
+        torch_npu.npu.matmul.allow_hf32 = original_allow_hf32
+
+
 def torch_dot_None(x0, x1):
     res = torch.matmul(x0, x1)
     return res
@@ -64,7 +74,7 @@ typelist = [
 
 @pytest.mark.parametrize("B, C, D", testlist2)
 @pytest.mark.parametrize("sigtype", typelist)
-def test_dot_2(sigtype, B, C, D):
+def test_dot_2(restore_npu_hf32_setting, sigtype, B, C, D):
     x = test_common.generate_tensor((B, C), sigtype).npu()
     y = test_common.generate_tensor((C, D), sigtype).npu()
     z_ref = torch_dot_None(x, y).to(torch.float32)

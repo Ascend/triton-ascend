@@ -1694,13 +1694,13 @@ MatmulConverter::matchAndRewrite(triton::DotOp op, OpAdaptor adaptor,
     auto matmulOp = rewriter.replaceOpWithNewOp<linalg::MatmulOp>(
         op, ValueRange{opa, opb}, ValueRange{opc});
     matmulOp->setAttr(
-        "input_precison",
+        "input_precision",
         rewriter.getStringAttr(stringifyInputPrecision(inputPrec)));
   } else if (dstType.getRank() == 3) {
     auto matmulOp = rewriter.replaceOpWithNewOp<linalg::BatchMatmulOp>(
         op, ValueRange{opa, opb}, ValueRange{opc});
     matmulOp->setAttr(
-        "input_precison",
+        "input_precision",
         rewriter.getStringAttr(stringifyInputPrecision(inputPrec)));
   } else {
     llvm_unreachable("Datatype of DotOp operands could only be 2D or 3D");
