@@ -274,11 +274,14 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
     os << ptrOffsetInfo.isScalarLike() << "\n";
   });
 
-  if constexpr (std::is_same_v<MemAccOpTy, triton::LoadOp>)
+  if constexpr (std::is_same_v<MemAccOpTy, triton::LoadOp>) {
     if (ptrOffsetInfo.isScalarLike()) {
       splatAndLoadScenario(op, ptrOffsetInfo.getRank(), rewriter);
       return success();
     }
+  }
+
+  std::optional<MaskState> mstate = runMaskAnalysis(op, rewriter);
 
   if (op->hasAttr(ConverterUtils::discreteMaskAttrName)) {
     if constexpr (std::is_same_v<MemAccOpTy, triton::StoreOp>) {
@@ -418,8 +421,25 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
         }
         sizeVal = rewriter.create<arith::MinSIOp>(loc, sizeVal, tptShape);
       }
+
+      Value loopLower = zeroIdx;
+      Value loopUpper = sizeVal;
+      if (mstate && i < mstate->dims.size() && i < mstate->offsets.size()) {
+        Value maskOffset = getValueOrCreateConstantIndexOp(
+            rewriter, loc, mstate->offsets[i]);
+        maskOffset = rewriter.create<arith::MaxSIOp>(loc, maskOffset, zeroIdx);
+        maskOffset = rewriter.create<arith::MinSIOp>(loc, maskOffset, sizeVal);
+        loopLower = maskOffset;
+
+        Value maskDim = getValueOrCreateConstantIndexOp(
+            rewriter, loc, mstate->dims[i]);
+        maskDim = rewriter.create<arith::AddIOp>(loc, maskOffset, maskDim);
+        maskDim = rewriter.create<arith::MinSIOp>(loc, maskDim, sizeVal);
+        loopUpper = maskDim;
+      }
+
       if (isLoadLike) {
-        forOp = rewriter.create<scf::ForOp>(loc, zeroIdx, sizeVal, oneIdx,
+        forOp = rewriter.create<scf::ForOp>(loc, loopLower, loopUpper, oneIdx,
                                             ValueRange({iterArg}));
         if (!newOpResult) {
           newOpResult = forOp->getResult(0);
@@ -428,7 +448,7 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
         }
         iterArg = forOp.getRegionIterArg(0);
       } else {
-        forOp = rewriter.create<scf::ForOp>(loc, zeroIdx, sizeVal, oneIdx);
+        forOp = rewriter.create<scf::ForOp>(loc, loopLower, loopUpper, oneIdx);
       }
       sizes.push_back(rewriter.getIndexAttr(1));
       offsets.push_back(forOp.getInductionVar());
