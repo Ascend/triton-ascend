@@ -1,6 +1,6 @@
 # 自动调优 （Autotune）
 
-在本节中，我们将展示使用 Triton 的 autotune 方法以自动选择最优的 kernel 配置参数。当前 Triton-Ascend autotune 完全兼容社区 autotune 的使用方法（参考[社区文档](https://triton-lang.org/main/python-api/generated/triton.autotune.html)），即需要用户手动传入一些定义好的 triton.Config，然后 autotune 会通过 benchmark 的方式选择其中的最优 kernel 配置；此外 Triton-Ascend 提供了**进阶的 autotune** 用法，用户需要提供当前 triton kernel 的切分轴、tiling 轴等信息，此时 autotune 会根据实际的输入大小自动生成一些可能最优的 kernel 配置，然后通过 benchmark 或者 profiling 的方式选择其中的最优配置。
+在本节中，我们将展示使用 Triton 的 autotune 方法自动选择最优的 kernel 配置参数。当前 Triton-Ascend autotune 完全兼容社区 autotune 的使用方法（参考[社区文档](https://triton-lang.org/main/python-api/generated/triton.autotune.html)），即需要用户手动传入一些定义好的 triton.Config，然后 autotune 会通过 benchmark 的方式选择其中的最优 kernel 配置；此外 Triton-Ascend 提供了**进阶的 autotune** 用法，用户无需提供triton kernel 的切分轴、tiling 轴等信息，autotune 会根据triton kernel语义自动解析切分轴、tiling轴等信息，并自动生成一些可能最优的 kernel 配置，然后通过 benchmark 或者 profiling 的方式选择其中的最优配置。
 
 说明：
 当前Triton-Ascend autotune支持block size、multibuffer（编译器的优化），因为硬件架构差异不支持num_warps、num_stages参数，未来还会持续增加autotune可调项。
@@ -70,12 +70,21 @@ if __name__ == "__main__":
 
 ## 进阶 autotune 使用示例
 ```Python
-# 下面是相对于社区autotune所增加的参数和类型有所修改的参数
-# 注意：当split_params和tiling_params有一个参数不为空时即会自动触发进阶的autotune调优方法
+# 下面说明进阶 autotune 与社区版的参数使用要点
+#
+# configs：
+# - 社区版 autotune（默认）需要显式传入一组 triton.Config，框架会对这些配置逐一编译并基准测试以选择最优配置
+# - 进阶版 autotune 框架基于 kernel 自动生成候选 tiling 配置，并对配置逐一编译并基准测试以选择最优配置
+# * 注意：1. 进阶模式启动需用户手动 import triton.backends.ascend.runtime;
+#        2. 若 configs=[]，框架基于 kernel 自动生成候选 tiling 配置;
+#        3. 若 configs 不为空，则框架默认不会自动生成候选 tiling 配置;
+#        4. 若 configs 不为空，且hints.auto_gen_config=True,则框架自动生成Config,并与用户定义Config合并进行配置择优；
+#        5. 进阶版本支持通过设置os.environ["TRITON_BENCH_METHOD"] = ( "npu" ) 来设置性能采集方式。
+# 
+# hints(Dict[str, str])：
+# 注意：1. hints可选，用户不填时框架会自动解析切分轴（split_params），分块轴（tiling_params）等相关参数
+#      2. 用户可通过hints传参来生成tiling,涉及切分轴（split_params）、分块轴（tiling_params）、低维轴（low_dim_axes）、规约轴（reduction_axes），且四个参数需同时提供
 
-# key (Dict[str, str]): axis name: argument name组成的字典，argument 变化会触发候选配置的重新生成与评估
-#     axis name 属于集合 {'x','y','z','w','v','t','rx','ry','rz','rw','rv','rt'}，前缀 'r' 表示规约轴
-#     只有此参数中的轴名称在作为规约轴时才应该添加前缀 r
 # split_params (Dict[str, str]): axis name: argument name组成的字典, argument 是切分轴的可调参数, 例如 'XBLOCK'
 #     axis name必须在参数key的轴名称集合里。 请勿在轴名称前添加前缀 r
 #     此参数可以为空，当split_params 和 tiling_params 都为空的时候不会进行自动寻优
@@ -84,19 +93,34 @@ if __name__ == "__main__":
 #     axis name必须在参数key的轴名称集合里。请勿在轴名称前添加前缀 r
 #     此参数可以为空，当split_params 和 tiling_params 都为空的时候不会进行自动寻优
 #     分块轴通常可以根据 `tl.arange()` 分块表达式来确定
-# low_dims (List[str]): 所有低维轴的轴名称列表，axis name必须在参数key的轴名称集合里， 请勿在轴名称前添加前缀 r
-# dual_reduction (bool): 是否在多个轴上做规约，会影响tiling生成策略
-# persistent_reduction (bool): 是否在规约轴上是否做切分，会影响tiling生成策略
-# 使用可以参考 ascend\examples\autotune_cases 里面的案例
+# low_dim_axes (List[str]): 所有低维轴的轴名称列表，axis name必须在参数key的轴名称集合里
+# reduction_axes (List[str]): 所有规约轴的轴名称列表，axis name必须在参数key的轴名称集合里， 在轴名称前添加前缀 r
+# auto_gen_config (bool): 默认为False,涉及如下场景组合
+#     1. 用户未定义Config,无论是否设置auto_gen_config,框架默认自动生成Config；
+#     2. 用户定义了Config,且auto_gen_config=False,则框架不自动生成Config,只使用用户定义的Config；
+#     3. 用户定义了Config,且auto_gen_config=True,则框架自动生成Config,并与用户定义Config合并进行配置择优；
+#
+# key（list[str]/Dict[str,str]）：
+# - 传入运行时参数名列表；列表中任一参数值变化会触发候选配置的重新生成与评估
+# 注意：1.若hints传递切分轴（split_params）、分块轴（tiling_params）、低维轴（low_dim_axes）、规约轴（reduction_axes）参数信息，key类型需为Dict[str,str],如示例1：
+#      2.若hints不传递切分轴（split_params）、分块轴（tiling_params）、低维轴（low_dim_axes）、规约轴（reduction_axes）参数信息，key类型需为list[str]，轴信息会按参数顺利进行分配，如示例2：
+
+示例1:
 @triton.autotune(
     configs=[],
-    key={"x": "n_elements"},           # 切分轴x对应的大小
-    split_params={"x": "BLOCK_SIZE"},  # 切分轴x需要调整的BLOCK_SIZE大小
-    tiling_params={},                  # tiling轴即切分轴
-    low_dims=["x"],                    # 低维轴
-    persistent_reduction=False,
-    dual_reduction=False,
+    key={"x":"n_elements"},
+    hints={
+        "split_params":{"x":"BLOCK_SIZE"},
+        "tiling_params":{},
+        "low_dim_axes":["x"],
+        "reduction_axes":[],
+    }
 )
+示例2:
+@triton.autotune(
+    configs=[],
+    key=["n_elements"],
+}
 @triton.jit
 def add_kernel(
     x_ptr,  # *指向*第一个输入向量的指针。
@@ -125,7 +149,7 @@ def add_kernel(
 
 说明：
 1. Triton-Ascend默认采取benchmark的方式取片上计算时间，当设置环境变量`export TRITON_BENCH_METHOD="npu"`后，会通过`torch_npu.profiler.profile`的方式获取每个kernel配置下的片上计算时间，对于一些triton kernel计算快速的情况，例如小shape算子，相较于默认方式能够获取更准确的计算时间，但是会显著增加整体autotune的时间，请谨慎开启
-2. 目前该进阶用法主要针对的是 Vector 类算子，不支持 Cube 类算子。更多进阶使用示例可以参考[autotune进阶使用示例](https://gitcode.com/Ascend/triton-ascend/tree/master/ascend/examples/autotune_cases)
+2. 目前该进阶用法针对的是 Vector 类算子，不支持 Cube 类算子。更多进阶使用示例可以参考[autotune进阶使用示例](https://gitcode.com/Ascend/triton-ascend/tree/main/third_party/ascend/unittest/autotune_ut)
 
 ### 参数自动解析
 
@@ -160,6 +184,7 @@ kernel_func[grid](y, x, n_rows, n_cols, BLOCK_SIZE=block_size)
 
 ```Python
 @triton.autotune(
+    configs=[],
     key={"n_elements"} # 需要指定
     ...
 )
@@ -243,7 +268,7 @@ def triton_func(...):
         xmask = row_offsets < n_rows
         ymask = col_offsets < n_cols
 
-# 解析得到低维轴 low_dims = {"y"}
+# 解析得到低维轴 low_dim_axes = {"y"}
 # row_offsets虽然也通过tl.arange计算且与n_rows比较计算mask，但切片在低维进行扩充，所以x不是一个低维轴
 ```
 

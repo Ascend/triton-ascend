@@ -205,7 +205,7 @@ Triton 使用 LLVM20 为 GPU 和 CPU 生成代码。同样，昇腾的毕昇编�
 - 步骤3：执行以下命令进行构建和安装LLVM：
 
   ```bash
-  cd $HOME/llvm-project  # 用户git clone 拉取的 LLVM 代码路径
+  cd {PATH_TO}/llvm_project # 路径为用户拉取LLVM代码的路径,需根据实际调整
   mkdir build
   cd build
   cmake ../llvm \
@@ -233,7 +233,7 @@ Triton 使用 LLVM20 为 GPU 和 CPU 生成代码。同样，昇腾的毕昇编�
 - 步骤2：执行以下命令进行构建和安装：
 
    ```bash
-   cd $HOME/llvm-project  # your clone of LLVM.
+   cd {PATH_TO}/llvm_project # 路径为用户拉取LLVM代码的路径,需根据实际调整
    mkdir build
    cd build
    cmake -G Ninja  ../llvm  \
