@@ -64,16 +64,22 @@ void init_buffer_ir(py::module &&m)
                  mlir::cast<MemRefType>(memrefType));
            })
       .def("to_buffer",
-           [](BufferOpBuilder &self, Value &src,
-              const Attribute &addressSpace) -> Value {
-             auto tensorType = dyn_cast<RankedTensorType>(src.getType());
-             if (!tensorType) {
-               llvm::report_fatal_error("to_buffer: src must be tensor type");
-             }
-             auto memrefType = MemRefType::get(
-                 tensorType.getShape(), tensorType.getElementType(),
-                 MemRefLayoutAttrInterface{}, addressSpace);
-             return self.create<bufferization::ToMemrefOp>(memrefType, src);
+           [](BufferOpBuilder &self, Value &src, const Attribute &addressSpace) -> Value {
+               auto tensorType = dyn_cast<RankedTensorType>(src.getType());
+               if (!tensorType) {
+                   llvm::report_fatal_error("to_buffer: src must be tensor type");
+               }
+               auto memrefType =
+                   MemRefType::get(tensorType.getShape(), tensorType.getElementType(), MemRefLayoutAttrInterface {});
+               // TODO: We need to add a pass before OneShotBufferize to generate MemorySpaceCastOp
+               Operation *memref = self.create<bufferization::ToMemrefOp>(memrefType, src);
+               if (addressSpace) {
+                   memref = self.create<memref::MemorySpaceCastOp>(
+                       MemRefType::get(memrefType.getShape(), memrefType.getElementType(), memrefType.getLayout(),
+                                       addressSpace),
+                       memref->getResult(0));
+               }
+               return memref->getResult(0);
            })
       .def("to_tensor",
            [](BufferOpBuilder &self, Value &src, bool writable) -> Value {
