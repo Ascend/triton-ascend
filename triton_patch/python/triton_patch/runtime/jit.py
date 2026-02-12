@@ -36,6 +36,7 @@ from ..backends.ascend.compiler import AscendAttrsDescriptor
 from types import ModuleType
 
 TRITON_MODULE = __name__[:-len(".runtime.jit")]
+_ALREADY_WARNED_UNSUPPORTED_TUNE_ARGS = False
 
 T = TypeVar("T")
 
@@ -630,7 +631,10 @@ class JITFunction(KernelInterface[T]):
                 elif k in excess_kwargs:
                     not_work_params.append(k)
             if len(not_work_params) != 0:
-                print("[WARNING] Please DO NOT tune args {}!".format(not_work_params))
+                global _ALREADY_WARNED_UNSUPPORTED_TUNE_ARGS
+                if not _ALREADY_WARNED_UNSUPPORTED_TUNE_ARGS:
+                    print("[WARNING] Please DO NOT tune args {}!".format(not_work_params))
+                    _ALREADY_WARNED_UNSUPPORTED_TUNE_ARGS = True
 
             bound_vals = tuple(bound_args.values())
 

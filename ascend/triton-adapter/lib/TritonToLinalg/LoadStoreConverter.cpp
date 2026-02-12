@@ -211,7 +211,6 @@ LoadConverter::LoadConverter(MLIRContext *context)
 LogicalResult
 LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
                                ConversionPatternRewriter &rewriter) const {
-
   // Check if tt.load is modified by AddPtrConverter to a specified state.
   if (checkModifiedByAddPtrConverter(op).succeeded()) {
     return continueModifyFromAddPtrConverter(op, adaptor, rewriter);
