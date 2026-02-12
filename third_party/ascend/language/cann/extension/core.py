@@ -25,6 +25,7 @@ __all__ = [
     "builtin",
     "CORE",
     "copy_from_ub_to_l1",
+    "copy",
     "debug_barrier",
     "fixpipe",
     "FixpipeDMAMode",
@@ -164,7 +165,22 @@ def copy_from_ub_to_l1(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, b
     :param dst: The destination buffer located in L1 memory.
     :type dst: tl.tensor | bl.buffer
     """
+    from warnings import warn
+    warn("copy_from_ub_to_l1 is deprecated, please use copy instead.")
     return semantic.copy_from_ub_to_l1(src, dst, _builder)
+
+
+@builtin
+def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _builder: None) -> None:
+    """
+    Copies data from the Unified Buffer (UB) to the Unified Buffer (UB) or L1 Buffer.
+
+    :param src: The source data located in the Unified Buffer.
+    :type src: tl.tensor | bl.buffer
+    :param dst: The destination buffer located Unified Buffer (UB) or L1 memory.
+    :type dst: tl.tensor | bl.buffer
+    """
+    return semantic.copy(src, dst, _builder)
 
 
 def create_sync_block(sender, receiver, event_id, is_set: bool,

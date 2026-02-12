@@ -10,6 +10,7 @@ from .core import (
     builtin,
     CORE,
     copy_from_ub_to_l1,
+    copy,
     debug_barrier,
     fixpipe,
     FixpipeDMAMode,
@@ -71,6 +72,7 @@ __all__ = [
     # core
     "builtin",
     "copy_from_ub_to_l1",
+    "copy",
     "CORE",
     "debug_barrier",
     "fixpipe",

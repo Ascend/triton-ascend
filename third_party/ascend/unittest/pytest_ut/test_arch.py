@@ -76,9 +76,7 @@ def copy(
     al.copy(add_ub, A_l1)
 
 
-# ============== Main for manual testing ==============
-
-if __name__ == "__main__":
+def test_arch():
     print("=" * 60)
     print("Test 1: copy ")
     print("=" * 60)
@@ -89,3 +87,7 @@ if __name__ == "__main__":
     )
     print(f"✅ Generated MLIR ({len(mlir)} chars):\n")
     print(mlir)
+
+# ============== Main for manual testing ==============
+if __name__ == "__main__":
+    test_arch()

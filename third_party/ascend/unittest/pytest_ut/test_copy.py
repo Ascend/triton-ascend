@@ -70,15 +70,16 @@ def copy(
     a1_val = tl.load(a1_ptr)
 
     add = tl.add(a_val, a1_val)
-
     add_ub = bl.to_buffer(add, al.ascend_address_space.UB)
+
     A_l1 = bl.alloc(tl.float32, [M, N], al.ascend_address_space.L1)
     al.copy_from_ub_to_l1(add_ub, A_l1)
 
+    A_ub = bl.alloc(tl.float32, [M, N], al.ascend_address_space.UB)
+    al.copy(add_ub, A_ub)
 
-# ============== Main for manual testing ==============
 
-if __name__ == "__main__":
+def test_copy():
     print("=" * 60)
     print("Test 1: copy ")
     print("=" * 60)
@@ -89,3 +90,7 @@ if __name__ == "__main__":
     )
     print(f"✅ Generated MLIR ({len(mlir)} chars):\n")
     print(mlir)
+
+# ============== Main for manual testing ==============
+if __name__ == "__main__":
+    test_copy()
