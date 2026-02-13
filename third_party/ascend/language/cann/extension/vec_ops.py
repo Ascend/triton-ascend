@@ -387,6 +387,10 @@ def sort(ptr, dim=-1, descending=False, _builder=None):
         descending = bool(descending)
 
     ret = sort_impl(ptr, dim, descending, _builder)
+    # interpreter mode not support compile_hint overflow_mode, direct return
+    from triton.runtime.interpreter import InterpreterBuilder
+    if isinstance(_builder, InterpreterBuilder):
+        return ret
     base_ty = ptr.type.scalar if hasattr(ptr.type, "scalar") else ptr.type
     if base_ty.is_int8() or base_ty.is_int16():
         compile_hint_impl(ret, "overflow_mode", constexpr("saturate"), _builder)

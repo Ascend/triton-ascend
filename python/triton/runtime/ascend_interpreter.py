@@ -28,9 +28,23 @@ features are isolated here and can be extended independently.
 Author: Triton-Ascend Contributors
 """
 
+import warnings
 import numpy as np
 import triton.language as tl
-from .interpreter import InterpreterBuilder, TensorHandle
+from .interpreter import InterpreterBuilder, TensorHandle, _get_np_dtype
+from .._C.libtriton import interpreter as _interpreter
+
+
+def _elementwise_max(a, b):
+    # Ta changed tl.standaed._elementwise_max to _elementwise_max_default, this function only used for identity comparison
+    raise RuntimeError("This function is only a sentinel for identity comparison")
+
+
+def _compute_strides(shape):
+    strides = [1] * len(shape)
+    for i in range(len(shape) - 2, -1, -1):
+        strides[i] = strides[i + 1] * shape[i + 1]
+    return strides
 
 
 class AscendInterpreterBuilder(InterpreterBuilder):
@@ -55,6 +69,21 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         self.sub_vec_id = 0
         # Flag to track if sub_vec_id simulation is needed
         self._sub_vec_simulation_enabled = False
+
+    def to_int_val(self, val):
+        """
+        Convert a value (int or TensorHandle) to Python int.
+        
+        :param val: Value to convert (int, TensorHandle, or other)
+        :return: Python integer
+        """
+        if isinstance(val, TensorHandle):
+            return int(val.data.item())
+        return int(val)
+
+    def _patch_lang_ascend(self, fn):
+        if not hasattr(tl.standard, '_elementwise_max'):
+            tl.standard._elementwise_max = _elementwise_max
     
     def get_additional_reserved_keywords(self):
         """
@@ -67,6 +96,8 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         """
         return [
             "multibuffer",      # Ascend-specific memory buffering
+            "debug",
+            "optimize_dynamic_offset",
             # Add more Ascend-specific keywords here as needed
             # "ascend_option1",
             # "ascend_option2",
@@ -84,6 +115,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         """
         # Import _patch_builtin from parent module
         from .interpreter import _patch_builtin
+        self._patch_lang_ascend(fn)
         
         # Patch all modules in fn's globals that might be extension modules
         for name, value in list(fn.__globals__.items()):
@@ -265,7 +297,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         This is a hardware-accelerated gather operation that selects elements
         from a tensor using a set of indices along a specified dimension.
         
-        :param src_ptr: Source tensor pointer (TensorHandle)
+        :param src_ptr: Source tensor pointer (TensorHandle), just ptr address, not value
         :param index_tensor: 1D tensor of indices (TensorHandle or array)
         :param dim: Dimension to select from (int)
         :param src_shape: List of source shape (int or TensorHandle)
@@ -275,15 +307,10 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         :return: Result tensor with selected indices (TensorHandle)
         """
         # Convert src_shape, src_offset, read_shape to integers
-        def to_int(val):
-            if isinstance(val, TensorHandle):
-                return int(val.data.item())
-            return int(val)
-        
-        src_shape_vals = [to_int(s) for s in src_shape]
-        src_offset_vals = [to_int(o) if o != -1 else -1 for o in src_offset]
-        read_shape_vals = [to_int(r) if r != -1 else -1 for r in read_shape]
-        result_shape_vals = [to_int(r) for r in result_shape]
+        src_shape_vals = [self.to_int_val(s) for s in src_shape]
+        src_offset_vals = [self.to_int_val(s) if s != -1 else -1 for s in src_offset]
+        read_shape_vals = [self.to_int_val(r) if r != -1 else -1 for r in read_shape]
+        result_shape_vals = [self.to_int_val(r) for r in result_shape]
         
         # Get index values - handle both array and TensorHandle
         if isinstance(index_tensor, TensorHandle):
@@ -294,35 +321,58 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         # Ensure indices are integers
         if indices.dtype not in [np.int32, np.int64]:
             indices = indices.astype(np.int32)
+
+        # Element type
+        dtype_tt = src_ptr.get_element_ty()
+        dtype_np = _get_np_dtype(dtype_tt)
+        src_strides = _compute_strides(src_shape_vals)
+        base_addr = int(src_ptr.data.item())
         
         # Create result tensor
-        result = np.empty(result_shape_vals, dtype=src_ptr.data.dtype)
+        result = np.empty(result_shape_vals, dtype=dtype_np)
         
         # Perform index_select: for each index, read the specified data
         for out_idx, in_idx in enumerate(indices):
             in_idx = int(in_idx)
-            
-            # Validate index bounds
-            if not (0 <= in_idx < src_shape_vals[dim]):
-                # Out of bounds - fill with zeros
-                result_slices = [slice(None)] * len(result_shape_vals)
-                result_slices[dim] = slice(out_idx, out_idx + 1)
-                result[tuple(result_slices)] = 0
-                continue
-            
-            # Build source slice
-            src_slices = []
+            # Generate all coordinates in the tile
+            ranges = []
             for d in range(len(src_shape_vals)):
                 if d == dim:
-                    src_slices.append(slice(in_idx, in_idx + 1))
+                    ranges.append([in_idx])
                 else:
                     offset = src_offset_vals[d] if src_offset_vals[d] != -1 else 0
                     read_size = read_shape_vals[d] if read_shape_vals[d] != -1 else src_shape_vals[d]
                     # Clamp to valid range
                     offset = max(0, min(offset, src_shape_vals[d] - 1))
                     read_size = min(read_size, src_shape_vals[d] - offset)
-                    src_slices.append(slice(offset, offset + read_size))
-            
+                    ranges.append(list(range(offset, offset + read_size)))
+            from itertools import product
+            coords = list(product(*ranges))
+
+            # Compute address for each element in the tile
+            addresses = []
+            for coord in coords:
+                offset = sum(coord[i] * src_strides[i] for i in range(len(coord)))
+                addr = base_addr + offset * np.dtype(dtype_np).itemsize
+                addresses.append(addr)
+            # load data
+            addr_array = np.array(addresses, dtype=np.uint64)
+            mask_array = np.ones_like(addr_array, dtype=bool)
+            other_array = np.zeros_like(addr_array, dtype=dtype_np)
+            tile_data = _interpreter.load(addr_array, mask_array, other_array, dtype_np)
+            # Reshape tile_data to match read_shape with dim=1 at dim
+            tile_shape = []
+            for d in range(len(src_shape_vals)):
+                if d == dim:
+                    tile_shape.append(1)
+                else:
+                    offset = src_offset_vals[d]
+                    read_size = read_shape_vals[d]
+                    offset = max(0, min(offset, src_shape_vals[d] - 1))
+                    read_size = min(read_size, src_shape_vals[d] - offset)
+                    tile_shape.append(read_size)
+            tile_data = tile_data.reshape(tile_shape)
+
             # Build result slice
             result_slices = []
             for d in range(len(result_shape_vals)):
@@ -330,22 +380,9 @@ class AscendInterpreterBuilder(InterpreterBuilder):
                     result_slices.append(slice(out_idx, out_idx + 1))
                 else:
                     result_slices.append(slice(None))
-            
-            # Copy data with proper shape handling
-            try:
-                src_data = src_ptr.data[tuple(src_slices)]
-                # Handle shape mismatch by resizing
-                target_shape = [result_shape_vals[d] if d != dim else 1 for d in range(len(result_shape_vals))]
-                if src_data.shape != tuple(target_shape):
-                    # Pad or trim as needed
-                    pad_width = [(0, target_shape[d] - src_data.shape[d]) for d in range(len(target_shape))]
-                    src_data = np.pad(src_data, pad_width, mode='constant', constant_values=0)
-                result[tuple(result_slices)] = src_data
-            except Exception as e:
-                # On error, fill with zeros
-                result[tuple(result_slices)] = 0
-        
-        return TensorHandle(result, src_ptr.dtype.scalar)
+            result[tuple(result_slices)] = tile_data
+ 
+        return TensorHandle(result, dtype_tt)
 
     def create_get_sub_vec_id(self):
         """
@@ -411,3 +448,246 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         """
         # No-op in interpreter mode: single-threaded execution doesn't need sync
         pass
+
+    def get_int1_ty(self):
+        return tl.int1
+
+    def get_all_ones_value(self, tt_type):
+        np_type = _get_np_dtype(tt_type)
+        if "int" in np_type.name:
+            return TensorHandle(np.full(1, -1, dtype=np_type), tt_type.scalar)
+        elif np_type == np.bool_:
+            return TensorHandle(np.full(1, True, dtype=np_type), tt_type.scalar)
+        else:
+            raise TypeError(f"unsupported type {tt_type}")
+
+    def is_simt_mode(self):
+        return False
+
+    def create_sort(self, ptr_data, dim: int, descending: bool):
+        ndim = ptr_data.data.ndim
+        norm_dim = dim if dim >= 0 else dim + ndim
+        if not (0 <= norm_dim < ndim):
+            raise IndexError(
+                f"Dimension out of range(expected to be in range of [{-ndim}, {ndim - 1}], but got {dim})")
+
+        if descending:
+            sorted_asc = np.sort(ptr_data.data, axis=norm_dim)
+            sorted_desc = np.flip(sorted_asc, axis=norm_dim)
+            return TensorHandle(sorted_desc, ptr_data.dtype.scalar)
+        else:
+            return TensorHandle(np.sort(ptr_data.data, axis=norm_dim), ptr_data.dtype.scalar)
+
+    def create_flip(self, ptr_data, dim):
+        ndim = ptr_data.data.ndim
+        norm_dim = dim if dim >= 0 else dim + ndim
+        if not (0 <= norm_dim < ndim):
+            raise IndexError(
+                f"Dimension out of range(expected to be in range of [{-ndim}, {ndim - 1}], but got {dim})")
+        return TensorHandle(np.flip(ptr_data.data, axis=norm_dim), ptr_data.dtype.scalar)
+
+    def create_gather_out_to_ub(self, src_ptr, index_tensor, index_boundary, dim, src_stride, end_offset, start_offset, other=None):
+        # Convert src_stride, start_offset, end_offset to integers
+        src_stride_vals = [self.to_int_val(s) for s in src_stride]
+        start_offset_vals = [self.to_int_val(s) for s in start_offset]
+        end_offset_vals = [self.to_int_val(s) for s in end_offset]
+
+        # Element type
+        dtype_tt = src_ptr.get_element_ty()
+        dtype_np = _get_np_dtype(dtype_tt)
+        element_size = np.dtype(dtype_np).itemsize
+        base_addr = int(src_ptr.data.item())
+        index_shape = index_tensor.data.shape
+        index_rank = len(index_shape)
+        total_elements = np.prod(index_shape)
+
+        # Generate  coordinates
+        all_coords = []
+        for idx in range(total_elements):
+            coord = np.unravel_index(idx, index_shape)
+            all_coords.append(coord)
+        
+        # Compute the source tensor coordinates for each position in all_coords
+        src_coords = []
+        for coord in all_coords:
+            src_coord = []
+            for d in range(index_rank):
+                if d == dim:
+                    index_value = index_tensor.data[coord]
+                    if index_value >= index_boundary:
+                        src_coord.append(-1)
+                    else:
+                        src_coord.append(start_offset_vals[d] + index_value)
+                else:
+                    src_coord.append(start_offset_vals[d] + coord[d])
+            src_coords.append(src_coord)
+
+        # Compute address and mask
+        addresses = []
+        valid_mask = []
+        for _, src_coord in enumerate(src_coords):
+            if -1 in src_coord:
+                addresses.append(0)
+                valid_mask.append(False)
+            else:
+                offset = 0
+                for d in range(index_rank):
+                    offset += src_coord[d] * src_stride_vals[d]
+                address = base_addr + offset * element_size
+                addresses.append(address)
+                valid_mask.append(True)
+        
+        addr_array = np.array(addresses, dtype=np.uint64)
+        mask_array = np.array(valid_mask, dtype=bool)
+
+        # Create other value array
+        if other is not None:
+            if isinstance(other, TensorHandle):
+                other_value = other.data.item()
+            else:
+                other_value = other
+            other_array = np.full(addr_array.shape, other_value, dtype=dtype_np)
+        else:
+            other_array = np.zeros(addr_array.shape, dtype=dtype_np)
+
+        # Load data
+        flat_result = _interpreter.load(addr_array, mask_array, other_array, dtype_np)
+        result = flat_result.reshape(index_shape)
+        return TensorHandle(result, dtype_tt)
+
+    def create_scatter_ub_to_out(self, dst_ptr, value_tensor, index_tensor, index_boundary, dim, dst_stride, end_offset, start_offset):
+        # Convert dst_stride, start_offset, end_offset to integers
+        dst_stride_vals = [self.to_int_val(s) for s in dst_stride]
+        start_offset_vals = [self.to_int_val(s) for s in start_offset]
+        end_offset_vals = [self.to_int_val(s) for s in end_offset]        
+
+        # Element type
+        dtype_tt = dst_ptr.get_element_ty()
+        dtype_np = _get_np_dtype(dtype_tt)
+        element_size = np.dtype(dtype_np).itemsize        
+        base_addr = int(dst_ptr.data.item())
+
+        index_shape = index_tensor.data.shape
+        index_rank = len(index_shape)
+        total_elements = np.prod(index_shape)
+        flat_values = value_tensor.data.flatten()
+        flat_indices = index_tensor.data.flatten()
+
+        # Generate  coordinates
+        all_coords = []
+        for idx in range(total_elements):
+            coord = np.unravel_index(idx, index_shape)
+            all_coords.append(coord)
+
+        # Compute address and mask
+        addresses = []
+        valid_mask = []
+        for _, coord in enumerate(all_coords):
+            index_value = index_tensor.data[coord]
+            if index_value >= index_boundary:
+                addresses.append(0)
+                valid_mask.append(False)
+            else:
+                dst_coord = []
+                for d in range(index_rank):
+                    if d == dim:
+                        dst_coord.append(start_offset_vals[d] + index_value)                                            
+                    else:
+                        dst_coord.append(start_offset_vals[d] + coord[d])
+                offset = 0
+                for d in range(index_rank):
+                    offset += dst_coord[d] * dst_stride_vals[d]
+                address = base_addr + offset * element_size
+                addresses.append(address)
+                valid_mask.append(True)
+        
+        addr_array = np.array(addresses, dtype=np.uint64)
+        mask_array = np.array(valid_mask, dtype=bool)
+
+        _interpreter.store(addr_array, flat_values, mask_array)
+
+    def create_index_put(self, dst_ptr, index_tensor, value_tensor, dim, index_boundary, end_offset, start_offset, dst_stride):
+        # Convert dst_stride, start_offset, end_offset_ to integers
+        dst_stride_vals = [self.to_int_val(s) for s in dst_stride]
+        start_offset_vals = [self.to_int_val(s) for s in start_offset]
+        end_offset_vals = [self.to_int_val(s) for s in end_offset]        
+
+        # Element type
+        dtype_tt = dst_ptr.get_element_ty()
+        dtype_np = _get_np_dtype(dtype_tt)
+        element_size = np.dtype(dtype_np).itemsize        
+        base_addr = int(dst_ptr.data.item())
+
+        value_shape = value_tensor.data.shape
+        value_rank = len(value_shape)
+        
+        flat_values = value_tensor.data.flatten()      
+        total_elements = flat_values.size
+
+        # Generate  coordinates
+        all_coords = []
+        for idx in range(total_elements):
+            coord = np.unravel_index(idx, value_shape)
+            all_coords.append(coord)
+
+        read_ranges = []
+        for d in range(value_rank):
+            start = start_offset_vals[d]
+            end = end_offset_vals[d]
+            read_ranges.append((start, end))
+
+        #Compute address
+        addresses = []
+        valid_mask = []
+        values_to_store = []
+        for i, coord in enumerate(all_coords):
+            index_pos = coord[dim]
+            index_value = index_tensor.data[index_pos]
+            if index_value >= index_boundary:
+                addresses.append(0)
+                valid_mask.append(False)
+            else:
+                dst_coord = []
+                for d in range(value_rank):
+                    if d == dim:
+                        dst_coord.append(index_value)                                            
+                    else:
+                        dst_coord.append(start_offset_vals[d] + coord[d])
+                offset = 0
+                for d in range(value_rank):
+                    offset += dst_coord[d] * dst_stride_vals[d]
+                address = base_addr + offset * element_size
+                addresses.append(address)
+                values_to_store.append(flat_values[i])
+                valid_mask.append(True)
+
+        addr_array = np.array(addresses, dtype=np.uint64)
+        mask_array = np.array(valid_mask, dtype=bool)
+        values_array = np.array(values_to_store, dtype=dtype_np)
+
+        _interpreter.store(addr_array, values_array, mask_array)
+
+    def get_bool_attr(self, val):
+        return bool(val) 
+
+    def get_unit_attr(self):
+        return None  # None valule in compile_hint return uint
+
+    def get_int32_attr(self, val):        
+        return int(val)
+
+    def get_str_attr(self, val):
+        return str(val)
+
+    def get_i64_array_attr(self, val):      
+        return [int(x) for x in val]
+
+    def create_annotation(self, ptr_data, hint_name: str, hint_val):
+        if hint_name == "overflow_mode":
+            raise ValueError(f"overflow_mode is not supported in interpreter mode, may have accuracy issues")
+        else:
+            warnings.warn(
+            f"compile_hint '{hint_name}' is not supported in interpreter mode, just pass it",
+            UserWarning,
+            stacklevel=2 
+        )

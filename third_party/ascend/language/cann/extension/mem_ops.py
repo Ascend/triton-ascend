@@ -581,9 +581,26 @@ def index_select_simd(
             f"index must be 1D tensor, got {len(index.shape)}D"
         assert dim < ndim - 1, \
             f"index_select_simd cannot support trailing dimension as dim={dim}, ndim={ndim}"
-        
-        newsrc_shape = [o.handle for o in src_shape]
-        newsrc_offset = [o.handle for o in src_offset]
+        # Handle both tensor and int offsets (for interpreter mode)
+        newsrc_shape = []
+        for s in src_shape:
+            if isinstance(s, tensor):
+                newsrc_shape.append(s.handle)
+            elif isinstance(s, int):
+                # For interpreter mode: keep as int
+                newsrc_shape.append(s)
+            else:
+                newsrc_shape.append(s.handle if hasattr(s, 'handle') else s)
+        newsrc_offset = []
+        for s in src_offset:
+            if isinstance(s, tensor):
+                newsrc_offset.append(s.handle)
+            elif isinstance(s, int):
+                # For interpreter mode: keep as int
+                newsrc_offset.append(s)
+            else:
+                newsrc_offset.append(s.handle if hasattr(s, 'handle') else s)
+
         # Create output type
         return_shape = [
             index.shape[0] if i == dim else read_shape[i] 
