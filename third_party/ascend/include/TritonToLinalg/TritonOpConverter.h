@@ -593,16 +593,6 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
-class EmbeddingGatherConverter : public OpConversionPattern<triton::ascend::EmbeddingGatherOp> {
-public:
-  using OpConversionPattern<triton::ascend::EmbeddingGatherOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(triton::ascend::EmbeddingGatherOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-private:
-  static constexpr llvm::StringRef funcNameBase = "triton_embedding_gather";
-};
-
 class IndexPutConverter : public OpConversionPattern<triton::ascend::IndexPutOp> {
 public:
   using OpConversionPattern<triton::ascend::IndexPutOp>::OpConversionPattern;

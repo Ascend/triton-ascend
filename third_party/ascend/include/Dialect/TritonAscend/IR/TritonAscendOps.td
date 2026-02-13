@@ -77,45 +77,6 @@ def ModOp : TT_Ascend_Op<"mod", [Pure]> {
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) type($rhs) `->` type($result)";
 }
 
-//
-// EmbeddingGather Op
-//
-def EmbeddingGatherOp : TT_Ascend_Op<"embedding_gather", [
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-  SameVariadicOperandSize,
-]> {
-    let summary = "Gather load from a tensor pointer with the embedding semantics";
-
-    let arguments = (
-      ins TT_Ptr:$src,
-          TT_Tensor:$idx,
-          AnyTypeOf<[I32, I64]>:$bound,
-          AnyTypeOf<[I32, I64]>:$blocksize,
-          Variadic<AnyTypeOf<[I32, I64]>>:$offsets,
-          Variadic<AnyTypeOf<[I32, I64]>>:$numels
-    );
-
-    let results = (outs TT_Tensor:$result);
-
-    let assemblyFormat = [{
-      $src `:` type($src) `,` $idx `:` type($idx) `,`
-      $bound `:` type($bound) `,` $blocksize `:` type($blocksize) `,`
-      `[` $offsets `:` type($offsets) `]` `,` `[` $numels `:` type($numels) `]`
-      attr-dict `->` type($result)
-    }];
-
-    let builders = [
-      OpBuilder<(ins
-          "Value":$src,
-          "Value":$idx,
-          "Value":$bound,
-          "Value":$blocksize,
-          "ValueRange":$offsets,
-          "ValueRange":$numels
-      )>
-    ];
-    // let hasCanonicalizer = 1;
-}
 
 //
 // IndexPut Op

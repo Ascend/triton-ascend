@@ -111,7 +111,6 @@ static bool isSIMTOp(Operation *op)
            custom_op.getVFMode() == hivm::VFMode::SIMT;
   }
   return isa<
-      triton::ascend::EmbeddingGatherOp,
       triton::ascend::IndexPutOp,
       triton::ascend::GatherOutToUbOp,
       triton::ascend::ScatterUbToOutOp,
@@ -726,7 +725,6 @@ void TritonToLinalgPass::populateTritonToLinalgConversionPatterns(
   patterns.add<TTOpConverters::GatherOutToUbConverter>(patterns.getContext());
   patterns.add<TTOpConverters::ScatterUbToOutConverter>(patterns.getContext());
   patterns.add<TTOpConverters::IndexSelectSimdConverter>(patterns.getContext());
-  patterns.add<TTOpConverters::EmbeddingGatherConverter>(patterns.getContext());
   patterns.add<TTOpConverters::IndexPutConverter>(patterns.getContext());
   patterns.add<TTOpConverters::SortOpConverter>(patterns.getContext());
   patterns.add<TTOpConverters::FlipOpConverter>(patterns.getContext());
@@ -814,7 +812,6 @@ void TritonToLinalgPass::annotateTensorKindForModule(ModuleOp moduleOp) {
     // INPUT tensors
     this->walkAndMarkTensorKind<TensorKind::INPUT, triton::LoadOp,
                                                    triton::ascend::IndexSelectSimdOp,
-                                                   triton::ascend::EmbeddingGatherOp,
                                                    triton::ascend::GatherOutToUbOp,
                                                    triton::ascend::IndirectLoadOp>(func);
 

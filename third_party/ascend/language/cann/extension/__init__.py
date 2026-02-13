@@ -61,7 +61,6 @@ from .vec_ops import (
 )
 
 from .mem_ops import (
-    index_select,
     index_put,
     gather_out_to_ub,
     scatter_ub_to_out,
@@ -121,7 +120,6 @@ __all__ = [
     "cast",
 
     # mem ops
-    "index_select",
     "index_put",
     "gather_out_to_ub",
     "scatter_ub_to_out",

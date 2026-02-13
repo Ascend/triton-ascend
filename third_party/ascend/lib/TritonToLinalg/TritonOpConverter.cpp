@@ -2164,51 +2164,6 @@ PtrToIntConverter::matchAndRewrite(triton::PtrToIntOp op, OpAdaptor adaptor,
 }
 
 LogicalResult
-EmbeddingGatherConverter::matchAndRewrite(triton::ascend::EmbeddingGatherOp op, OpAdaptor adaptor,
-                                          ConversionPatternRewriter &rewriter) const {
-  auto loc = op.getLoc();
-
-  auto moduleOp = op->getParentOfType<ModuleOp>();
-  rewriter.setInsertionPoint(moduleOp.getBody(),
-                             std::prev(moduleOp.getBody()->end()));
-
-  auto funcName = generateUniqueFuncName(moduleOp, funcNameBase);
-
-  auto src = adaptor.getSrc();
-  auto idx = op.getIdx();
-  auto bound = op.getBound();
-  auto blksiz = op.getBlocksize();
-  auto offsets = op.getOffsets();
-  auto numels = op.getNumels();
-  auto res = op.getResult();
-  auto resTy = res.getType();
-
-  // convert !tt.ptr<f32> to memref<?xf32>
-  auto srcTy = dyn_cast<MemRefType>(src.getType());
-  if (!srcTy) {
-      return rewriter.notifyMatchFailure(op, "expected MemRefType for src");
-  }
-  SmallVector<Type> inputTypes({srcTy, idx.getType(), bound.getType(),
-                                blksiz.getType()});
-  inputTypes.append(offsets.getTypes().begin(), offsets.getTypes().end());
-  inputTypes.append(numels.getTypes().begin(), numels.getTypes().end());
-  auto libFnType = rewriter.getFunctionType(inputTypes, {resTy});
-  auto funcOp = rewriter.create<func::FuncOp>(loc, funcName.str(), libFnType);
-  SymbolTable::setSymbolVisibility(funcOp, SymbolTable::Visibility::Private);
-
-  rewriter.setInsertionPoint(op);
-  SmallVector<Value> inputVals({src, idx, bound, blksiz});
-  inputVals.append(offsets.begin(), offsets.end());
-  inputVals.append(numels.begin(), numels.end());
-  auto callOp = rewriter.create<func::CallOp>(loc, funcOp.getSymNameAttr(),
-                                              TypeRange({resTy}),
-                                              inputVals);
-
-  rewriter.replaceOp(op, callOp);
-  return success();
-}
-
-LogicalResult
 IndexPutConverter::matchAndRewrite(triton::ascend::IndexPutOp op, OpAdaptor adaptor,
                                    ConversionPatternRewriter &rewriter) const
 {
