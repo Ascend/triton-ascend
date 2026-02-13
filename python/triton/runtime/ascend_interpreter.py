@@ -82,6 +82,17 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         return int(val)
 
     def _patch_lang_ascend(self, fn):
+
+        def _new_range(arg1, arg2=None, step=None, **kwargs):
+            if step is None:
+                step = 1
+            if arg2 is None:
+                start, end = 0, arg1
+            else:
+                start, end = arg1, arg2
+            return range(start, end, step)
+        tl.extra.cann.extension.parallel = _new_range
+        
         if not hasattr(tl.standard, '_elementwise_max'):
             tl.standard._elementwise_max = _elementwise_max
     
