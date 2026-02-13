@@ -23,18 +23,21 @@
 from __future__ import annotations
 
 import builtins
+import copy
 import functools
 import os
 import time
-import copy
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List
+
 from torch import Tensor
 
+import triton
 from triton.runtime.autotuner import Autotuner, Config
 
+from .autoparser import (LowDimsAxesParser, PtrNumsParser, ReductionAxesParser,
+                         SplitAxesParser, TilingAxesParser)
 from .utils import get_byte_per_numel, is_valid_axis_name, valid_axis_names
-from .autoparser import SplitAxesParser, TilingAxesParser, ReductionAxesParser, LowDimsAxesParser, PtrNumsParser
 
 
 class AutoTilingTuner(Autotuner):
@@ -102,8 +105,12 @@ class AutoTilingTuner(Autotuner):
         self.is_simt_mode = False
         self.user_specified_warps = None
         self.print_autotuning = os.getenv("TRITON_PRINT_AUTOTUNING", None) == "1"
-        # Compile kernels in parallel by default
-        self.compile_parallel = os.getenv("TRITON_AUTOTUNE_PARALLEL_COMPILE", "1") == "1"
+        # Compile kernels in parallel by default for triton.runtime.JITFunction,
+        # but not for others, e.g., LibEntry, since it's not compatible with AsyncCompileMode
+        self.compile_parallel = (
+            isinstance(self.fn, triton.runtime.JITFunction)
+            and os.getenv("TRITON_AUTOTUNE_PARALLEL_COMPILE", "1") == "1"
+        )
 
     def _init_axis_params(self, key, split_params, tiling_params, low_dim_axes, reduction_axes):
         if isinstance(key, list):
@@ -349,13 +356,12 @@ class AutoTilingTuner(Autotuner):
 
         if self.compile_parallel:
             import psutil
-            from triton import AsyncCompileMode
 
             max_workers = min(psutil.cpu_count(logical=False) // 2, len(kernels_call))
             future_kernels = []
             with (
                 ThreadPoolExecutor(max_workers=max_workers) as executor,
-                AsyncCompileMode(executor),
+                triton.AsyncCompileMode(executor),
             ):
                 for config, fn in kernels_call.items():
                     future_kernels.append((config, fn(warmup=True)))
@@ -435,12 +441,11 @@ class AutoTilingTuner(Autotuner):
         ret = []
         if self.compile_parallel:
             import psutil
-            from triton import AsyncCompileMode
 
             max_workers = min(psutil.cpu_count(logical=False) // 2, len(pruned_configs))
             with (
                 ThreadPoolExecutor(max_workers=max_workers) as executor,
-                AsyncCompileMode(executor),
+                triton.AsyncCompileMode(executor),
             ):
                 for config in pruned_configs:
                     ret.append(self.fn.warmup(

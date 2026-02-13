@@ -76,7 +76,8 @@ if __name__ == "__main__":
 # - 社区版 autotune（默认）需要显式传入一组 triton.Config，框架会对这些配置逐一编译并基准测试以选择最优配置
 # - 进阶版 autotune 框架基于 kernel 自动生成候选 tiling 配置，并对配置逐一编译并基准测试以选择最优配置
 # * 注意：1. 进阶模式启动需用户手动 import triton.backends.ascend.runtime;
-#        2. 若 configs=[]，框架基于 kernel 自动生成候选 tiling 配置;
+#        2. 若 configs=[]，框架基于 kernel 自动生成候选 tiling 配置，注意此时需要将@triton.autotune装饰器直接应用在@triton.jit之上，
+#           中间不能插入其他装饰器，例如libentry;
 #        3. 若 configs 不为空，则框架默认不会自动生成候选 tiling 配置;
 #        4. 若 configs 不为空，且hints.auto_gen_config=True,则框架自动生成Config,并与用户定义Config合并进行配置择优；
 #        5. 进阶版本支持通过设置os.environ["TRITON_BENCH_METHOD"] = ( "npu" ) 来设置性能采集方式。
