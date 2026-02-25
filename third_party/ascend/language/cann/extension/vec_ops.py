@@ -553,6 +553,9 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
     ret = ascend_cast_impl(input, dtype, _builder, fp_downcast_rounding, overflow_mode)
     if overflow_mode is not None:
         if overflow_mode in overflow_modes:
+            from triton.runtime.interpreter import InterpreterBuilder
+            if isinstance(_builder, InterpreterBuilder):
+                overflow_mode = constexpr(overflow_mode)
             compile_hint_impl(ret, "overflow_mode", overflow_mode, _builder)
         else:
             raise ValueError(f"Unknown overflow_mode:{overflow_mode} is found.")

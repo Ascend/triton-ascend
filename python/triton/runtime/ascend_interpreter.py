@@ -31,13 +31,32 @@ Author: Triton-Ascend Contributors
 import warnings
 import numpy as np
 import triton.language as tl
-from .interpreter import InterpreterBuilder, TensorHandle, _get_np_dtype
+from .interpreter import InterpreterBuilder, TensorHandle, ReduceOps, _get_np_dtype
 from .._C.libtriton import interpreter as _interpreter
 
 
-def _elementwise_max(a, b):
-    # Ta changed tl.standaed._elementwise_max to _elementwise_max_default, this function only used for identity comparison
-    raise RuntimeError("This function is only a sentinel for identity comparison")
+class AscendReduceOps(ReduceOps):
+    """
+    Ascend reduce operations that override only the apply_impl logic.
+    All other methods (sum, min_max, generic_reduce, etc.) are inherited from ReduceOps.
+    """
+    def apply_impl(self, input_param):
+        if self.combine_fn == tl.standard._argmin_combine_tie_break_left:
+            return self.min_max(input_param[0], val_reduce_op=np.min, idx_reduce_op=np.argmin)
+        elif self.combine_fn == tl.standard._argmax_combine_tie_break_left:
+            return self.min_max(input_param[0], val_reduce_op=np.max, idx_reduce_op=np.argmax)
+        # Ta has modified the implemention of tl.max
+        elif self.combine_fn == tl.standard._elementwise_max_default:
+            return self.min_max(input_param[0], val_reduce_op=np.nanmax, idx_reduce_op=None)    
+        elif self.combine_fn == tl.standard._elementwise_max_propagate_nan:
+            return self.min_max(input_param[0], val_reduce_op=np.max, idx_reduce_op=None)
+        elif self.combine_fn == tl.standard._elementwise_min:
+            return self.min_max(input_param[0], val_reduce_op=np.nanmin, idx_reduce_op=None)
+        elif self.combine_fn == tl.standard._sum_combine:
+            return self.sum(input_param[0])
+        else:
+            # Fall back to the slow mode
+            return self.generic_reduce(input_param)
 
 
 def _compute_strides(shape):
@@ -91,10 +110,13 @@ class AscendInterpreterBuilder(InterpreterBuilder):
             else:
                 start, end = arg1, arg2
             return range(start, end, step)
+
+        def _new_reduce(input_param, axis, combine_fn, keep_dims=False, **kwargs):
+            return AscendReduceOps(axis, combine_fn, keep_dims).apply(input_param)
+
         tl.extra.cann.extension.parallel = _new_range
-        
-        if not hasattr(tl.standard, '_elementwise_max'):
-            tl.standard._elementwise_max = _elementwise_max
+        tl.reduce = _new_reduce
+        tl.core.reduce = _new_reduce
     
     def get_additional_reserved_keywords(self):
         """
@@ -109,6 +131,9 @@ class AscendInterpreterBuilder(InterpreterBuilder):
             "multibuffer",      # Ascend-specific memory buffering
             "debug",
             "optimize_dynamic_offset",
+            "enable_mixed_cv",
+            "enable_auto_bind_sub_block",
+            "sync_solver",
             # Add more Ascend-specific keywords here as needed
             # "ascend_option1",
             # "ascend_option2",
