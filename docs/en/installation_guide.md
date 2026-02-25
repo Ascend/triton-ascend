@@ -267,12 +267,12 @@ This library supports the file system features of versions earlier than GCC 9. I
    ```bash
    cd triton-ascend && pip install -r requirements_dev.txt
    ```
-   Run the [01-vector-add.py](../../ascend/examples/tutorials/01-vector-add.py) instance.
+   Run the [01-vector-add.py](../../third_party/ascend/tutorials/01-vector-add.py) instance.
    ```bash
    # Set the CANN environment variables (for example, as the root user and with the default installation path /usr/local/Ascend).
    source /usr/local/Ascend/ascend-toolkit/set_env.sh
    # Run the tutorials example.
-   python3 ./triton-ascend/ascend/examples/tutorials/01-vector-add.py
+   python3 ./triton-ascend/third_party/ascend/tutorials/01-vector-add.py
    ```
     If an output similar to the following is displayed, the environment is correctly configured:
     ```

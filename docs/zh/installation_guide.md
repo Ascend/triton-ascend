@@ -4,7 +4,7 @@
 - **基于源码安装**：基于TA的开发者选择此项。请先前往下一步<a href="#env-prepare">环境准备</a>完成前置配置，再选择<a href="#auto-code-base">快速安装</a>或<a href="#hand-code-base">手动安装</a>其中一种方式操作；
 - **基于Docker安装**：无需环境准备，可直接跳转至<a href="#docker-build">基于Docker构建</a>进行操作
 
-<anchor id="env-prepare"></anchor>
+<a id="env-prepare"></a>
 ## 环境准备
 
 ### Python版本要求
@@ -92,7 +92,7 @@ pip install torch_npu==2.7.1
 ```bash
 pip install torch==2.7.1+cpu --index-url https://download.pytorch.org/whl/cpu
 ```
-<anchor id="pip-base"></anchor>
+<a id="pip-base"></a>
 ## 通过pip安装Triton-Ascend
 
 ### 最新稳定版本
@@ -118,7 +118,7 @@ pip install -i https://test.pypi.org/simple/ "triton-ascend<3.2.0rc" --pre --no-
 
 注意，如果您在执行`pip install`时遇到ssl相关报错，可追加`--trusted-host test.pypi.org --trusted-host test-files.pythonhosted.org`选项解决。
 
-<anchor id="code-base"></anchor>
+<a id="code-base"></a>
 ## 通过源码安装Triton-Ascend
 
 如果您需要对 Triton-Ascend 进行开发或自定义修改，则应采用源代码编译安装的方法。这种方式允许您根据项目需求调整源代码，并编译安装定制化的 Triton-Ascend 版本。
@@ -132,7 +132,7 @@ pip install -i https://test.pypi.org/simple/ "triton-ascend<3.2.0rc" --pre --no-
 - GCC >= 9.4.0
 - GLIBC >= 2.27
 
-<anchor id="code-require"></anchor>
+<a id="code-require"></a>
 ### 依赖
 
 #### 安装系统库依赖
@@ -162,7 +162,7 @@ pip install ninja cmake wheel pybind11 # build-time dependencies
 ```
 
 
-<anchor id="auto-code-base"></anchor>
+<a id="auto-code-base"></a>
 ### 快速安装
 ```bash
 git clone https://gitcode.com/Ascend/triton-ascend.git
@@ -174,7 +174,7 @@ LLVM_SYSPATH=/path/to/LLVM \
 pip install -e python
 ```
 
-<anchor id="hand-code-base"></anchor>
+<a id="hand-code-base"></a>
 ### 手动安装 - 基于LLVM构建
 
 Triton 使用 LLVM20 为 GPU 和 CPU 生成代码。同样，昇腾的毕昇编译器也依赖 LLVM 生成 NPU 代码，因此需要编译 LLVM 源码才能使用。请关注依赖的 LLVM 特定版本。LLVM的构建支持两种构建方式，**以下两种方式二选一即可**，无需重复执行。
@@ -284,7 +284,7 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend/pytho
   取消注释后重新构建项目即可解决该问题。
 
 
-<anchor id="docker-build"></anchor>
+<a id="docker-build"></a>
 ## 基于Docker安装
 我们提供了Dockerfile帮助您安装Docker环境镜像。安装过程将会自动从CANN官网中下载安装对应的CANN Toolkit和Kernel包，需要您通过`--build-arg`指定您机器需要安装的CANN相关参数。
 
