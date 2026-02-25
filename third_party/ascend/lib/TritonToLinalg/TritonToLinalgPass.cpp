@@ -837,7 +837,7 @@ LogicalResult TritonToLinalgPass::processImplicitPermuteOperations(ModuleOp modu
   patterns.add<ImplicitPermute::AtomicCASConverter>(patterns.getContext());
   patterns.add<CannonicalizerConverter::SplatCmpConverter>(patterns.getContext());
 
-  if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns)))) {
+  if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
     LLVM_DEBUG({
       llvm::dbgs() << "ImplicitPermute: rewrite MemOp failed\n";
     });

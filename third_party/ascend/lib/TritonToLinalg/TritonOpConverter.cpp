@@ -201,8 +201,8 @@ LogicalResult SelectCanonicalizer::matchAndRewrite(
   SmallVector<Value> isInvalidVals;
   for (size_t i = 0; i < offsets.size(); i++) {
     auto &o = offsets[i];
-    if (o.is<Value>()) {
-      auto oVal = o.get<Value>();
+    if (isa<Value>(o)) {
+      auto oVal = cast<Value>(o);
       int64_t dimSize = type.getShape()[i];
       Value sizeIndex = rewriter.create<arith::ConstantIndexOp>(loc, dimSize);
       Value isNegative = rewriter.create<arith::CmpIOp>(

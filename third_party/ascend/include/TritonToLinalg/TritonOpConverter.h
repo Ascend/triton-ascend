@@ -340,7 +340,7 @@ protected:
   {
     return isa<FloatType>(elemType) &&
           elemType.getIntOrFloatBitWidth() <
-              Float32Type::get(elemType.getContext()).getWidth() &&
+              Float32Type::get(elemType.getContext()).getIntOrFloatBitWidth() &&
           (isa<arith::AddFOp>(reductionOp) || isa<arith::MulFOp>(reductionOp));
   }
 
