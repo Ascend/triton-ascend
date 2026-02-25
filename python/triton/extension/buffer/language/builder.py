@@ -65,6 +65,7 @@ def setup_unified_builder_with_buffer_builder(main_builder, buffer_builder):
     main_builder._buffer_builder = buffer_builder
     buffer_methods = [
         'get_null_attr',
+        'get_str_array_attr',
         'alloc',
         'to_buffer',
         'to_tensor',

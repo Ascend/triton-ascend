@@ -68,7 +68,7 @@ namespace TritonToStructured {
 using namespace mlir;
 using namespace triton;
 
-bool isMultiple(const OpFoldResult &dividend, 
+bool isMultiple(const OpFoldResult &dividend,
                 const OpFoldResult &divisor) {
     auto staticDividend = getIntAttr(dividend);
     auto staticDivisor = getIntAttr(divisor);
@@ -78,12 +78,7 @@ bool isMultiple(const OpFoldResult &dividend,
     return staticDividend.value() % staticDivisor.value() == 0;
 }
 
-bool isOne(const OpFoldResult ofr) {
-    auto staticOfr = getIntAttr(ofr);
-    return staticOfr.has_value() && staticOfr.value() == 1;
-}
-
-bool isEqual(const OpFoldResult &ofr1, 
+bool isEqual(const OpFoldResult &ofr1,
              const OpFoldResult &ofr2) {
     auto staticOfr1 = getIntAttr(ofr1);
     auto staticOfr2 = getIntAttr(ofr2);
@@ -96,13 +91,16 @@ bool isLess(const OpFoldResult &ofr1,
     auto staticOfr2 = getIntAttr(ofr2);
     // When sorting for permute, the value determined at runtime
     // is greater than the value determined at compile time.
-    if (!staticOfr1) {
-        return false;
+    if (!staticOfr1 && !staticOfr2) {
+        return false;   // keep relative order (stable_sort)
     }
-    if (!staticOfr2) {
-        return true;
+    if (!staticOfr1 && staticOfr2) {
+        return false;   // dynamic > static
     }
-    return staticOfr1 < staticOfr2;
+    if (staticOfr1 && !staticOfr2) {
+        return true;    // static < dynamic
+    }
+    return staticOfr1.value() < staticOfr2.value();
 }
 
 bool isGreater(const OpFoldResult &ofr1,
@@ -111,13 +109,16 @@ bool isGreater(const OpFoldResult &ofr1,
     auto staticOfr2 = getIntAttr(ofr2);
     // When sorting for permute, the value determined at runtime
     // is greater than the value determined at compile time.
-    if (!staticOfr2) {
-        return false;
+    if (!staticOfr1 && !staticOfr2) {
+        return false;   // keep relative order (stable_sort)
     }
-    if (!staticOfr1) {
-        return true;
+    if (!staticOfr1 && staticOfr2) {
+        return true;    // dynamic > static
     }
-    return staticOfr1 > staticOfr2;
+    if (staticOfr1 && !staticOfr2) {
+        return false;   // static < dynamic
+    }
+    return staticOfr1.value() > staticOfr2.value();
 }
 
 void StateInfo::dump() const {
@@ -135,7 +136,19 @@ void PtrState::dump() const {
     for (auto size : sizes)
         llvm::dbgs() << size << ", ";
     llvm::dbgs() << "]\n";
-    llvm::dbgs() << "shoueleLinearize: " << shouldLinearize << "\n";
+    llvm::dbgs() << "shouldLinearize: " << shouldLinearize << "\n";
+    llvm::dbgs() << "isPermuted: " << isPermuted << "\n";
+    llvm::dbgs() << "isBlockPtr: " << isBlockPtr() << "\n";
+
+    llvm::dbgs() << "permuteIds: [";
+    for (auto id : permuteIds)
+        llvm::dbgs() << id << ", ";
+    llvm::dbgs() << "]\n";
+    llvm::dbgs() << "order: [";
+    for (auto id : order)
+        llvm::dbgs() << id << ", ";
+    llvm::dbgs() << "]\n";
+
     llvm::dbgs() << "stateInfo:\n";
     llvm::dbgs() << "\n";
     for (auto info : stateInfo) {
@@ -161,6 +174,11 @@ bool PtrState::isScalar() const {
 
 bool PtrState::hasSource() const {
     return source != nullptr;
+}
+
+bool PtrState::isBlockPtr() const
+{
+    return !order.empty();
 }
 
 bool PtrState::isSameSizeAs(const PtrState& x) const {
@@ -197,7 +215,7 @@ void PtrState::normalizeState(const Location loc, OpBuilder &builder) {
         while (it != this->stateInfo.end() && isZero(it->stride)) {
             auto newShape = it->shape;
             auto dimIndex = it->dimIndex;
-            for (++it; it != this->stateInfo.end() && isZero(it->stride) 
+            for (++it; it != this->stateInfo.end() && isZero(it->stride)
                    && it->dimIndex == dimIndex; ++it) {
                 newShape = mulOpFoldResult(newShape, it->shape, loc, builder);
             }
@@ -218,7 +236,9 @@ LogicalResult PtrAnalysis::visitOperandAddptr(triton::AddPtrOp addptrOp,
                                               const Location loc,
                                               OpBuilder &builder) {
     if (!state.isEmpty()) {
-        addptrOp.emitError("PtrAnalysis: PtrState should be empty when visiting addptr");
+        LLVM_DEBUG({
+            addptrOp.emitError("PtrAnalysis: PtrState should be empty when visiting addptr");
+        });
         return failure();
     }
 
@@ -251,10 +271,53 @@ LogicalResult PtrAnalysis::visitOperandAddptr(triton::AddPtrOp addptrOp,
     });
 
     if (!ptrState.source) {
-        addptrOp.emitError("ptr field should provide source / base pointer");
+        LLVM_DEBUG({
+            addptrOp.emitError("ptr field should provide source / base pointer");
+        });
         return failure();
     }
     return state.addState(ptrState, offsetState, addptrOp, builder);
+}
+
+LogicalResult PtrAnalysis::visitOperandMakeTensorPtr(triton::MakeTensorPtrOp makeTPtrOp,
+                                                     PtrState &state,
+                                                     const Location loc,
+                                                     OpBuilder &builder)
+{
+    if (!state.isEmpty()) {
+        makeTPtrOp.emitError("PtrAnalysis: PtrState should be empty when visiting make_tensor_ptr");
+        return failure();
+    }
+    if (makeTPtrOp.getOrder().empty()) {
+        LLVM_DEBUG(makeTPtrOp->emitRemark(
+            "PtrAnalysis: expect tt.make_tensor_ptr to have order field set"));
+        return failure();
+    }
+
+    // Build:
+    //   - stateInfo: per-dimension (stride, shape, dimIndex) of the parent tensor
+    //   - sizes: original tensor shape of the block
+    //   - dimOffsets: the offset to the block in the parent tensor
+    state.source = makeTPtrOp.getBase();
+    state.dimOffsets = makeTPtrOp.getOffsets();
+    state.order = SmallVector<size_t>(makeTPtrOp.getOrder());
+
+    auto resType = cast<triton::PointerType>(makeTPtrOp.getResult().getType());
+    auto pointeeType = cast<ShapedType>(resType.getPointeeType());
+    auto pointeeShape = pointeeType.getShape();
+    const int64_t rank = pointeeType.getRank();
+
+    SmallVector<StateInfo> newStateInfo;
+    for (int64_t i = 0; i < rank; i++) {
+        state.sizes.push_back(builder.getIndexAttr(pointeeShape[i]));
+        newStateInfo.emplace_back(makeTPtrOp.getStrides()[i], makeTPtrOp.getShape()[i], i);
+    }
+    state.stateInfo = newStateInfo;
+
+    assert(state.isBlockPtr() &&
+            "tt.make_tensor_ptr pointer state should describe a block pointer");
+
+    return success();
 }
 
 bool PtrAnalysis::operandIsScalar(Value operand) {
@@ -309,7 +372,7 @@ LogicalResult PtrAnalysis::initStateByPointer(Value operand, PtrState &state,
     Value newSource;
     SmallVector<OpFoldResult> newSizes;
     SmallVector<StateInfo> newStateInfo;
-    
+
     if (auto op = operand.getDefiningOp()) {
       if (auto addPtrOp = dyn_cast<triton::AddPtrOp>(op)) {
         return visitOperandAddptr(cast<triton::AddPtrOp>(op), state, loc,
@@ -317,12 +380,16 @@ LogicalResult PtrAnalysis::initStateByPointer(Value operand, PtrState &state,
       } else if (auto bitCastOp = dyn_cast<triton::BitcastOp>(op)) {
         newSource = operand;
       } else if (auto makeTensorOp = dyn_cast<triton::MakeTensorPtrOp>(op)) {
-        op->emitWarning("Unexpected operand defining operation tts.make_tptr.");
+        LLVM_DEBUG({
+            op->emitWarning("Unexpected operand defining operation tts.make_tptr.");
+        });
         return failure();
       } else if (auto intToPtrOp = dyn_cast<triton::IntToPtrOp>(op)) {
         newSource = operand;
       } else {
-        op->emitWarning("PtrAnalysis: Unexpected operand.");
+        LLVM_DEBUG({
+            op->emitWarning("PtrAnalysis: Unexpected operand.");
+        });
         return failure();
       }
     } else {
@@ -344,20 +411,26 @@ LogicalResult PtrState::mulState(const PtrState &lhsState,
     });
 
     if (!isEmpty()) {
-        op->emitError("PtrAnalysis: PtrState should be empty when multiplying");
+        LLVM_DEBUG({
+            op->emitError("PtrAnalysis: PtrState should be empty when multiplying");
+        });
         return failure();
     }
 
     // neither lhs nor rhs should have source, since multiplying base pointer
     // does not make sense
     if (lhsState.hasSource() || rhsState.hasSource()) {
-        op->emitError("PtrAnalysis: do not support base inters in multiplying");
+        LLVM_DEBUG({
+            op->emitError("PtrAnalysis: do not support base inters in multiplying");
+        });
         return failure();
     } else if (!lhsState.isScalar() && !rhsState.isScalar()) {
         // do not support both tensors are effectively non-scalar
-        op->emitError(
-            "PtrAnalysis: only support multiplying pointer states when one of "
-            "them represent a scalar");
+        LLVM_DEBUG({
+            op->emitError(
+                "PtrAnalysis: only support multiplying pointer states when one of "
+                "them represent a scalar");
+        });
         return failure();
     }
 
@@ -377,7 +450,7 @@ LogicalResult PtrState::mulState(const PtrState &lhsState,
     auto newOffset = mulOpFoldResult(lhsState.offset, rhsState.offset, loc, builder);
     updatePtrState(newStateInfo, lhs->sizes, lhs->source,
                    newOffset, loc, builder, lhs->shouldLinearize);
-    
+
     LLVM_DEBUG({
         llvm::dbgs() << "After mulState: \n";
         this->dump();
@@ -392,19 +465,25 @@ LogicalResult PtrState::subState(const PtrState &lhsState,
                                  OpBuilder &builder) {
     auto loc = op->getLoc();
     if (!isEmpty()) {
-        op->emitError("PtrAnalysis: PtrState should be empty when subtracting");
+        LLVM_DEBUG({
+            op->emitError("PtrAnalysis: PtrState should be empty when subtracting");
+        });
         return failure();
     }
 
     if (lhsState.hasSource() && rhsState.hasSource()) {
-        op->emitError("PtrAnalysis: do not support both sides have base pointers in sub");
+        LLVM_DEBUG({
+            op->emitError("PtrAnalysis: do not support both sides have base pointers in sub");
+        });
         return failure();
     }
 
     if (!rhsState.isScalar()) {
-        op->emitError(
-            "PtrAnalysis: only support sub when one of "
-            "them represents a scalar");
+        LLVM_DEBUG({
+            op->emitError(
+                "PtrAnalysis: only support sub when one of "
+                "them represents a scalar");
+        });
         return failure();
     }
 
@@ -426,11 +505,15 @@ LogicalResult PtrState::addState(PtrState &lhsState,
     });
 
     if (!isEmpty()) {
-        op->emitError("PtrAnalysis: PtrState should be empty when adding");
+        LLVM_DEBUG({
+            op->emitError("PtrAnalysis: PtrState should be empty when adding");
+        });
         return failure();
     }
     if (!lhsState.isSameSizeAs(rhsState)) {
-        op->emitError("PtrAnalysis: The original size of the addition should be the same");
+        LLVM_DEBUG({
+            op->emitError("PtrAnalysis: The original size of the addition should be the same");
+        });
         return failure();
     }
 
@@ -452,7 +535,9 @@ LogicalResult PtrState::addState(PtrState &lhsState,
                 rhsState.dump();
                 llvm::dbgs() << "----------------------------------------------\n";
             });
-            op->emitError("PtrAnalysis: the add operation have incompatible sizes");
+            LLVM_DEBUG({
+                op->emitError("PtrAnalysis: the add operation have incompatible sizes");
+            });
             return failure();
         }
 
@@ -466,8 +551,10 @@ LogicalResult PtrState::addState(PtrState &lhsState,
                 rhsState.dump();
                 llvm::dbgs() << "----------------------------------------------\n";
             });
-            op->emitError("PtrAnalysis: the add operation have incompatible sizes."
-                         "Valid dimensions are split.");
+            LLVM_DEBUG({
+                op->emitError("PtrAnalysis: the add operation have incompatible sizes."
+                            "Valid dimensions are split.");
+            });
             return failure();
         }
 
@@ -494,7 +581,7 @@ LogicalResult PtrState::addState(PtrState &lhsState,
 
     updatePtrState(newStateInfo, newSizes, newSource,
         newOffset, loc, builder, newShouldLinearize);
-    
+
     LLVM_DEBUG({
         llvm::dbgs() << "After addState: \n";
         this->dump();
@@ -535,8 +622,10 @@ triton::AddPtrOp PtrState::createAddPtrOp(OpBuilder &builder, Location loc) {
     auto broadCastType = RankedTensorType::get({tensorSizes},  builder.getI32Type());
 
     if (tensorSizes.size() != tensorStrides.size()) {
-        InFlightDiagnostic diag =
-        emitError(loc) << "PtrAnalysis: inconsistent tensor sizes and strides";
+        LLVM_DEBUG({
+            InFlightDiagnostic diag =
+            emitError(loc) << "PtrAnalysis: inconsistent tensor sizes and strides";
+        });
         return nullptr;
     }
     for (size_t i = 0; i < tensorSizes.size(); ++i) {
@@ -586,6 +675,55 @@ triton::AddPtrOp PtrState::createAddPtrOp(OpBuilder &builder, Location loc) {
     return addptrOp;
 }
 
+triton::MakeTensorPtrOp PtrState::createMakeTensorPtrOp(OpBuilder &builder, Location loc)
+{
+    SmallVector<Value> newShape;
+    SmallVector<Value> newStrides;
+    SmallVector<Value> newOffsets;
+    SmallVector<int32_t> newBlkShape;
+    SmallVector<int32_t> newOrder; // must be int32_t for MakeTensorPtrOp builder
+
+    const size_t rank = order.size();
+    if (rank == 0) {
+        emitError(loc) << "PtrAnalysis: empty order in createMakeTensorPtrOp";
+        return nullptr;
+    }
+
+    // iterate reversed safely: i = rank-1, ..., 0
+    for (size_t i = rank; i-- > 0;) {
+        size_t dim = order[i];
+
+        if (dim >= stateInfo.size() || dim >= dimOffsets.size() || dim >= sizes.size()) {
+            emitError(loc) << "PtrAnalysis: invalid dim index in createMakeTensorPtrOp";
+            return nullptr;
+        }
+
+        auto info = stateInfo[dim];
+
+        newShape.push_back(materializeValue(builder, loc, info.shape));
+        newStrides.push_back(materializeValue(builder, loc, info.stride));
+        newOffsets.push_back(materializeValue(builder, loc, dimOffsets[dim]));
+
+        auto blkSzOpt = getIntAttr(sizes[dim]);
+        if (!blkSzOpt.has_value()) {
+            emitError(loc) << "PtrAnalysis: dynamic block_shape is not supported for tt.make_tensor_ptr";
+            return nullptr;
+        }
+        newBlkShape.push_back(static_cast<int32_t>(blkSzOpt.value()));
+        newOrder.push_back(static_cast<int32_t>(i));
+    }
+
+    return builder.create<triton::MakeTensorPtrOp>(
+        loc,
+        source,
+        ValueRange(newShape),
+        ValueRange(newStrides),
+        ValueRange(newOffsets),
+        newBlkShape,
+        newOrder
+    );
+}
+
 LogicalResult PtrAnalysis::visitOperandMul(arith::MulIOp mulOp, PtrState &state,
                                            const Location loc,
                                            OpBuilder &builder) {
@@ -627,20 +765,24 @@ LogicalResult PtrAnalysis::visitOperandMakeRange(triton::MakeRangeOp rangeOp,
                                                  PtrState &state, Location loc,
                                                  OpBuilder &builder) {
     if (!state.isEmpty()) {
-        rangeOp.emitError("PtrAnalysis: PtrState should be empty when visiting make_range");
+        LLVM_DEBUG({
+            rangeOp.emitError("PtrAnalysis: PtrState should be empty when visiting make_range");
+        });
         return failure();
     }
 
     auto shape = cast<ShapedType>(rangeOp.getType()).getShape();
-    
+
     auto start = rangeOp.getStart();
     auto end = rangeOp.getEnd();
     auto stride = (end - start + shape[0] - 1) / shape[0];
     if (stride != 1) {
-        rangeOp.emitError("PtrAnalysis: make_range op with stride != 1 is not supported");
+        LLVM_DEBUG({
+            rangeOp.emitError("PtrAnalysis: make_range op with stride != 1 is not supported");
+        });
         return failure();
     }
-    
+
     auto infoStride = builder.getIndexAttr(stride);
     auto size = builder.getIndexAttr(shape[0]);
     auto offset = builder.getIndexAttr(start);
@@ -659,21 +801,27 @@ PtrAnalysis::visitOperandBroadcast(triton::BroadcastOp broadcastOp,
                                    PtrState &state, const Location loc,
                                    OpBuilder &builder) {
     if (!state.isEmpty()) {
-        broadcastOp.emitError("PtrAnalysis: PtrState should be empty when visiting broadcast");
+        LLVM_DEBUG({
+            broadcastOp.emitError("PtrAnalysis: PtrState should be empty when visiting broadcast");
+        });
         return failure();
     }
 
     auto src = broadcastOp.getSrc();
     auto dst = broadcastOp.getResult();
     if (!isa<ShapedType>(dst.getType())) {
-        broadcastOp.emitRemark("PtrAnalysis: broadcast dst should be a shaped type");
+        LLVM_DEBUG({
+            broadcastOp.emitRemark("PtrAnalysis: broadcast dst should be a shaped type");
+        });
         return failure();
     }
 
     auto srcShape = cast<ShapedType>(src.getType()).getShape();
     auto dstShape = cast<ShapedType>(dst.getType()).getShape();
     if (srcShape.size() != dstShape.size()) {
-        broadcastOp.emitRemark("PtrAnalysis: broadcast src and dst should have the same rank");
+        LLVM_DEBUG({
+            broadcastOp.emitRemark("PtrAnalysis: broadcast src and dst should have the same rank");
+        });
         return failure();
     }
     if (visitOperand(src, state, loc, builder).failed()) {
@@ -692,7 +840,9 @@ PtrAnalysis::visitOperandBroadcast(triton::BroadcastOp broadcastOp,
     SmallVector<StateInfo> newStateInfo(state.stateInfo);
     SmallVector<OpFoldResult> newSizes;
     if (srcShape.size() != dstShape.size()) {
-        broadcastOp.emitRemark("PtrAnalysis: unexpected state info size in broadcast");
+        LLVM_DEBUG({
+            broadcastOp.emitRemark("PtrAnalysis: unexpected state info size in broadcast");
+        });
         return failure();
     }
     for (size_t i = 0; i < dstShape.size(); ++i) {
@@ -705,7 +855,9 @@ PtrAnalysis::visitOperandBroadcast(triton::BroadcastOp broadcastOp,
                 info.shape = builder.getIndexAttr(dstShape[i]);
             }
         } else {
-            broadcastOp.emitRemark("unexpected dimensions used in broadcast");
+            LLVM_DEBUG({
+                broadcastOp.emitRemark("unexpected dimensions used in broadcast");
+            });
             return failure();
         }
     }
@@ -719,7 +871,9 @@ LogicalResult PtrAnalysis::visitOperandSplat(triton::SplatOp splatOp,
                                              const Location loc,
                                              OpBuilder &builder) {
     if (!state.isEmpty()) {
-        splatOp.emitError("PtrAnalysis: PtrState should be empty when visiting splat");
+        LLVM_DEBUG({
+            splatOp.emitError("PtrAnalysis: PtrState should be empty when visiting splat");
+        });
         return failure();
     }
 
@@ -743,7 +897,9 @@ LogicalResult PtrAnalysis::visitOperandSplat(triton::SplatOp splatOp,
     });
 
     if (!state.isScalar()) {
-        splatOp.emitRemark("PtrAnalysis: splat source should be scalar");
+        LLVM_DEBUG({
+            splatOp.emitRemark("PtrAnalysis: splat source should be scalar");
+        });
         return failure();
     }
 
@@ -757,7 +913,9 @@ LogicalResult PtrAnalysis::visitOperandSplat(triton::SplatOp splatOp,
             newStateInfo.emplace_back(zeroAttr, currentSize, i);
         }
     } else {
-        splatOp.emitRemark("PtrAnalysis: unsupported splat pattern");
+        LLVM_DEBUG({
+            splatOp.emitRemark("PtrAnalysis: unsupported splat pattern");
+        });
         return failure();
     }
     state.updatePtrState(newStateInfo, newSizes, state.source,
@@ -776,7 +934,9 @@ PtrAnalysis::visitOperandExpandDims(triton::ExpandDimsOp expandDimsOp,
                                     PtrState &state, const Location loc,
                                     OpBuilder &builder) {
     if (!state.isEmpty()) {
-        expandDimsOp.emitError("PtrAnalysis: PtrState should be empty when visiting expand_dims");
+        LLVM_DEBUG({
+            expandDimsOp.emitError("PtrAnalysis: PtrState should be empty when visiting expand_dims");
+        });
         return failure();
     }
 
@@ -812,14 +972,18 @@ LogicalResult PtrAnalysis::visitOperandConstSplat(arith::ConstantOp op,
                                                   const Location loc,
                                                   OpBuilder &builder) {
     if (!state.isEmpty()) {
-        op->emitError("PtrAnalysis: PtrState should be empty when visiting const_splat");
+        LLVM_DEBUG({
+            op->emitError("PtrAnalysis: PtrState should be empty when visiting const_splat");
+        });
         return failure();
     }
 
     auto attr = cast<DenseElementsAttr>(op.getValue());
     auto elementType = attr.getElementType();
     if (!attr.isSplat() || !isa<IntegerType>(elementType)) {
-        op->emitError("PtrAnalysis: only support splat integer constant");
+        LLVM_DEBUG({
+            op->emitError("PtrAnalysis: only support splat integer constant");
+        });
         return failure();
     }
 
@@ -831,7 +995,7 @@ LogicalResult PtrAnalysis::visitOperandConstSplat(arith::ConstantOp op,
     SmallVector<OpFoldResult> sizes;
     SmallVector<StateInfo> stateInfo;
     auto defaultAttr = builder.getIndexAttr(0);
-    
+
     for (auto [i, shape] : llvm::enumerate(resultShape)) {
         auto shapeAttr = builder.getIndexAttr(shape);
         sizes.emplace_back(shapeAttr);
@@ -846,23 +1010,27 @@ LogicalResult PtrAnalysis::visitOperandExtSI(arith::ExtSIOp extOp,
                                              PtrState &state,
                                              const Location loc,
                                              OpBuilder &builder) {
-  if (!state.isEmpty()) {
-      extOp.emitError("PtrAnalysis: PtrState should be empty when visiting extsi");
-      return failure();
-  }
+    if (!state.isEmpty()) {
+        LLVM_DEBUG({
+            extOp.emitError("PtrAnalysis: PtrState should be empty when visiting extsi");
+        });
+        return failure();
+    }
 
-  if(visitOperand(extOp.getIn(), state, loc, builder).failed()) {
-    return failure();
-  }
+    if(visitOperand(extOp.getIn(), state, loc, builder).failed()) {
+        return failure();
+    }
 
-  return success();
+    return success();
 }
 
 LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
                                            PtrState &state, const Location loc,
                                            OpBuilder &builder) {
     if (!state.isEmpty()) {
-        remOp.emitError("PtrAnalysis: PtrState should be empty when visiting remsi");
+        LLVM_DEBUG({
+            remOp.emitError("PtrAnalysis: PtrState should be empty when visiting remsi");
+        });
         return failure();
     }
     LLVM_DEBUG({
@@ -876,8 +1044,10 @@ LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
     }
 
     if (!rhsState.isScalar() || rhsState.hasSource()) {
-        remOp.emitRemark("PtrAnalysis: only support cases when rhs of remainder "
-                        "contains scalar");
+        LLVM_DEBUG({
+            remOp.emitRemark("PtrAnalysis: only support cases when rhs of remainder "
+                            "contains scalar");
+        });
         return failure();
     }
 
@@ -902,22 +1072,28 @@ LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
     }
 
     if (!getIntAttr(divisorAttr).has_value()) {
-        remOp.emitError(
-            "PtrAnalysis: do not support dynamix divisor in REMSI.");
+        LLVM_DEBUG({
+            remOp.emitError(
+                "PtrAnalysis: do not support dynamix divisor in REMSI.");
+        });
         return failure();
     }
 
     SmallVector<StateInfo> newStateInfo;
     for (auto info : state.stateInfo) {
         if (!getIntAttr(info.stride).has_value()) {
-            remOp.emitError(
-                "PtrAnalysis: do not support dynamix stride before REMSI.");
+            LLVM_DEBUG({
+                remOp.emitError(
+                    "PtrAnalysis: do not support dynamix stride before REMSI.");
+            });
             return failure();
         }
 
         if (!isMultiple(divisorAttr, info.shape) && !isMultiple(info.shape, divisorAttr)) {
-            remOp.emitError(
-                "PtrAnalysis: do not support dynamix stride before REMSI.");
+            LLVM_DEBUG({
+                remOp.emitError(
+                    "PtrAnalysis: do not support dynamix stride before REMSI.");
+            });
         }
 
         if (isMultiple(info.stride, divisorAttr)) {
@@ -929,19 +1105,23 @@ LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
 
             auto staticNonContiguousSize = getIntAttr(nonContiguousSize);
             if (!staticNonContiguousSize.has_value()) {
-                remOp.emitError(
-                    "PtrAnalysis: do not support dynamix size before REMSI.");
+                LLVM_DEBUG({
+                    remOp.emitError(
+                        "PtrAnalysis: do not support dynamix size before REMSI.");
+                });
                 return failure();
             }
 
             if (staticNonContiguousSize.value() > 1)
                 newStateInfo.emplace_back(zeroAttr, nonContiguousSize, info.dimIndex);
-            
+
             newStateInfo.emplace_back(info.stride, contiguousSize, info.dimIndex);
         } else {
-            remOp.emitError(
-                "PtrAnalysis: stride that are not divisible by REMSI are not allowed "
-                "to precede REMSI");
+            LLVM_DEBUG({
+                remOp.emitError(
+                    "PtrAnalysis: stride that are not divisible by REMSI are not allowed "
+                    "to precede REMSI");
+            });
             return failure();
         }
     }
@@ -962,7 +1142,9 @@ LogicalResult PtrAnalysis::visitOperandDiv(arith::DivSIOp divOp,
                                            PtrState &state, const Location loc,
                                            OpBuilder &builder) {
     if (!state.isEmpty()) {
-        divOp.emitError("PtrAnalysis: PtrState should be empty when visiting divsi");
+        LLVM_DEBUG({
+            divOp.emitError("PtrAnalysis: PtrState should be empty when visiting divsi");
+        });
         return failure();
     }
     LLVM_DEBUG({
@@ -976,8 +1158,10 @@ LogicalResult PtrAnalysis::visitOperandDiv(arith::DivSIOp divOp,
     }
 
     if (!rhsState.isScalar() || rhsState.hasSource()) {
-        divOp.emitRemark("PtrAnalysis: only support cases when rhs of remainder "
-                        "contains scalar");
+        LLVM_DEBUG({
+            divOp.emitRemark("PtrAnalysis: only support cases when rhs of remainder "
+                            "contains scalar");
+        });
         return failure();
     }
 
@@ -1009,8 +1193,10 @@ LogicalResult PtrAnalysis::visitOperandDiv(arith::DivSIOp divOp,
     }
 
     if (!getIntAttr(divisorAttr).has_value()) {
-        divOp.emitError(
-            "PtrAnalysis: do not support dynamix divisor in DIVSI.");
+        LLVM_DEBUG({
+            divOp.emitError(
+                "PtrAnalysis: do not support dynamix divisor in DIVSI.");
+        });
         return failure();
     }
 
@@ -1018,14 +1204,18 @@ LogicalResult PtrAnalysis::visitOperandDiv(arith::DivSIOp divOp,
     for (auto info : state.stateInfo) {
         auto staticStride = getIntAttr(info.stride);
         if (!staticStride.has_value()) {
-            divOp.emitError(
-                "PtrAnalysis: do not support dynamix stride before DIVSI.");
+            LLVM_DEBUG({
+                divOp.emitError(
+                    "PtrAnalysis: do not support dynamix stride before DIVSI.");
+            });
             return failure();
         }
 
         if (!isMultiple(divisorAttr, info.shape) && !isMultiple(info.shape, divisorAttr)) {
-            divOp.emitError(
-                "PtrAnalysis: do not support dynamix stride before DivSI.");
+            LLVM_DEBUG({
+                divOp.emitError(
+                    "PtrAnalysis: do not support dynamix stride before DivSI.");
+            });
         }
 
         if (isMultiple(info.stride, divisorAttr)) {
@@ -1038,19 +1228,23 @@ LogicalResult PtrAnalysis::visitOperandDiv(arith::DivSIOp divOp,
 
             auto staticContiguousSize = getIntAttr(contiguousSize);
             if (!staticContiguousSize.has_value()) {
-                divOp.emitError(
-                    "PtrAnalysis: do not support dynamix size before DIVSI.");
+                LLVM_DEBUG({
+                    divOp.emitError(
+                        "PtrAnalysis: do not support dynamix size before DIVSI.");
+                });
                 return failure();
             }
-            
+
             if (staticContiguousSize.value() != 0)
                 newStateInfo.emplace_back(oneAttr, contiguousSize, info.dimIndex);
-            
+
             newStateInfo.emplace_back(zeroAttr, nonContiguousSize, info.dimIndex);
         } else {
-            divOp.emitError(
-                "PtrAnalysis: stride that are not divisible by DIVSI are not allowed "
-                "to precede DIVSI");
+            LLVM_DEBUG({
+                divOp.emitError(
+                    "PtrAnalysis: stride that are not divisible by DIVSI are not allowed "
+                    "to precede DIVSI");
+            });
             return failure();
         }
     }
@@ -1121,13 +1315,15 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
     } else if (auto op = operand.getDefiningOp<arith::ExtSIOp>()) {
         return visitOperandExtSI(op, state, loc, builder);
     } else if (auto op = operand.getDefiningOp<triton::LoadOp>()) {
-        op.emitRemark("TritonToStructured: Invalid dynamic offset"
-                      "The load operation's offset cannot be derived from another load result.");
+        LLVM_DEBUG({
+            op.emitRemark("TritonToStructured: Invalid dynamic offset"
+                        "The load operation's offset cannot be derived from another load result.");
+        });
         return failure();
     } else if (auto op = operand.getDefiningOp<arith::FPToSIOp>()) {
-        op.emitWarning("IllegalTypeConversionInAddressCalculation"
-                      "float-to-int precision conversion is not supported during address computation.");
         LLVM_DEBUG({
+            op.emitWarning("IllegalTypeConversionInAddressCalculation"
+                        "float-to-int precision conversion is not supported during address computation.");
             llvm::dbgs() << "Operand: \n";
             operand.dump();
             llvm::dbgs() << "----------------------------------------------\n";
@@ -1135,7 +1331,9 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
         return failure();
     } else if (!operand.getDefiningOp()) {
         if (!knownPtrs.contains(operand)) {
-            llvm::dbgs() << "TritonToStructured: Pointer analysis is not supported for input parameters\n";
+            LLVM_DEBUG({
+                llvm::dbgs() << "TritonToStructured: Pointer analysis is not supported for input parameters\n";
+            });
             return failure();
         }
 
@@ -1146,8 +1344,8 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
         return success();
     } else {
         auto op = operand.getDefiningOp();
-        op->emitWarning("TritonToStructured: encountered addptr operand produced by an unsupported operation");
         LLVM_DEBUG({
+            op->emitWarning("TritonToStructured: encountered addptr operand produced by an unsupported operation");
             llvm::dbgs() << "Operand: \n";
             operand.dump();
             llvm::dbgs() << "----------------------------------------------\n";
@@ -1174,30 +1372,96 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
 }
 
 void PtrState::analyzePermute() {
-    for (size_t i = 0; i < stateInfo.size(); ++i) {
-        permuteIds.emplace_back(i);
+    const size_t n = stateInfo.size();
+    generateOriginPermuteIds();
+
+    if (n <= 1)
+        return;
+
+    // ============================================================
+    // === 1. make_tensor_ptr (block ptr): order-based ===
+    // Rule: permute if order is NOT canonical (i.e. strictly decreasing,
+    // representing inner-to-outer memory layout priority, e.g. [n-1, ..., 0])
+    //
+    // NOTE: order describes memory layout priority, not axis permutation.
+    // Do NOT translate order into permuteIds.
+    // ============================================================
+    if (isBlockPtr()) {
+        for (size_t i = 0; i + 1 < n; ++i) {
+            if (order[i] <= order[i + 1]) {
+                isPermuted = true;
+                break;
+            }
+        }
+        return;
     }
 
-    // Generate dimension permutation following triton::TransOp convention:
-    //     out[i] = in[permute[i]] where permute maps logical to physical dimensions
-    // Example:
-    //     logicalAxes: [0, 1] (original order)
-    //     physicalAxes: [1, 0] (memory layout order)
-    //     permute: [1, 0] (out[0] = in[1], out[1] = in[0])
+    // ============================================================
+    // === 2. addptr: stride-based permuteIds + contiguous-axis ===
+    // Rule: permute if contiguous axes increased
+    //
+    // analyze constraints: must have at least one static stride
+    // ============================================================
+    bool hasStatic = false;
+    for (auto &s : stateInfo) {
+        if (getIntAttr(s.stride).has_value()) {
+            hasStatic = true;
+            break;
+        }
+    }
+    if (!hasStatic) {
+        return;
+    }
+    auto isIdentity = [&](ArrayRef<size_t> perm) -> bool {
+        for (size_t i = 0; i < perm.size(); ++i)
+            if (perm[i] != i) return false;
+        return true;
+    };
 
     std::stable_sort(
-        permuteIds.begin(), 
+        permuteIds.begin(),
         permuteIds.end(),
-        [&](const size_t &a, const size_t &b) {
+        [&](size_t a, size_t b) {
             return isGreater(stateInfo[a].stride, stateInfo[b].stride);
-        }
-    );
+    });
 
-    for (size_t i = 0; !isPermuted && i < permuteIds.size(); ++i) {
-        if (i != permuteIds[i]) isPermuted = true;
+    // If already in canonical axis order, do not permute.
+    if (isIdentity(permuteIds)) {
+        return;
     }
 
-    return;
+    // Tail axis must be physically contiguous (stride == 1),
+    // otherwise addptr-based permutation is invalid.
+    auto tailStride =
+    getIntAttr(stateInfo[permuteIds.back()].stride);
+    if (!tailStride.has_value() || tailStride.value() != 1) {
+        generateOriginPermuteIds();
+        return;
+    }
+
+    // Compute new contiguous axes count using the permuted stateInfo.
+    SmallVector<StateInfo> newStateInfo;
+    newStateInfo.reserve(n);
+    for (size_t id : permuteIds) {
+        newStateInfo.push_back(stateInfo[id]);
+    }
+    const size_t oldContig = countContiguousAxes(stateInfo);
+    const size_t newContig = countContiguousAxes(newStateInfo);
+    LLVM_DEBUG({
+        llvm::dbgs() << "----------------------------------------------\n";
+        llvm::dbgs() << "after analyzePermute:\n" <<
+                     "oldContig: " << oldContig << "\n" <<
+                     "newContig: " << newContig << "\n";
+        dump();
+    });
+    // only permute if contiguous axes increased
+    if (newContig > oldContig) {
+        isPermuted = true;
+        return;
+    }
+
+    // otherwise: no permute
+    generateOriginPermuteIds();
 }
 
 std::optional<int32_t> extractDivisibilityFromOpFoldResult(mlir::OpFoldResult ofr) {
@@ -1221,5 +1485,50 @@ std::optional<int32_t> extractDivisibilityFromOpFoldResult(mlir::OpFoldResult of
     }
 
     return denseAttr.getValues<int32_t>()[0];
+}
+
+void PtrState::generateOriginPermuteIds()
+{
+    permuteIds.clear();
+    isPermuted = false;
+    for (size_t i = 0; i < stateInfo.size(); ++i) {
+        permuteIds.emplace_back(i);
+    }
+    return;
+}
+ 
+// Formula of "contiguous axes"
+// - axis i is contiguous if stride[i] == product(shape[0..i-1]).
+// We only prove contiguity from the rightmost axis outward.
+// Rules implemented
+// - Start from the rightmost axis. It is contiguous only if stride == 1 (static).
+// - Then move left; expectedStride multiplies by the static shape of the axis to the right.
+// - If we encounter any dynamic stride or dynamic shape needed for expectedStride,
+//   stop (cannot prove further) and return the count accumulated so far.
+// Examples
+//  - shape=[2,3,4,5], stride=[A,B,2,C] => rightmost stride is dynamic => count=0
+//  - shape=[2,3,4,5], stride=[A,B,C,1] => rightmost stride=1 => count=1
+//  - shape=[2,3,4,5], stride=[60,20,5,1] => count=4
+size_t PtrState::countContiguousAxes(SmallVector<StateInfo> stateInfo) const
+{
+    if (stateInfo.empty())
+        return 0;
+    int64_t expected = 1;
+    size_t cnt = 0;
+    // iterate reversed safely: i = stateInfo.size()-1, ..., 0
+    for (size_t i = stateInfo.size(); i-- > 0;) {
+        auto stride = getIntAttr(stateInfo[i].stride);
+        if (!stride.has_value())
+            break;
+        if (stride.value() != expected)
+            break;
+        ++cnt;
+        // Update expected for the next (outer) axis: expected *= shape[i]
+        auto shape = getIntAttr(stateInfo[i].shape);
+        if (!shape.has_value())
+            break;
+        expected *= shape.value();
+    }
+    return cnt;
 }
 }

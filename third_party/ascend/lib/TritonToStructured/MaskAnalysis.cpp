@@ -123,7 +123,7 @@ void MaskState::dump() const {
 
 LogicalResult MaskState::parse(Value operand, const Location loc,
                                OpBuilder &builder) {
-    if (isa<IntegerType>(operand.getType())) {
+    if (isa<IntegerType>(operand.getType()) && operand.getType().getIntOrFloatBitWidth() != 1) {
         return this->parseIntScalar(operand, loc, builder);
     } else if (auto op = operand.getDefiningOp<arith::ConstantOp>()) {
         return this->parseConstant(op, loc, builder);
@@ -148,10 +148,12 @@ LogicalResult MaskState::parse(Value operand, const Location loc,
     } else if (auto op = operand.getDefiningOp<arith::DivSIOp>()) {
         return this->parseDiv(op, loc, builder);
     }
-    InFlightDiagnostic diag =
-        emitWarning(loc)
-                 << "MaskAnalysis: compare operand produced by an "
-                    "unsupported operation\n";
+    LLVM_DEBUG({
+        InFlightDiagnostic diag =
+            emitWarning(loc)
+                    << "MaskAnalysis: compare operand produced by an "
+                        "unsupported operation\n";
+    });
     return failure();
 }
 
@@ -159,16 +161,30 @@ LogicalResult MaskState::parseConstant(arith::ConstantOp constOp,
                                        const Location loc,
                                        OpBuilder &builder) {
     if (!this->isEmpty()) {
-        constOp.emitError(
-            "MaskAnalysis: MaskState should be empty when visiting constant");
+        LLVM_DEBUG({
+            constOp.emitError(
+                "MaskAnalysis: MaskState should be empty when visiting constant");
+        });
         return failure();
     }
+
+    if (auto intType = dyn_cast<IntegerType>(constOp.getType())) {
+      if (intType.getWidth() == 1) {
+        LLVM_DEBUG({
+          constOp.emitWarning("MaskAnalysis: Unsupported constant for int1");
+        });
+        return failure();
+      }
+    }
+
     if (isa<DenseElementsAttr>(constOp.getValue())) {
         auto attr = cast<DenseElementsAttr>(constOp.getValue());
         auto elementType = attr.getElementType();
         if (!attr.isSplat() || !isa<IntegerType>(elementType)) {
-            constOp.emitError(
-                "MaskAnalysis: only support splat integer constant");
+            LLVM_DEBUG({
+                constOp.emitError(
+                    "MaskAnalysis: only support splat integer constant");
+            });
             return failure();
         }
         auto values = attr.getValues<IntegerAttr>();
@@ -187,9 +203,11 @@ LogicalResult MaskState::parseConstant(arith::ConstantOp constOp,
 LogicalResult MaskState::parseIntScalar(Value scalar, const Location loc,
                                         OpBuilder &builder) {
     if (!this->isEmpty()) {
-        InFlightDiagnostic diag = emitError(loc)
-                                  << "MaskAnalysis: MaskState should be empty when "
-                                     "visiting integer scalar";
+        LLVM_DEBUG({
+            InFlightDiagnostic diag = emitError(loc)
+                                    << "MaskAnalysis: MaskState should be empty when "
+                                        "visiting integer scalar";
+        });
         return failure();
     }
     auto castOp =
@@ -202,7 +220,9 @@ LogicalResult MaskState::parseMakeRange(triton::MakeRangeOp rangeOp,
                                         const Location loc,
                                         OpBuilder &builder) {
     if (!this->isEmpty()) {
-        rangeOp.emitError("MaskAnalysis: MaskState should be empty when visiting make_range");
+        LLVM_DEBUG({
+            rangeOp.emitError("MaskAnalysis: MaskState should be empty when visiting make_range");
+        });
         return failure();
     }
 
@@ -212,10 +232,12 @@ LogicalResult MaskState::parseMakeRange(triton::MakeRangeOp rangeOp,
     auto stride = (end - start + shape[0] - 1) / shape[0];
 
     if (stride != 1) {
-        InFlightDiagnostic diag =
-            emitError(loc)
-            << "stride must be 1 for make_range whose result is used "
-            "as load or store masks";
+        LLVM_DEBUG({
+            InFlightDiagnostic diag =
+                emitError(loc)
+                << "stride must be 1 for make_range whose result is used "
+                "as load or store masks";
+        });
         return failure();
     }
 
@@ -226,17 +248,21 @@ LogicalResult MaskState::parseMakeRange(triton::MakeRangeOp rangeOp,
 
 LogicalResult MaskState::parseExtSI(arith::ExtSIOp op, const Location loc,
                                     OpBuilder &builder) {
-  if (!this->isEmpty()) {
-      op->emitError("MaskAnalysis: MaskState should be empty when visiting extsi");
-      return failure();
-  }
-  return parse(op.getIn(), loc, builder);
+    if (!this->isEmpty()) {
+        LLVM_DEBUG({
+            op->emitError("MaskAnalysis: MaskState should be empty when visiting extsi");
+        });
+        return failure();
+    }
+    return parse(op.getIn(), loc, builder);
 }
 
 LogicalResult MaskState::parseSplat(triton::SplatOp splatOp, const Location loc,
                                     OpBuilder &builder) {
     if (!this->isEmpty()) {
-        splatOp.emitError("MaskAnalysis: MaskState should be empty when visiting splat");
+        LLVM_DEBUG({
+            splatOp.emitError("MaskAnalysis: MaskState should be empty when visiting splat");
+        });
         return failure();
     }
 
@@ -245,21 +271,35 @@ LogicalResult MaskState::parseSplat(triton::SplatOp splatOp, const Location loc,
     auto dstShape = cast<ShapedType>(dst.getType()).getShape();
 
     if (!isa<IntegerType>(src.getType())) {
-        splatOp.emitError()
-            << "splat source must be an integer scalar for load/store masks";
+        LLVM_DEBUG({
+            splatOp.emitError()
+                << "splat source must be an integer scalar for load/store masks";
+        });
         return failure();
     }
 
     if (failed(this->parse(src, loc, builder)))
         return failure();
 
+    if (stateInfo.size() > 1 || (stateInfo.size() == 1 && !isOne(stateInfo.back().shape))) {
+        LLVM_DEBUG({
+            splatOp.emitError()
+                << "splat from a non-scalar source is not supported, unless it's state size and shape are 1";
+        });
+        return failure();
+    }
+
     auto zeroAttr = builder.getIndexAttr(0);
+    SmallVector<dimInfo> newStateInfo;
     for (auto [i, shape] : llvm::enumerate(dstShape)) {
         auto shapeAttr = builder.getIndexAttr(shape);
-        stateInfo.emplace_back(zeroAttr,
-                               shapeAttr, i, true);
+        newStateInfo.emplace_back(zeroAttr, shapeAttr, i, true);
+        if (!stateInfo.empty() && shape == 1) {
+            newStateInfo.back() = stateInfo.back();
+            newStateInfo.back().dimIndex = i;
+        }
     }
-  
+    this->stateInfo = newStateInfo;
     return success();
 }
 
@@ -267,8 +307,10 @@ LogicalResult MaskState::parseExpandDims(triton::ExpandDimsOp expandDimsOp,
                                          const Location loc,
                                          OpBuilder &builder) {
     if (!this->isEmpty()) {
-        expandDimsOp.emitError(
-            "MaskAnalysis: MaskState should be empty when visiting expand_dims");
+        LLVM_DEBUG({
+            expandDimsOp.emitError(
+                "MaskAnalysis: MaskState should be empty when visiting expand_dims");
+        });
         return failure();
     }
 
@@ -282,8 +324,10 @@ LogicalResult MaskState::parseExpandDims(triton::ExpandDimsOp expandDimsOp,
         cast<ShapedType>(expandDimsOp.getResult().getType()).getShape();
     auto axis = expandDimsOp.getAxis();
     if (dstShape[axis] != 1) {
-        expandDimsOp.emitError(
-            "MaskAnalysis: unexpected dimension size in expand_dims");
+        LLVM_DEBUG({
+            expandDimsOp.emitError(
+                "MaskAnalysis: unexpected dimension size in expand_dims");
+        });
         return failure();
     }
 
@@ -302,36 +346,42 @@ LogicalResult MaskState::parseExpandDims(triton::ExpandDimsOp expandDimsOp,
 }
 
 LogicalResult MaskState::parseAdd(arith::AddIOp addOp, const Location loc,
-                                  OpBuilder &builder) {
-  if (!this->isEmpty()) {
-      addOp.emitError("MaskAnalysis: MaskState should be empty when visiting add");
-      return failure();
-  }
+                                    OpBuilder &builder) {
+    if (!this->isEmpty()) {
+        LLVM_DEBUG({
+            addOp.emitError("MaskAnalysis: MaskState should be empty when visiting add");
+        });
+        return failure();
+    }
 
-  MaskState lhsState;
-  if (failed(lhsState.parse(addOp.getLhs(), loc, builder)))
-    return failure();
+    MaskState lhsState;
+    if (failed(lhsState.parse(addOp.getLhs(), loc, builder)))
+        return failure();
 
-  MaskState rhsState;
-  if (failed(rhsState.parse(addOp.getRhs(), loc, builder)))
-    return failure();
+    MaskState rhsState;
+    if (failed(rhsState.parse(addOp.getRhs(), loc, builder)))
+        return failure();
 
-  return this->addStates(lhsState, rhsState, loc, builder);
+    return this->addStates(lhsState, rhsState, loc, builder);
 }
 
 LogicalResult MaskState::addStates(const MaskState &lhsState,
                                    const MaskState &rhsState, Location loc,
                                    OpBuilder &builder) {
     if (lhsState.scalar && rhsState.scalar) {
-        InFlightDiagnostic diag =
-            emitWarning(loc) << "Unexpected case where both lhs and rhs are scalars";
+        LLVM_DEBUG({
+            InFlightDiagnostic diag =
+                emitWarning(loc) << "Unexpected case where both lhs and rhs are scalars";
+        });
         return failure();
     }
 
     if (!lhsState.scalar && !rhsState.scalar) {
-        InFlightDiagnostic diag =
-            emitWarning(loc)
-            << "Unsupported scenario where neither lhs nor rhs is a scalar";
+        LLVM_DEBUG({
+            InFlightDiagnostic diag =
+                emitWarning(loc)
+                << "Unsupported scenario where neither lhs nor rhs is a scalar";
+        });
         return failure();
     }
 
@@ -355,8 +405,10 @@ LogicalResult MaskState::parseBroadcast(triton::BroadcastOp broadcastOp,
                                         const Location loc,
                                         OpBuilder &builder) {
     if (!this->isEmpty()) {
-        broadcastOp.emitError(
-            "MaskAnalysis: MaskState should be empty when visiting broadcast");
+        LLVM_DEBUG({
+            broadcastOp.emitError(
+                "MaskAnalysis: MaskState should be empty when visiting broadcast");
+        });
         return failure();
     }
 
@@ -368,16 +420,20 @@ LogicalResult MaskState::parseBroadcast(triton::BroadcastOp broadcastOp,
     auto src = broadcastOp.getSrc();
     auto dst = broadcastOp.getResult();
     if (!isa<ShapedType>(dst.getType())) {
-        broadcastOp.emitError(
-            "MaskAnalysis: broadcast dst should be a shaped type");
+        LLVM_DEBUG({
+            broadcastOp.emitError(
+                "MaskAnalysis: broadcast dst should be a shaped type");
+        });
         return failure();
     }
 
     auto srcShape = cast<ShapedType>(src.getType()).getShape();
     auto dstShape = cast<ShapedType>(dst.getType()).getShape();
     if (srcShape.size() != dstShape.size()) {
-        broadcastOp.emitError(
-            "MaskAnalysis: broadcast src and dst should have the same rank");
+        LLVM_DEBUG({
+            broadcastOp.emitError(
+                "MaskAnalysis: broadcast src and dst should have the same rank");
+        });
         return failure();
     }
 
@@ -400,8 +456,10 @@ LogicalResult MaskState::parseBroadcast(triton::BroadcastOp broadcastOp,
                 info.hasBroadCast = true;
             }
         } else {
-            broadcastOp.emitError(
-                "MaskAnalysis: unexpected dimensions used in broadcast");
+            LLVM_DEBUG({
+                broadcastOp.emitError(
+                    "MaskAnalysis: unexpected dimensions used in broadcast");
+            });
             return failure();
         }
     }
@@ -418,13 +476,24 @@ LogicalResult MaskState::parseBroadcast(triton::BroadcastOp broadcastOp,
 LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
                                   OpBuilder &builder) {
     if (!this->isEmpty()) {
-        cmpOp.emitError("MaskAnalysis: MaskState should be empty when visiting cmpi");
+        LLVM_DEBUG({
+            cmpOp.emitError("MaskAnalysis: MaskState should be empty when visiting cmpi");
+        });
         return failure();
     }
     LLVM_DEBUG({
         llvm::dbgs() << "----------------------------------------------\n";
         llvm::dbgs() << "Parsing CMP operation: " << cmpOp << "\n";
     });
+
+    if (isa<IntegerType>(cmpOp.getLhs().getType()) &&
+        (cmpOp.getLhs().getDefiningOp<arith::CmpIOp>() ||
+         cmpOp.getRhs().getDefiningOp<arith::CmpIOp>())) {
+        LLVM_DEBUG({
+            cmpOp.emitWarning("MaskAnalysis: Unsupported nested cmpi scenario for int1");
+        });
+        return failure();
+    }
 
     MaskState lhsState;
     if (failed(lhsState.parse(cmpOp.getLhs(), loc, builder)))
@@ -434,14 +503,23 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
     if (failed(rhsState.parse(cmpOp.getRhs(), loc, builder)))
         return failure();
 
-    if (isa<IntegerType>(cmpOp.getLhs().getType())) {
-        cmpOp.emitRemark("MaskAnalysis: Unsupported cmpi scenario");
-        return failure();
+    if (lhsState.scalar) {
+        if (lhsState.stateInfo.empty()) {
+            lhsState.stateInfo.emplace_back(
+                builder.getIndexAttr(0), builder.getIndexAttr(1));
+        }
+        for (auto &info : lhsState.stateInfo) {
+            if (isOne(info.shape)) {
+                info.offset = lhsState.scalar;
+            }
+        }
     }
 
     // lhs must be a Value and rhs must be scalar
-    if (lhsState.scalar || !rhsState.scalar) {
-        cmpOp.emitWarning("MaskAnalysis: Unsupported cmpi scenario");
+    if (!rhsState.scalar) {
+        LLVM_DEBUG({
+            cmpOp.emitWarning("MaskAnalysis: Unsupported cmpi scenario");
+        });
         return failure();
     }
 
@@ -470,7 +548,9 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
         if (info.hasBroadCast)
             continue;
         if (!info.setType(cmpType)) {
-            cmpOp.emitWarning("MaskAnalysis: Unsupported cmpi type");
+            LLVM_DEBUG({
+                cmpOp.emitWarning("MaskAnalysis: Unsupported cmpi type");
+            });
             return failure();
         }
         info.rhs = rhsState.scalar;
@@ -488,7 +568,9 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
 LogicalResult MaskState::parseRem(arith::RemSIOp remOp, const Location loc,
                                   OpBuilder &builder) {
     if (!this->isEmpty()) {
-        remOp.emitError("MaskAnalysis: MaskState should be empty when visiting REMSI");
+        LLVM_DEBUG({
+            remOp.emitError("MaskAnalysis: MaskState should be empty when visiting REMSI");
+        });
         return failure();
     }
 
@@ -501,14 +583,18 @@ LogicalResult MaskState::parseRem(arith::RemSIOp remOp, const Location loc,
         return failure();
 
     if (lhsState.scalar || !rhsState.scalar) {
-        remOp.emitRemark("MaskAnalysis: Unsupported REMSI scenario");
+        LLVM_DEBUG({
+            remOp.emitRemark("MaskAnalysis: Unsupported REMSI scenario");
+        });
         return failure();
     }
 
     auto divisorAttr = rhsState.scalar;
 
     if (!getIntAttr(divisorAttr).has_value()) {
-        remOp.emitError("MaskAnalysis: do not support dynamic divisor in REMSI.");
+        LLVM_DEBUG({
+            remOp.emitError("MaskAnalysis: do not support dynamic divisor in REMSI.");
+        });
         return failure();
     }
 
@@ -520,7 +606,9 @@ LogicalResult MaskState::parseRem(arith::RemSIOp remOp, const Location loc,
             continue;
         }
         if (!isMultiple(divisorAttr, info.shape) && !isMultiple(info.shape, divisorAttr)) {
-            remOp.emitError("MaskAnalysis: do not support dynamic stride before REMSI.");
+            LLVM_DEBUG({
+                remOp.emitError("MaskAnalysis: do not support dynamic stride before REMSI.");
+            });
             return failure();
         }
 
@@ -529,7 +617,9 @@ LogicalResult MaskState::parseRem(arith::RemSIOp remOp, const Location loc,
 
         auto staticNonContiguousSize = getIntAttr(nonContiguousSize);
         if (!staticNonContiguousSize.has_value()) {
-            remOp.emitError("MaskAnalysis: do not support dynamic size before REMSI.");
+            LLVM_DEBUG({
+                remOp.emitError("MaskAnalysis: do not support dynamic size before REMSI.");
+            });
             return failure();
         }
 
@@ -548,7 +638,9 @@ LogicalResult MaskState::parseRem(arith::RemSIOp remOp, const Location loc,
 LogicalResult MaskState::parseDiv(arith::DivSIOp divOp, const Location loc,
                                   OpBuilder &builder) {
     if (!this->isEmpty()) {
-        divOp.emitError("MaskAnalysis: MaskState should be empty when visiting DIVSI");
+        LLVM_DEBUG({
+            divOp.emitError("MaskAnalysis: MaskState should be empty when visiting DIVSI");
+        });
         return failure();
     }
 
@@ -574,14 +666,18 @@ LogicalResult MaskState::parseDiv(arith::DivSIOp divOp, const Location loc,
     });
 
     if (lhsState.scalar || !rhsState.scalar) {
-        divOp.emitRemark("MaskAnalysis: Unsupported DIVSI scenario");
+        LLVM_DEBUG({
+            divOp.emitRemark("MaskAnalysis: Unsupported DIVSI scenario");
+        });
         return failure();
     }
 
     auto divisorAttr = rhsState.scalar;
 
     if (!getIntAttr(divisorAttr).has_value()) {
-        divOp.emitError("MaskAnalysis: do not support dynamix divisor in DIVSI.");
+        LLVM_DEBUG({
+            divOp.emitError("MaskAnalysis: do not support dynamix divisor in DIVSI.");
+        });
         return failure();
     }
 
@@ -593,7 +689,9 @@ LogicalResult MaskState::parseDiv(arith::DivSIOp divOp, const Location loc,
             continue;
         }
         if (!isMultiple(divisorAttr, info.shape) && !isMultiple(info.shape, divisorAttr)) {
-            divOp.emitError("MaskAnalysis: do not support dynamix stride before DIVSI.");
+            LLVM_DEBUG({
+                divOp.emitError("MaskAnalysis: do not support dynamix stride before DIVSI.");
+            });
             return failure();
         }
 
@@ -602,7 +700,9 @@ LogicalResult MaskState::parseDiv(arith::DivSIOp divOp, const Location loc,
 
         auto staticContiguousSize = getIntAttr(contiguousSize);
         if (!staticContiguousSize.has_value()) {
-            divOp.emitError("MaskAnalysis: do not support dynamix size before DIVSI.");
+            LLVM_DEBUG({
+                divOp.emitError("MaskAnalysis: do not support dynamix size before DIVSI.");
+            });
             return failure();
         }
 
@@ -627,7 +727,9 @@ LogicalResult MaskState::parseDiv(arith::DivSIOp divOp, const Location loc,
 LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
                                   OpBuilder &builder) {
     if (!this->isEmpty()) {
-        andOp.emitError("MaskAnalysis: MaskState should be empty when visiting and");
+        LLVM_DEBUG({
+            andOp.emitError("MaskAnalysis: MaskState should be empty when visiting and");
+        });
         return failure();
     }
     auto zeroAttr = builder.getIndexAttr(0);
@@ -636,6 +738,13 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
         llvm::dbgs() << "----------------------------------------------\n";
         llvm::dbgs() << "Parsing AND operation: " << andOp << "\n";
     });
+
+    if (isa<IntegerType>(andOp.getLhs().getType())) {
+        LLVM_DEBUG({
+            andOp.emitWarning("MaskAnalysis: Unsupported andi scenario for int1");
+        });
+        return failure();
+    }
 
     MaskState lhsState;
     if (failed(lhsState.parse(andOp.getLhs(), loc, builder)))
@@ -672,7 +781,9 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
                 rhsState.dump();
                 llvm::dbgs() << "----------------------------------------------\n";
             });
-            andOp.emitError("MaskAnalysis: the add operation have incompatible sizes");
+            LLVM_DEBUG({
+                andOp.emitError("MaskAnalysis: the add operation have incompatible sizes");
+            });
             return failure();
         }
 
@@ -688,16 +799,20 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
                 rhsState.dump();
                 llvm::dbgs() << "----------------------------------------------\n";
             });
-            andOp.emitError("MaskAnalysis: the add operation have incompatible sizes."
-                             "Valid dimensions are split.");
+            LLVM_DEBUG({
+                andOp.emitError("MaskAnalysis: the add operation have incompatible sizes."
+                                "Valid dimensions are split.");
+            });
             return failure();
         }
         newInfo.currentType = lIt->hasBroadCast ? rIt->currentType : lIt->currentType;
         if (lIt->currentType != dimInfo::CompareType::deafaultType &&
             rIt->currentType != dimInfo::CompareType::deafaultType &&
             lIt->currentType != rIt->currentType) {
-            andOp.emitError("MaskAnalysis: do not suppport different compare mode within"
-                             "the same dimension.");
+            LLVM_DEBUG({
+                andOp.emitError("MaskAnalysis: do not suppport different compare mode within"
+                                "the same dimension.");
+            });
             return failure();
         }
 
@@ -710,8 +825,10 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
             newInfo.rhs = lIt->rhs;
             newInfo.hasBroadCast = lIt->hasBroadCast;
         } else {
-            andOp.emitError("MaskAnalysis: do not suppport "
-                             "and in the same dimension.");
+            LLVM_DEBUG({
+                andOp.emitError("MaskAnalysis: do not suppport "
+                                "and in the same dimension.");
+            });
             return failure();
         }
 
@@ -778,9 +895,11 @@ Value MaskState::createNewMask(const Location loc, OpBuilder &builder) {
     for (auto info : stateInfo) {
         auto staticShape = getIntAttr(info.shape);
         if (!staticShape.has_value()) {
-            InFlightDiagnostic diag = emitError(loc)
-                                      << "MaskAnalysis: dynamic shape is not supported in mask "
-                                         "generation\n";
+            LLVM_DEBUG({
+                InFlightDiagnostic diag = emitError(loc)
+                                        << "MaskAnalysis: dynamic shape is not supported in mask "
+                                            "generation\n";
+            });
             return nullptr;
         }
         shape.emplace_back(staticShape.value());
@@ -826,9 +945,11 @@ Value MaskState::createNewMask(const Location loc, OpBuilder &builder) {
             builder.create<triton::SplatOp>(loc, indexI32RowType, rhsValue);
 
         if (info.currentType == dimInfo::CompareType::deafaultType) {
-            InFlightDiagnostic diag = emitError(loc)
-                                      << "MaskAnalysis: cannot generate mask when "
-                                         "compare type is not set\n";
+            LLVM_DEBUG({
+                InFlightDiagnostic diag = emitError(loc)
+                                        << "MaskAnalysis: cannot generate mask when "
+                                            "compare type is not set\n";
+            });
             return nullptr;
         }
         auto cmpOp = builder.create<arith::CmpIOp>(
@@ -850,9 +971,11 @@ Value MaskState::createNewMask(const Location loc, OpBuilder &builder) {
     }
 
     if (cacheResults.empty()) {
-        InFlightDiagnostic diag = emitWarning(loc)
-                                  << "MaskAnalysis: cannot generate mask when all "
-                                     "dimensions are broadcasted";
+        LLVM_DEBUG({
+            InFlightDiagnostic diag = emitWarning(loc)
+                                    << "MaskAnalysis: cannot generate mask when all "
+                                        "dimensions are broadcasted";
+        });
         return nullptr;
     }
     newMask = cacheResults[0];

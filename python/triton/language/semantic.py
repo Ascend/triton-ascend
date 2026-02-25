@@ -7,6 +7,7 @@ import numbers
 from .._C.libtriton import ir
 from . import core as tl
 
+from . import is_compile_on_910_95
 T = TypeVar('T')
 
 
@@ -346,6 +347,7 @@ def mod(input: tl.tensor | numbers.Number, other: tl.tensor | numbers.Number, bu
     other_scalar_ty = other.type.scalar
     # float % float
     if scalar_ty.is_floating():
+        # input - input.div(other, rounding_mode="floor") * other
         return tl.tensor(builder.create_frem(input.handle, other.handle), input.type)
     # % int
     elif scalar_ty.is_int():
@@ -666,9 +668,11 @@ def arange(start: int, end: int, builder: ir.builder) -> tl.tensor:
     if end <= start:
         raise ValueError("arange's end argument must be greater than the start argument")
     range = end - start
-    # FIXME:patched triton community
-    # if (range & (range - 1)) != 0:
-    #     raise ValueError("arange's range must be a power of 2")
+    # Check if compile_mode is simt, then range must be a power of 2
+    if builder.is_simt_mode():
+        # Check if range is a power of 2
+        if (range & (range - 1)) != 0:
+            raise ValueError("arange's range must be a power of 2")
     shape = [range]
     ret_ty = tl.block_type(tl.int32, shape)
     return tl.tensor(builder.create_make_range(start, end), ret_ty)
@@ -1341,10 +1345,16 @@ def atomic_cas(ptr: tl.tensor, cmp: tl.tensor, val: tl.tensor, sem: str, scope: 
     sem = _str_to_sem(sem)
     scope = _str_to_scope(scope)
     element_ty = ptr.type.scalar.element_ty
-    supported_types = [tl.int8, tl.uint8, tl.int16, tl.int32, tl.int64, tl.float16, tl.bfloat16, tl.float32]
-    if element_ty not in supported_types:
-        raise ValueError(f"atomic_cas does not support {str(element_ty)}. "
-                        "All support dtypes are int8, uint8, int16, int32, int64, float16, bfloat16, float32.")
+    if not is_compile_on_910_95:
+        supported_types = [tl.int8, tl.uint8, tl.int16, tl.int32, tl.int64, tl.float16, tl.bfloat16, tl.float32]
+        if element_ty not in supported_types:
+            raise ValueError(f"atomic_cas does not support {str(element_ty)}. "
+                            "All support dtypes are int8, uint8, int16, int32, int64, float16, bfloat16, float32.")
+    else:
+        unsupported_types = [tl.int1]
+        if element_ty in unsupported_types:
+            raise ValueError(f"atomic_cas does not support {str(element_ty)}. "
+                            "All support dtypes are int8, uint8, int16, uint16, int32, uint32, int64, uint64, fp8e4m3, fp8e5m2, float16, bfloat16, float32.")
     return tl.tensor(builder.create_atomic_cas(ptr.handle, cmp.handle, val.handle, sem, scope), val.type)
 
 
@@ -1472,9 +1482,9 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
         # All combinations of supported fp8 x fp8 are permitted
         pass
     else:
-        assert lhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16,
+        assert lhs.dtype in (tl.int1, tl.int8, tl.uint8, tl.float16, tl.bfloat16,
                              tl.float32), f"Unsupported lhs dtype {lhs.dtype}"
-        assert rhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16,
+        assert rhs.dtype in (tl.int1, tl.int8, tl.uint8, tl.float16, tl.bfloat16,
                              tl.float32), f"Unsupported rhs dtype {rhs.dtype}"
         assert lhs.dtype == rhs.dtype, f"Both operands must be same dtype. Got {lhs.dtype} and {rhs.dtype}"
 
@@ -1523,16 +1533,13 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
         acc_handle = acc.handle
         assert acc.type == ret_ty
 
-    # max_num_imprecise_acc only applies to fp8 -> fp32 dot on sm_90
-    if max_num_imprecise_acc is None:
-        if lhs.dtype.is_fp8() and rhs.dtype.is_fp8():
-            max_num_imprecise_acc = builder.options.max_num_imprecise_acc_default
-        else:
-            max_num_imprecise_acc = 0
-    else:
-        if lhs.dtype.is_fp8() and rhs.dtype.is_fp8() and max_num_imprecise_acc > K:
-            raise ValueError(f"max_num_imprecise_acc ({max_num_imprecise_acc}) must be <= K ({K})")
+    if (input_precision == getattr(ir.INPUT_PRECISION, "HF32")):
+        if (not lhs.dtype.is_fp32() or not rhs.dtype.is_fp32() or not ret_scalar_ty.is_fp32()):
+            raise ValueError("input_precision = 'hf32' must be used with f32 * f32 = f32 on Ascend")
 
+    if max_num_imprecise_acc is not None:
+        print("max_num_imprecise_acc in tl.dot is not supported on Ascend yet. Thus it is ignored.")
+    max_num_imprecise_acc = 0
     return tl.tensor(builder.create_dot(lhs.handle, rhs.handle, acc_handle, input_precision, max_num_imprecise_acc),
                      ret_ty)
 
@@ -1557,7 +1564,7 @@ def _bitcast_to_fp_type(val: tl.tensor, float_format: str, builder: ir.builder):
         return bitcast(val, triton_ty, builder)
 
 def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format: str, rhs: tl.tensor, rhs_scale: Optional[tl.tensor],
-               rhs_format: str, acc: Union[tl.tensor, None], fast_math: bool, lhs_k_pack, rhs_k_pack, out_dtype: tl.dtype, 
+               rhs_format: str, acc: Union[tl.tensor, None], out_dtype: tl.dtype, lhs_k_pack, rhs_k_pack,
                builder: ir.builder) -> tl.tensor:
     assert lhs.type.is_block() and rhs.type.is_block()
     assert lhs.dtype == tl.bfloat16 or lhs.dtype == tl.float16, f"lhs matrix dtype must be bf16 or fp16"
@@ -1570,7 +1577,7 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format: str, rhs: tl.te
     rhs_format: str = rhs_format.value
     lhs_format_enum = _str_to_fp_type(lhs_format)
     rhs_format_enum = _str_to_fp_type(rhs_format)
-    allowed_formats = {"bf16", "fp16"} # unsupported fp8/4 dtype: "e2m1", "e4m3", "e5m2" 
+    allowed_formats = {"bf16", "fp16"} # unsupported fp8/4 dtype: "e2m1", "e4m3", "e5m2"
     assert lhs_format in allowed_formats, f"NYI: lhs_format {lhs_format}"
     assert rhs_format in allowed_formats, f"NYI: rhs_format {rhs_format}"
     rhs_scale_is_none = rhs_scale is None or (isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None)
@@ -1592,7 +1599,7 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format: str, rhs: tl.te
         dims = core._unwrap_iterable(dims)
         tmp_rhs = permute(rhs, dims, builder)
         rhs = reshape(tmp_rhs, (rhs.shape[0], rhs.shape[1]), True, builder)
-        
+
     assert lhs.type.shape[-1] == rhs.type.shape[-2], (
         f"lhs last dimension (columns) {lhs.shape[-1]} "
         f"must equal rhs penultimate dimension (rows) {rhs.shape[-2]}"
@@ -1929,7 +1936,7 @@ def make_tensor_descriptor(
     strides[-1] = tl._unwrap_if_constexpr(strides[-1])
     if strides[-1] != 1:
         raise ValueError(f"Tensor descriptor last dim must be 1 but got {strides[-1]}")
-    
+
     shape = [make_scalar(x, tl.int32, builder) for x in shape]
     strides = [make_scalar(x, tl.int64, builder) for x in strides]
 

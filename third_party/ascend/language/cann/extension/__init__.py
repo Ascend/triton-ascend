@@ -1,6 +1,7 @@
 try:
     import acl
-    is_compile_on_910_95 = acl.get_soc_name().startswith("Ascend910_95")
+    soc_name = acl.get_soc_name()
+    is_compile_on_910_95 = soc_name.startswith("Ascend910_95") or soc_name.startswith("Ascend950")
 except Exception as e:
     is_compile_on_910_95 = False
 
@@ -9,6 +10,7 @@ from .core import (
     builtin,
     CORE,
     copy_from_ub_to_l1,
+    copy,
     debug_barrier,
     fixpipe,
     FixpipeDMAMode,
@@ -59,7 +61,6 @@ from .vec_ops import (
 )
 
 from .mem_ops import (
-    index_select,
     index_put,
     gather_out_to_ub,
     scatter_ub_to_out,
@@ -70,6 +71,7 @@ __all__ = [
     # core
     "builtin",
     "copy_from_ub_to_l1",
+    "copy",
     "CORE",
     "debug_barrier",
     "fixpipe",
@@ -118,7 +120,6 @@ __all__ = [
     "cast",
 
     # mem ops
-    "index_select",
     "index_put",
     "gather_out_to_ub",
     "scatter_ub_to_out",

@@ -18,11 +18,13 @@ def my_kernel(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
     index = tl.full([8], 0, tl.int32)
     value = tl.full([8, 64], 0, tl.float32)
     tmp = tl.full([8], 0, tl.float32)
-    x = al.custom("__builtin_embedding_gather",
+    x = al.custom("__builtin_index_select",
                    x_ptr, index,
+                   dim=0,
                    bound=100,
-                   offsets=(1, 2, 3),
-                   numels=(4, 5, 6),
+                   end_offset=(2, 2),
+                   start_offset=(0, 0),
+                   src_stride=(4, 1),
                    out=x)
     al.custom("__builtin_index_put",
               x_ptr, index, value,

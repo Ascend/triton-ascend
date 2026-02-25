@@ -23,15 +23,21 @@
 from __future__ import annotations
 
 import builtins
+import copy
+import functools
 import os
 import time
-import copy
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List
 
+from torch import Tensor
+
+import triton
 from triton.runtime.autotuner import Autotuner, Config
 
-from .utils import get_byte_per_numel, is_valid_axis_name, valid_axis_names, simt_candidate_warps
-from .autoparser import SplitAxesParser, TilingAxesParser, ReductionAxesParser, LowDimsAxesParser, PtrNumsParser
+from .autoparser import (LowDimsAxesParser, PtrNumsParser, ReductionAxesParser,
+                         SplitAxesParser, TilingAxesParser)
+from .utils import get_byte_per_numel, is_valid_axis_name, valid_axis_names
 
 
 class AutoTilingTuner(Autotuner):
@@ -55,10 +61,7 @@ class AutoTilingTuner(Autotuner):
         use_cuda_graph=False,
         do_bench=None,
         auto_profile_dir=None,
-        split_params=None,
-        tiling_params=None,
-        low_dim_axes=None,
-        reduction_axes=None,
+        hints=None,
     ):
         """
         :param key: a list of argument name, where the change of arguments in value will triger re-generating candidates configs and evaluating.
@@ -82,16 +85,33 @@ class AutoTilingTuner(Autotuner):
             use_cuda_graph,
             do_bench,
         )
+        if not hints:
+            self.hints = {}
+        else:
+            self.hints = hints
+        split_params = self.hints.get("split_params", None)
+        tiling_params = self.hints.get("tiling_params", None)
+        low_dim_axes = self.hints.get("low_dim_axes", None)
+        reduction_axes = self.hints.get("reduction_axes", None)
         self._init_axis_params(key, split_params, tiling_params, low_dim_axes, reduction_axes)
+
+        self.auto_gen_config = not configs or self.hints.get("auto_gen_config", False)
+        self.gen_configs = []  # generated configs from TileGenerator
         self.auto_profile_dir = auto_profile_dir
         if not configs:
             self.user_configs = []
         else:
             self.user_configs = configs
-        self.gen_configs = []  # generated configs from TileGenerator
         self.is_simt_mode = False
+        self.simt_stack_limit = 8192
         self.user_specified_warps = None
         self.print_autotuning = os.getenv("TRITON_PRINT_AUTOTUNING", None) == "1"
+        # Compile kernels in parallel by default for triton.runtime.JITFunction,
+        # but not for others, e.g., LibEntry, since it's not compatible with AsyncCompileMode
+        self.compile_parallel = (
+            isinstance(self.fn, triton.runtime.JITFunction)
+            and os.getenv("TRITON_AUTOTUNE_PARALLEL_COMPILE", "1") == "1"
+        )
 
     def _init_axis_params(self, key, split_params, tiling_params, low_dim_axes, reduction_axes):
         if isinstance(key, list):
@@ -109,15 +129,10 @@ class AutoTilingTuner(Autotuner):
                 raise ValueError("Number of parameters exceeds the number of available axes.")
             self.keys = {axis: param for axis, param in zip(valid_axis_names, key)}
         elif isinstance(key, dict):
-            if not set(key.keys).issubset(set(valid_axis_names)):
+            if not set(key.keys()).issubset(set(valid_axis_names)):
                 raise ValueError("All keys in 'key' must be valid axis names. Got unexpected keys.")
             self.keys = key
-            if not (
-                split_params
-                and tiling_params
-                and low_dim_axes
-                and reduction_axes
-            ):
+            if any([split_params, tiling_params, low_dim_axes, reduction_axes]) is None:
                 raise ValueError(
                     "If 'key' is a dict, all axis-related parameters (split_params, tiling_params, low_dim_axes,"
                     " reduction_axes) must be provided."
@@ -130,10 +145,15 @@ class AutoTilingTuner(Autotuner):
                 raise ValueError("low_dim_axes must be a list, got: {}".format(type(low_dim_axes)))
             if not isinstance(reduction_axes, list):
                 raise ValueError("reduction_axes must be a list, got: {}".format(type(reduction_axes)))
-            used_axes = [split_params.keys(), tiling_params.keys(), low_dim_axes, reduction_axes]
-            if not set(used_axes).issubset(self.keys.keys()):
+
+            used_axes = set(split_params.keys()).union(
+                tiling_params.keys(),
+                low_dim_axes,
+                reduction_axes,
+            )
+            if not used_axes.issubset(self.keys.keys()):
                 raise ValueError(
-                    "The following axes are used but not present in the 'key': {}".format(set(used_axes) - set(self.keys.keys()))
+                    "The following axes are used but not present in the 'key': {}".format(used_axes - set(self.keys.keys()))
                 )
 
         self.split_params = split_params 
@@ -142,13 +162,13 @@ class AutoTilingTuner(Autotuner):
         self.reduction_axes = reduction_axes
         self.dual_reduction = False
         self.persistent_reduction = False
-        self.input_ptr_num = -1
+        self.num_buffers = -1
 
     def _autoparse_axis_params(self, all_args):
         miss_params = [arg for arg in self.arg_names if arg not in all_args.keys()]
         # parse pointer params nums
-        if self.input_ptr_num == -1:
-            self.input_ptr_num = self._autoparse_ptr_nums(miss_params)
+        if self.num_buffers == -1:
+            self.num_buffers = self._autoparse_ptr_nums(all_args)
         
         # parse autotiling axes
         # reduction axis must be parsed before other axes. it will alter the key
@@ -162,7 +182,7 @@ class AutoTilingTuner(Autotuner):
 
         if len(self.reduction_axes) == 1 and \
             self.reduction_axes[0] == self.low_dim_axes[0] and \
-            all_args.get(self.keys[self.reduction_axes[0]]) < 1024:
+            all_args.get(self.keys[self.reduction_axes[0]], float("inf")) < 1024:
             self.persistent_reduction = True
 
         if not self.split_params:
@@ -201,7 +221,7 @@ class AutoTilingTuner(Autotuner):
             dtype,
             self.persistent_reduction,
             self.dual_reduction,
-            self.input_ptr_num,
+            self.num_buffers,
             self.is_simt_mode,
         )
         tile_gen = TileGenerator(kernel_meta=kernel_meta)
@@ -211,20 +231,21 @@ class AutoTilingTuner(Autotuner):
         self.gen_configs = tile_gen.configs
 
         if self.is_simt_mode:
+            _default_cand_num_warps = [8, 16, 32, 64]
+            cand_num_warps = (
+                _default_cand_num_warps
+                if self.user_specified_warps is None
+                else [self.user_specified_warps]
+            )
             simt_configs = []
-            simt_warps = []
-            if self.user_specified_warps is not None:
-                simt_warps = [self.user_specified_warps]
-            else:
-                simt_warps = simt_candidate_warps
             for base_cfg in self.gen_configs:
-                for num_warps in simt_warps:
+                for num_warps in cand_num_warps:
                     new_cfg = copy.deepcopy(base_cfg)
                     new_cfg.num_warps = num_warps
                     simt_configs.append(new_cfg)
             
             if self.print_autotuning:
-                print(f"Triton autotuning: Expanded to {len(simt_configs)} SIMT configs (with warps: {simt_candidate_warps})")
+                print(f"Triton autotuning: Expanded to {len(simt_configs)} SIMT configs (with warps: {cand_num_warps})")
             
             self.gen_configs = simt_configs
 
@@ -233,21 +254,8 @@ class AutoTilingTuner(Autotuner):
                 "[WARNING] The generated candidate tiling configs are empty based on provided parameters!"
             )
 
-        if len(self.gen_configs) == 0 and len(self.user_configs) == 0:
-            return [
-                Config(
-                    {},
-                    num_warps=4,
-                    num_stages=2,
-                    num_ctas=1,
-                    num_buffers_warp_spec=0,
-                    num_consumer_groups=0,
-                    reg_dec_producer=0,
-                    reg_inc_consumer=0,
-                )
-            ]
-        else:
-            return self.gen_configs + self.user_configs
+        if self.print_autotuning:
+            print("Generated configs number: {}".format(len(self.gen_configs)))
 
     def generate_key_and_configs(self, *args, **kwargs):
         self.nargs = dict(zip(self.arg_names, args))
@@ -275,18 +283,34 @@ class AutoTilingTuner(Autotuner):
 
         key = tuple(key)
         if key not in self.cache:
-            self._autoparse_axis_params(all_args)
-            # prune configs
-            _kv_dict = {k: _args[v] for k, v in self.keys.items() if v in _args}
-            self.configs = self._gen_tile_configs(_kv_dict, dtype)
-            if self.print_autotuning:
-                print("Generate tile configs nums: {}".format(len(self.configs)))
+            if self.auto_gen_config:
+                self._autoparse_axis_params(all_args)
+                _kv_dict = {k: _args[v] for k, v in self.keys.items() if v in _args}
+                self._gen_tile_configs(_kv_dict, dtype)
+            if len(self.gen_configs) == 0 and len(self.user_configs) == 0:
+                self.configs = [
+                    Config(
+                        {},
+                        num_warps=4,
+                        num_stages=2,
+                        num_ctas=1,
+                        num_buffers_warp_spec=0,
+                        num_consumer_groups=0,
+                        reg_dec_producer=0,
+                        reg_inc_consumer=0,
+                    )
+                ]
+            else:
+                self.configs = self.gen_configs + self.user_configs
         return key
 
     def run(self, *args, **kwargs):
         key = self.generate_key_and_configs(*args, **kwargs)
+        if self.is_simt_mode and kwargs.get('simt_stack_limit', None) is None:
+            kwargs['simt_stack_limit'] = self.simt_stack_limit
         used_cached_result = True
         if key not in self.cache:
+            # prune configs
             pruned_configs = self.prune_configs(kwargs)
             if len(pruned_configs) > 1:
                 used_cached_result = False
@@ -333,14 +357,40 @@ class AutoTilingTuner(Autotuner):
         exc = None
         exc_stack = ""
 
-        for config, fn in kernels_call.items():
+        if self.compile_parallel:
+            import psutil
+
+            max_workers = min(psutil.cpu_count(logical=False) // 2, len(kernels_call))
+            future_kernels = []
             try:
-                fn()
-                run_fns[config] = fn
-            except (CompileTimeAssertionFailure, MLIRCompilationError, OutOfResources) as e:
-                import traceback
-                exc_stack = traceback.format_exc()
-                exc = e
+                with (
+                    ThreadPoolExecutor(max_workers=max_workers) as executor,
+                    triton.AsyncCompileMode(executor),
+                ):
+                    for config, fn in kernels_call.items():
+                        future_kernels.append((config, fn(warmup=True)))
+
+                    for config, fut in future_kernels:
+                        try:
+                            if hasattr(fut, "result"):
+                                fut = fut.result()
+                            run_fns[config] = functools.partial(kernels_call[config], warmup=False)
+                        except (CompileTimeAssertionFailure, MLIRCompilationError) as e:
+                            import traceback
+                            exc_stack = traceback.format_exc()
+                            exc = e
+            except Exception as e:
+                # ignore exception from __exit__() of AsyncCompileMode
+                triton.runtime._async_compile.active_mode.set(None)
+        else:
+            for config, fn in kernels_call.items():
+                try:
+                    fn(warmup=False)
+                    run_fns[config] = functools.partial(fn, warmup=False)
+                except (CompileTimeAssertionFailure, MLIRCompilationError, OutOfResources) as e:
+                    import traceback
+                    exc_stack = traceback.format_exc()
+                    exc = e
 
         if len(run_fns) == 0:
             raise RuntimeError(f"No valid triton configs. {type(exc).__name__}: {exc} \nStack trace: {exc_stack}")
@@ -370,15 +420,18 @@ class AutoTilingTuner(Autotuner):
         current = dict(meta, **config.all_kwargs())
         full_nargs = {**self.nargs, **current}
 
-        def kernel_call():
+        def kernel_call(warmup):
             if config.pre_hook:
                 config.pre_hook(full_nargs)
             self.pre_hook(full_nargs)
             try:
-                self.fn.run(
+                current.update({"warmup": warmup})
+                res = self.fn.run(
                     *args,
                     **current,
                 )
+                if warmup:
+                    return res
             except Exception as e:
                 try:
                     self.post_hook(full_nargs, exception=e)
@@ -393,12 +446,27 @@ class AutoTilingTuner(Autotuner):
         _ = self.generate_key_and_configs(*args, **kwargs)
         pruned_configs = self.prune_configs(kwargs)
         ret = []
-        for config in pruned_configs:
-            ret.append(self.fn.warmup(
-                *args,
-                **kwargs,
-                **config.all_kwargs()
-            ))
+        if self.compile_parallel:
+            import psutil
+
+            max_workers = min(psutil.cpu_count(logical=False) // 2, len(pruned_configs))
+            with (
+                ThreadPoolExecutor(max_workers=max_workers) as executor,
+                triton.AsyncCompileMode(executor),
+            ):
+                for config in pruned_configs:
+                    ret.append(self.fn.warmup(
+                        *args,
+                        **kwargs,
+                        **config.all_kwargs()
+                    ))
+        else:
+            for config in pruned_configs:
+                ret.append(self.fn.warmup(
+                    *args,
+                    **kwargs,
+                    **config.all_kwargs()
+                ))
         self.nargs = None
         return ret
 
@@ -406,8 +474,9 @@ class AutoTilingTuner(Autotuner):
         from ..testing import do_bench_npu
 
         kernel_call = self._make_kernel_call(*args, config=config, **meta)
+        fn = functools.partial(kernel_call, warmup=False)
         do_bench_npu(
-            kernel_call, prof_dir=self.auto_profile_dir, keep_res=True
+            fn, prof_dir=self.auto_profile_dir, keep_res=True
         )
 
     def _autoparse_split_params(self, candidates_params: List[str]) -> Dict[str, str]:
@@ -471,13 +540,17 @@ class AutoTilingTuner(Autotuner):
             )
         return low_dim_axes
     
-    def _autoparse_ptr_nums(self, miss_params: List[str]) -> int:
+    def _autoparse_ptr_nums(self, all_args: dict) -> int:
         """
         Counts the number of pointer parameters from triton kernel code.
         """
-        func_ast = self.fn.parse()
-        parser = PtrNumsParser(func_ast, self.keys, miss_params)
-        ptr_nums, ptr_params = parser.parse()
+        ptr_nums = 0
+        ptr_params = list()
+        for k, v in all_args.items():
+            if isinstance(v, Tensor):
+                ptr_nums += 1
+                ptr_params.append(k)
+
         if self.print_autotuning:
             print(
                 f"Ascend autotuning parse pointer params: {ptr_params}, pointer nums: {ptr_nums}"
@@ -485,9 +558,8 @@ class AutoTilingTuner(Autotuner):
         return ptr_nums
 
 
-def ascend_autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None,
-                    warmup=None, rep=None, use_cuda_graph=False, do_bench=None, auto_prof_dir=None,
-                    split_params=None, tiling_params=None, low_dim_axes=None, reduction_axes=None):
+def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None,
+             warmup=None, rep=None, use_cuda_graph=False, do_bench=None, *, auto_prof_dir=None, hints=None):
     """
     Decorator for auto-tuning a :code:`triton.jit`'d function.
 
@@ -541,12 +613,15 @@ def ascend_autotune(configs, key, prune_configs_by=None, reset_to_zero=None, res
     :type rep: int
     :param do_bench: a benchmark function to measure the time of each run.
     :type do_bench: lambda fn, quantiles
+    :param auto_prof_dir: the specified directory to store the profiling results of the best config.
+        If this parameter is None or the best config is retrieved from cache, the profiling process will be ignored.
+    :type auto_prof_dir: str
+    :param hints: a dict of autotune hint auguments passed to AutoTilingTuner.
     """
 
     def decorator(fn):
         return AutoTilingTuner(fn, fn.arg_names, configs, key, reset_to_zero, restore_value, pre_hook=pre_hook,
                                post_hook=post_hook, prune_configs_by=prune_configs_by, warmup=warmup, rep=rep,
-                               use_cuda_graph=use_cuda_graph, do_bench=do_bench, auto_profile_dir=auto_prof_dir,
-                               split_params=split_params, tiling_params=tiling_params, low_dim_axes=low_dim_axes, reduction_axes=reduction_axes)
+                               use_cuda_graph=use_cuda_graph, do_bench=do_bench, auto_profile_dir=auto_prof_dir, hints=hints)
 
     return decorator

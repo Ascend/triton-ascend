@@ -101,6 +101,7 @@ private:
 
   LogicalResult processDescriptorOperations(ModuleOp moduleOp);
   LogicalResult processPtrBroadcastOperations(ModuleOp moduleOp);
+  LogicalResult processImplicitPermuteOperations(ModuleOp moduleOp);
 
 public:
   TritonToLinalgPass() = default;

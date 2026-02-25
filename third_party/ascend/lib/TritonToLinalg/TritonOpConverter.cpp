@@ -34,6 +34,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <utility>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -42,7 +43,9 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/ValueRange.h"
 
@@ -195,31 +198,37 @@ LogicalResult SelectCanonicalizer::matchAndRewrite(
   rewriter.setInsertionPointAfter(insertSliceOp);
   Value zeroIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   auto offsets = mstate.offsets;
-  SmallVector<Value> isNegVals;
-  for (auto &o : offsets) {
-    if (isa<Value>(o)) {
-      auto oVal = cast<Value>(o);
+  SmallVector<Value> isInvalidVals;
+  for (size_t i = 0; i < offsets.size(); i++) {
+    auto &o = offsets[i];
+    if (o.is<Value>()) {
+      auto oVal = o.get<Value>();
+      int64_t dimSize = type.getShape()[i];
+      Value sizeIndex = rewriter.create<arith::ConstantIndexOp>(loc, dimSize);
       Value isNegative = rewriter.create<arith::CmpIOp>(
           loc, arith::CmpIPredicate::slt, oVal, zeroIndex);
-      isNegVals.push_back(isNegative);
+      Value isOutOfRange = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::sge, oVal, sizeIndex);
+      isInvalidVals.push_back(isNegative);
+      isInvalidVals.push_back(isOutOfRange);
     }
   }
 
-  if (isNegVals.empty()) {
+  if (isInvalidVals.empty()) {
     rewriter.replaceOp(op, insertSliceOp);
     return success();
   }
   // At least one value
-  Value negVal = isNegVals[0];
-  if (isNegVals.size() > 1) {
-    for (int i = 1; i < isNegVals.size(); ++i) {
-      auto tmpOrOp = rewriter.create<arith::OrIOp>(loc, isNegVals[i], negVal);
-      negVal = tmpOrOp.getResult();
+  Value invalidVal = isInvalidVals[0];
+  if (isInvalidVals.size() > 1) {
+    for (int i = 1; i < isInvalidVals.size(); ++i) {
+      auto tmpOrOp = rewriter.create<arith::OrIOp>(loc, isInvalidVals[i], invalidVal);
+      invalidVal = tmpOrOp.getResult();
     }
   }
   // else: what if the number of negative value checks is > 1?
   auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{falseTensor.getType()},
-                                         negVal, true /* addThenBlock */,
+                                         invalidVal, true /* addThenBlock */,
                                          true /* addElseBlock */);
   // thenBuilder
   rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
@@ -818,10 +827,80 @@ BroadcastConverter::matchAndRewrite(triton::BroadcastOp op, OpAdaptor adaptor,
 
 // Reduce Converter
 bool ReduceConverter::isReductionOpSupported(Operation *redOp) const {
-  return isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MaximumFOp,
-          arith::MaxNumFOp, arith::MinimumFOp, arith::MinNumFOp,
+  return isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MulIOp,
+          arith::MaximumFOp, arith::MaxNumFOp, arith::MinimumFOp, arith::MinNumFOp,
           arith::MinSIOp, arith::MinUIOp, arith::MaxSIOp, arith::MaxUIOp,
           arith::AndIOp, arith::OrIOp, arith::XOrIOp>(redOp);
+}
+
+bool ReduceConverter::isMultiReductionOpSupported(Operation *redOp)
+{
+  return isa<arith::SubFOp, arith::SubIOp, arith::DivFOp, arith::DivSIOp, arith::DivUIOp,
+          arith::RemFOp, arith::RemSIOp, arith::RemUIOp>(redOp);
+}
+
+Value ReduceConverter::cloneReduceOps(OpBuilder &builder, Value in, Value out,
+ 	                                    Value opIns, Value opOuts, triton::ReduceOp op) const
+{
+  auto &reg = op->getRegion(0);
+  assert(reg.getBlocks().size() == 1);
+  auto &body = reg.getBlocks().front();
+  auto numArguments = 2;
+  assert(body.getNumArguments() == numArguments);
+  
+  Value ttIn = body.getArgument(0);
+  Value ttOut = body.getArgument(1);
+
+  IRMapping mapping;
+  mapping.map(ttIn, in);
+  mapping.map(ttOut, out);
+
+  for (auto &op : body.without_terminator()) {
+    builder.clone(op, mapping);
+  }
+  auto yield = cast<triton::ReduceReturnOp>(body.getTerminator());
+  return mapping.lookup(yield->getOperand(0));
+}
+
+void ReduceConverter::checkIsNotCallOp(
+    const llvm::SmallVector<Operation*>& reductionOps) const
+{
+  llvm::for_each(reductionOps, [](Operation* op) {
+    assert(!isa<triton::CallOp>(op) &&
+      "tt.call ops expected to be inlined in tt.reduce body in ttir building stage");
+  });
+}
+
+bool ReduceConverter::isSCFOpReduce(
+    const llvm::SmallVector<Operation*>& reductionOps) const
+{
+  return (reductionOps.size() == 1 && reductionOps.front()->getDialect()->getNamespace() == scf::SCFDialect::getDialectNamespace());
+}
+
+bool ReduceConverter::isMultiOpReduce(
+    const llvm::SmallVector<Operation*>& reductionOps) const
+{
+  this->checkIsNotCallOp(reductionOps);
+
+  return (reductionOps.size() > 1) ||
+  (reductionOps.size() == 1 && this->isMultiReductionOpSupported(reductionOps.front())) ||
+  this->isSCFOpReduce(reductionOps);
+}
+
+Value ReduceConverter::computeReduceResultWithCompileFlag(OpBuilder &opBuilder, Location loc, Value lhs, Value rhs,
+    Value source, Value initTensor, triton::ReduceOp op, bool compileOn91095Flag) const
+{
+  auto reductionOps = this->getReductionOps(op);
+  assert(reductionOps.size() == 1);
+  if (compileOn91095Flag) {
+    return this->cloneReduceOps(opBuilder,
+                                lhs, rhs,
+                                source, initTensor, op);
+  } else {
+    auto rop = reductionOps.front();
+    return this->getReductionElement(lhs, rhs, loc, rop,
+                                     opBuilder, false);
+  }
 }
 
 LogicalResult ReduceConverter::convertToTargetOp(
@@ -832,23 +911,30 @@ LogicalResult ReduceConverter::convertToTargetOp(
   auto elemType = sourceType.getElementType();
   auto resType = op.getResult().front().getType();
   auto loc = op.getLoc();
-  auto reductionOps = this->getRedOps(op);
-
+  auto reductionOps = this->getReductionOps(op);
+  auto multiOpReduce = this->isMultiOpReduce(reductionOps);
   // Reduction of arbitrary operations isn't supported because using the first
   // element across the reduction dimension requires us to iterate over a
   // subview that skips over each first element.
-  if (!this->isReductionOpSupported(reductionOps.front())) {
+  if (!multiOpReduce && !this->isReductionOpSupported(reductionOps.front())) {
+     if (compileOn91095Flag) {
+ 	  	       llvm_unreachable("All reduction cases expected to be covered");
+     }
     return rewriter.notifyMatchFailure(
-        op, "Only support lowering reduction with single op and limited types of reducetion");
+        op, "Only support lowering reduction with single op and limited types of reduction");
   }
 
   auto rop = reductionOps.front();
+  auto ropLoc = rop->getLoc();
   auto axis = op.getAxis();
   auto isVectorReduce = sourceType.getRank() == 1;
 
   auto constantType = elemType;
 
-  auto accBaseConstOp = this->getRedBaseConstOp(rewriter, rop, constantType);
+  auto accBaseConstOp = multiOpReduce ?
+ 	     this->getMultiOpReductionBaseConstOp(rewriter, op, ropLoc,  constantType) :
+ 	     this->getReductionBaseConstOp(rewriter, rop, constantType);
+
   Value initTensor;
 
   if (isVectorReduce) {
@@ -867,15 +953,16 @@ LogicalResult ReduceConverter::convertToTargetOp(
   }
 
   Value finalResult = rewriter.create<linalg::ReduceOp>(
-              loc, ValueRange{source}, ValueRange{initTensor},
-              SmallVector<int64_t>{axis},
-              [&](OpBuilder &opBuilder, Location loc, ValueRange inputs) {
-                assert(inputs.size() == 2);
-                Value result = this->getRedElement(inputs[0], inputs[1], loc, rop,
-                                             opBuilder, false);
-                opBuilder.create<linalg::YieldOp>(loc, result);
-              })
-          .getResult(0);
+    loc, ValueRange{source}, ValueRange{initTensor},
+    SmallVector<int64_t>{axis},
+    [&](OpBuilder &opBuilder, Location loc, ValueRange inputs) {
+      assert(inputs.size() == 2);
+      Value result = this->computeReduceResultWithCompileFlag(opBuilder, loc,
+ 	                                                            inputs[0], inputs[1],
+ 	                                                            source, initTensor, op, compileOn91095Flag);
+      opBuilder.create<linalg::YieldOp>(loc, result);
+    })
+  .getResult(0);
 
   if (sourceType.getRank() == 1) {
     finalResult = rewriter.create<tensor::ExtractOp>(loc, constantType, finalResult);
@@ -922,8 +1009,11 @@ LogicalResult ReduceConverter::convertToTargetOpExtended(
         b.create<linalg::YieldOp>(loc, results);
       });
 
-  if (failed(addReduceWithIndexAttrIfNeeded(rewriter, linalgOp))) {
+  auto params = getReduceWithIndexParams(op);
+  if (failed(params)) {
     return rewriter.notifyMatchFailure(op, "meaningless reduce operation");
+  } else if (params->withIndexType != ReduceWithIndexType::None) {
+    addReduceWithIndexAttr(*params, rewriter, linalgOp);
   }
 
   if (isScalarReduce) {
@@ -940,14 +1030,15 @@ LogicalResult ReduceConverter::convertToTargetOpExtended(
   return success();
 }
 
-bool ScanConverter::isReductionOpSupported(Operation *redOp) const {
-  return isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MulIOp>(redOp);
+bool ScanConverter::isReductionOpSupported(Operation *reductionOp) const
+{
+  return isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MulIOp>(reductionOp);
 }
 
 LogicalResult ScanConverter::convertToTargetOp(
     triton::ScanOp op, typename triton::ScanOp::Adaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
-  auto reductionOps = this->getRedOps(op);
+  auto reductionOps = this->getReductionOps(op);
   if (reductionOps.empty()) {
     return rewriter.notifyMatchFailure(op, "No reduction op found in scan body");
   }
@@ -1685,13 +1776,13 @@ MatmulConverter::matchAndRewrite(triton::DotOp op, OpAdaptor adaptor,
     auto matmulOp = rewriter.replaceOpWithNewOp<linalg::MatmulOp>(
         op, ValueRange{opa, opb}, ValueRange{opc});
     matmulOp->setAttr(
-        "input_precison",
+        "input_precision",
         rewriter.getStringAttr(stringifyInputPrecision(inputPrec)));
   } else if (dstType.getRank() == 3) {
     auto matmulOp = rewriter.replaceOpWithNewOp<linalg::BatchMatmulOp>(
         op, ValueRange{opa, opb}, ValueRange{opc});
     matmulOp->setAttr(
-        "input_precison",
+        "input_precision",
         rewriter.getStringAttr(stringifyInputPrecision(inputPrec)));
   } else {
     llvm_unreachable("Datatype of DotOp operands could only be 2D or 3D");
@@ -2151,51 +2242,6 @@ PtrToIntConverter::matchAndRewrite(triton::PtrToIntOp op, OpAdaptor adaptor,
       loc, resultType, ptrToIndexOp);
 
   rewriter.replaceOp(op, intResult);
-  return success();
-}
-
-LogicalResult
-EmbeddingGatherConverter::matchAndRewrite(triton::ascend::EmbeddingGatherOp op, OpAdaptor adaptor,
-                                          ConversionPatternRewriter &rewriter) const {
-  auto loc = op.getLoc();
-
-  auto moduleOp = op->getParentOfType<ModuleOp>();
-  rewriter.setInsertionPoint(moduleOp.getBody(),
-                             std::prev(moduleOp.getBody()->end()));
-
-  auto funcName = generateUniqueFuncName(moduleOp, funcNameBase);
-
-  auto src = adaptor.getSrc();
-  auto idx = op.getIdx();
-  auto bound = op.getBound();
-  auto blksiz = op.getBlocksize();
-  auto offsets = op.getOffsets();
-  auto numels = op.getNumels();
-  auto res = op.getResult();
-  auto resTy = res.getType();
-
-  // convert !tt.ptr<f32> to memref<?xf32>
-  auto srcTy = dyn_cast<MemRefType>(src.getType());
-  if (!srcTy) {
-      return rewriter.notifyMatchFailure(op, "expected MemRefType for src");
-  }
-  SmallVector<Type> inputTypes({srcTy, idx.getType(), bound.getType(),
-                                blksiz.getType()});
-  inputTypes.append(offsets.getTypes().begin(), offsets.getTypes().end());
-  inputTypes.append(numels.getTypes().begin(), numels.getTypes().end());
-  auto libFnType = rewriter.getFunctionType(inputTypes, {resTy});
-  auto funcOp = rewriter.create<func::FuncOp>(loc, funcName.str(), libFnType);
-  SymbolTable::setSymbolVisibility(funcOp, SymbolTable::Visibility::Private);
-
-  rewriter.setInsertionPoint(op);
-  SmallVector<Value> inputVals({src, idx, bound, blksiz});
-  inputVals.append(offsets.begin(), offsets.end());
-  inputVals.append(numels.begin(), numels.end());
-  auto callOp = rewriter.create<func::CallOp>(loc, funcOp.getSymNameAttr(),
-                                              TypeRange({resTy}),
-                                              inputVals);
-
-  rewriter.replaceOp(op, callOp);
   return success();
 }
 

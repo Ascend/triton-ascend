@@ -86,7 +86,7 @@ def _handle_core_mode_attr(builder, core_mode):
     if core_mode not in ("cube", "vector"):
         return {}
     return {
-        "hivm.t_core_type": (
+        builder.get_t_core_type_attr_name(): (
             builder.get_t_core_type_cube_attr() if core_mode == "cube"
             else builder.get_t_core_type_vector_attr()
         )

@@ -56,9 +56,12 @@ def triton_test_fn_atomic_min_dma_supply(
 
 @pytest.mark.parametrize('param_list',
                          [
+                             ['uint8', (32, 32), 2],
                              ['int8', (32, 32), 2],
                              ['int16', (32, 32), 2],
                              ['int32', (32, 32), 2],
+                             ['int64', (32, 32), 2],
+                             ['bfloat16', (64, 64), 4],
                              ['float16', (64, 64), 4],
                              ['float32', (32, 32), 2],
                          ]

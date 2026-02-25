@@ -91,6 +91,29 @@ MemRefType expandInterleaveMemRefType(MemRefType originType) {
 // `add constant one` should work on offset of next insert_slice/extract_slic.
 // The new reinterpretcast just wanna describe whole tensor, so new castOffset
 // is just from non-last diemsnion accumulation and remove `add constant one`
+bool checkIsCaseOffsetValid(OpFoldResult originOffset)
+{
+  // If offset is constant int(IndexAttr), the int value could only be 0 or 1
+  // if offset is a value from add constant operation and not from `add constant one` operation, it's invalid.
+  if (llvm::isa<Attribute>(originOffset)) {
+    int64_t intOffset = getConstantIntValue(originOffset).value();
+    return intOffset == 0 || intOffset == 1;
+  } else if (llvm::isa<Value>(originOffset)) {
+    auto op = originOffset.get<Value>().getDefiningOp();
+    if (op && llvm::isa<arith::AddIOp>(op)) {
+      if (auto addOp = dyn_cast<arith::AddIOp>(op)) {
+        if (auto constLHS = addOp.getLhs().getDefiningOp<arith::ConstantOp>()) {
+          return dyn_cast<IntegerAttr>(constLHS.getValueAttr()).getInt() == 1;
+        }
+        if (auto constRHS = addOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
+          return dyn_cast<IntegerAttr>(constRHS.getValueAttr()).getInt() == 1;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 std::pair<OpFoldResult, IndexMode>
 recountReinterpretCastOffset(OpFoldResult originOffset, Builder &builder) {
   // To trace value type offset
@@ -167,6 +190,9 @@ DeinterleaveStatusOptimization(triton::LoadOp op,
     // Last element of castStride is also constant value as prerequisite
     // is that last dimension stride of casted memref type is always 2.
     castStride.back() = rewriter.getIndexAttr(1);
+    if (!checkIsCaseOffsetValid(originCastOffset)) {
+      return failure();
+    }
     auto [castOffset, indexMode] =
         recountReinterpretCastOffset(originCastOffset, rewriter);
     auto newCastOp = rewriter.create<memref::ReinterpretCastOp>(
@@ -240,6 +266,9 @@ LogicalResult DeinterleaveStatusWithMaskOptimization(
       return failure();
     }
     castStride.back() = rewriter.getIndexAttr(1);
+    if (!checkIsCaseOffsetValid(originCastOffset)) {
+      return failure();
+    }
     auto [castOffset, indexMode] =
         recountReinterpretCastOffset(originCastOffset, rewriter);
 
@@ -374,6 +403,10 @@ InterleaveStatusOptimization(SmallVector<Operation *> materializeVec) {
       firstReinterpretCastOp.getConstifiedMixedOffset();
   auto secondOriginCastOffset =
       secondReinterpretCastOp.getConstifiedMixedOffset();
+  if (!checkIsCaseOffsetValid(firstOriginCastOffset) || !checkIsCaseOffsetValid(secondOriginCastOffset)) {
+    return failure();
+  }
+
   std::pair<IndexMode, IndexMode> indexModeRecord;
   OpFoldResult newCastOffset;
   if (llvm::isa<Attribute>(firstOriginCastOffset) &&
@@ -549,6 +582,10 @@ InterleaveStatusWithMaskOptimization(SmallVector<Operation *> materializeVec) {
       firstReinterpretCastOp.getConstifiedMixedOffset();
   auto secondOriginCastOffset =
       secondReinterpretCastOp.getConstifiedMixedOffset();
+  if (!checkIsCaseOffsetValid(firstOriginCastOffset) || !checkIsCaseOffsetValid(secondOriginCastOffset)) {
+    return failure();
+  }
+
   std::pair<IndexMode, IndexMode> indexModeRecord;
   OpFoldResult newCastOffset;
   if (llvm::isa<Attribute>(firstOriginCastOffset) &&
@@ -632,7 +669,9 @@ InterleaveStatusWithMaskOptimization(SmallVector<Operation *> materializeVec) {
   SmallVector<OpFoldResult> extractStrides =
       firstSrcExtractSlice.getMixedStrides();
   SmallVector<OpFoldResult> extractSizes = firstSrcExtractSlice.getMixedSizes();
-  assert(llvm::isa<Attribute>(extractSizes.back()));
+  if (!llvm::isa<Attribute>(extractSizes.back())) {
+    return failure();
+  }
   extractSizes.back() = builder.getIndexAttr(
       getConstantIntValue(extractSizes.back()).value() * 2);
   auto newSrcExtractSlice = builder.create<tensor::ExtractSliceOp>(
@@ -665,10 +704,18 @@ InterleaveStatusWithMaskOptimization(SmallVector<Operation *> materializeVec) {
   // 8. Erase origin operation
   materializeVec[0]->erase();
   materializeVec[1]->erase();
-  firstSubviewOpOfReCast->erase();
-  firstSrcExtractSlice->erase();
-  secondSubviewOpOfReCast->erase();
-  secondSrcExtractSlice->erase();
+  if (firstSubviewOpOfReCast->use_empty()) {
+    firstSubviewOpOfReCast->erase();
+  }
+  if (firstSrcExtractSlice->use_empty()) {
+    firstSrcExtractSlice->erase();
+  }
+  if (secondSubviewOpOfReCast->use_empty()) {
+    secondSubviewOpOfReCast->erase();
+  }
+  if (secondSrcExtractSlice->use_empty()) {
+    secondSrcExtractSlice->erase();
+  }
 
   return success();
 }

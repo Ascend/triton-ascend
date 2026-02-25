@@ -301,6 +301,9 @@ def libentry():
     """
 
     def decorator(fn):
+        from triton.runtime.interpreter import InterpretedFunction
+        if isinstance(fn, InterpretedFunction):
+            return fn
         return LibEntry(fn)
 
     return decorator

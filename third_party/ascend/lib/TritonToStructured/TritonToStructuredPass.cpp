@@ -96,6 +96,16 @@ void TritonToStructuredPass::populateTritonToStructuredPatterns(
         enableMaskFallbackConversion);
 }
 
+LogicalResult TritonToStructuredPass::processSplatBinaryOperations(ModuleOp moduleOp) {
+    mlir::RewritePatternSet patterns(&getContext());
+    patterns.add<CannonicalizerConverter::SplatCmpConverter>(patterns.getContext());
+    if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns)))) {
+        moduleOp.emitWarning("Splat binary op processing failed");
+        return failure();
+    }
+    return success();
+}
+
 void TritonToStructuredPass::runOnOperation() {
     auto moduleOp = getOperation();
     ConversionTarget target(getContext());
@@ -111,11 +121,16 @@ void TritonToStructuredPass::runOnOperation() {
     populateTritonToStructuredPatterns(tritonToStructuredPatterns,
                                        optimizeDynamicOffset,
                                        enableMaskFallbackConversion);
-    if (failed(applyPatternsGreedily(moduleOp,
-                                     std::move(tritonToStructuredPatterns)))) {
+
+    if (failed(applyPatternsAndFoldGreedily(moduleOp,
+                                            std::move(tritonToStructuredPatterns)))) {
         LLVM_DEBUG({
             moduleOp->emitRemark("PtrAnalysis: rewrite MemOp failed");
         });
+    }
+
+    if (failed(processSplatBinaryOperations(moduleOp))) {
+        moduleOp.emitWarning("Splat binary op processing failed");
     }
 
     PassManager pm(&getContext(), moduleOp.getOperationName());

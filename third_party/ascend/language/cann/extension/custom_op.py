@@ -67,6 +67,10 @@ def _to_value(value, builder, ty=None):
     # Try to use 'type' attribute if ty not set.
     ty = getattr(value, 'type', ty) if ty is None else ty
     if isinstance(value, tl.tensor):
+        if not value.type.is_block() and isinstance(ty, tl.dtype) and value.type != ty:
+            # For a scalar variable, if its type is not the expected one
+            # that specified by type hint 'ty', insert a cast for it.
+            return tl.semantic.cast(value, ty, builder).handle
         return value.handle
     if isinstance(value, bool):
         return builder.get_int1(value)

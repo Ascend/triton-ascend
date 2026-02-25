@@ -76,7 +76,7 @@ class _index_select:
     pipe = PIPE.PIPE_V
     mode = MODE.SIMT
 
-    def __init__(self, src, index, dim, bound, end_offset, start_offset, src_stride, other=None, out=None):
+    def __init__(self, src, index, dim, bound: tl.int64, end_offset, start_offset, src_stride, other=None, out=None):
         assert src.type.is_ptr() or src.dtype.is_ptr(), f"src should be a pointer, but got {src.type}"
         assert index.dtype.is_int(), "index should be integer tensor"
         src_rank = len(src_stride)

@@ -31,7 +31,9 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/LogicalResult.h"
 
 #include <functional>
 #include <optional>
@@ -58,11 +60,13 @@ Value getScalarValue(Value operand, Location loc,
                      ConversionPatternRewriter &rewriter);
 
 memref::SubViewOp makeSubViewOp(Value src,
+                                const llvm::SmallVector<OpFoldResult> &offsets,
                                 const llvm::SmallVector<OpFoldResult> &sizes,
                                 const Location &loc,
                                 ConversionPatternRewriter &rewriter);
 
 tensor::ExtractSliceOp makeExtractSliceOp(Value src,
+                                          const llvm::SmallVector<OpFoldResult> &offsets,
                                           const llvm::SmallVector<OpFoldResult> &sizes,
                                           const Location &loc,
                                           ConversionPatternRewriter &rewriter);
@@ -212,9 +216,20 @@ OpFoldResult minOpFoldResult(const OpFoldResult &lhs, const OpFoldResult &rhs,
 OpFoldResult maxOpFoldResult(const OpFoldResult &lhs, const OpFoldResult &rhs,
                              const Location &loc, OpBuilder &b);
 
-LogicalResult
-addReduceWithIndexAttrIfNeeded(ConversionPatternRewriter &rewriter,
-                               linalg::ReduceOp reduceOp);
+enum class ReduceWithIndexType { MAX, MIN, None };
+enum class TieBreakType { LEFT, RIGHT, None };
+
+struct ReduceWithIndexParams {
+  ReduceWithIndexType withIndexType = ReduceWithIndexType::None;
+  TieBreakType tieBreakType = TieBreakType::None;
+  bool isUnsignedSrc;
+};
+
+llvm::FailureOr<ReduceWithIndexParams> getReduceWithIndexParams(triton::ReduceOp op);
+
+void addReduceWithIndexAttr(ReduceWithIndexParams params,
+                            ConversionPatternRewriter& rewriter,
+                            linalg::ReduceOp reduceOp);
 
 OpFoldResult getOpFoldResultOfLayoutInfo(Value value, OpBuilder &builder);
 
@@ -227,10 +242,12 @@ FailureOr<Value> specializeTypelessValueToConstant(TypelessValue, Type,
                                                    Location, OpBuilder &);
 
 std::optional<int64_t> getIntAttr(const OpFoldResult ofr);
- 	 
+
 Value materializeValue(OpBuilder &builder, Location loc, OpFoldResult ofr);
 
 bool isZero(const OpFoldResult ofr);
+
+bool isOne(const OpFoldResult ofr);
 
 Value convertToIndexIfNeeded(Value intValue, const Location &loc, OpBuilder &b);
 } // namespace mlir

@@ -59,7 +59,8 @@ def do_bench_npu(funcs, warmup=5, active=30, clear_l2_cache=False, prof_dir=None
 
     if clear_l2_cache:
         buffer = runtime.driver.active.get_empty_cache_for_benchmark()
-        buffer.zero_()
+        buffer = buffer.float()  # to avoid type cast
+        buffer.sum()
         torch.npu.synchronize()  # shake out of any npu error
 
     total = warmup + active
@@ -76,7 +77,8 @@ def do_bench_npu(funcs, warmup=5, active=30, clear_l2_cache=False, prof_dir=None
         for fn in funcs:
             for _ in builtins.range(total):
                 if clear_l2_cache:
-                    buffer.zero_()
+                    buffer.sum()  # use buffer read to clear l2 cache
+                    torch.npu.synchronize()
                 fn()
                 torch.npu.synchronize()
     if clear_l2_cache:
@@ -131,7 +133,7 @@ def _collect_prof_result(base_dir: str, funcs, num_warmup: int, num_active: int,
 
     df = pd.read_csv(kernel_details_file)
     # filter out l2 cache clearing operation
-    filter_cond = ~df["Type"].str.contains(r"^ZerosLike$", case=False, na=False)
+    filter_cond = ~df["Type"].str.contains(r"^ReduceSum$", case=False, na=False)
     filter_df = df[filter_cond]
     if key is not None:
         key_rows = filter_df[filter_df["Name"].str.contains(key, na=False)]

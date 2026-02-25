@@ -2,7 +2,8 @@ import importlib.util
 import itertools
 import os
 import shutil
-import pathlib
+import tempfile
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 
 import pytest
 import torch
@@ -580,50 +581,44 @@ def test_within_2gb(device, fresh_triton_cache) -> None:
                     k for k, v in kwargs["compile"]["configs"][0].items() if ["tt.pointer_range", 32] in v
                 ]
 
-            JITFunction.cache_hook = cache_hook
-            # In warmup we assume that the pointer range is 32 bits
-            kernel_add.warmup(torch.float32, grid=(1, ))
-            assert pointer_range_32 == pointer_range
-            # Torch tensor > 2GB
-            kernel_add[(1, 0)](torch.empty(2**31, dtype=torch.int8, device=device))
-            assert len(pointer_range_32) == 0
-            # Torch tensor <= 2GB
-            kernel_add[(1, 0)](torch.empty(2**31 - 1, dtype=torch.int8, device=device))
-            assert pointer_range_32 == pointer_range
-    finally:
-        amd_backend.compiler.use_buffer_ops.cache_clear()
-        os.environ["AMDGCN_USE_BUFFER_OPS"] = default_buffer_ops
+    JITFunction.cache_hook = cache_hook
+    # In warmup we assume that the pointer range is 32 bits
+    kernel_add.warmup(torch.float32, grid=(1, ))
+    assert pointer_range_32 == [0]
+    # Torch tensor > 2GB
+    kernel_add[(1, 0)](torch.empty(2**31, dtype=torch.int8, device=device))
+    assert len(pointer_range_32) == 0
+    # Torch tensor <= 2GB
+    kernel_add[(1, 0)](torch.empty(2**31 - 1, dtype=torch.int8, device=device))
+    assert pointer_range_32 == [0]
 
 
-def test_function_arguments(device):
+def test_async_compile(device, fresh_triton_cache):
 
     @triton.jit
-    def func1():
-        return 1
+    def kernel(Y, a: tl.constexpr):
+        tl.store(Y, a)
 
-    @triton.jit
-    def func2():
-        return 2
+    with (
+            ThreadPoolExecutor(2) as pool,
+            triton.AsyncCompileMode(pool),
+    ):
+        a = torch.empty((16, 16), device=device)
+        b = torch.empty((16, 16), dtype=torch.int32, device=device)
+        kernel.warmup(a, 0, grid=(1, ))
+        kernel.warmup(a, 1, grid=(1, ))
+        kernel.warmup(b, 0, grid=(1, ))
+        kernel.warmup(b, 1, grid=(1, ))
 
-    @triton.jit
-    def func3(x):
-        return x
+        assert len(kernel.cache[device]) == 0
 
-    @triton.jit
-    def func4(x, y):
-        return x + y
-
-    @triton.jit
-    def kernel(Y, fn: tl.constexpr, fn_args):
-        tl.store(Y, fn(*fn_args))
-
-    JITFunction.cache_hook = None
-    JITFunction.compiled_hook = None
-    y = torch.zeros((5, ), dtype=torch.int32, device=device)
-    kernel[(1, )](y[0], func1, tuple())
-    kernel[(1, )](y[1], func2, tuple())
-    kernel[(1, )](y[2], func3, (3, ))
-    kernel[(1, )](y[3], func4, (3, 4))
-    kernel[(1, )](y[4], func1, tuple())
-    assert len(kernel.device_caches[0][0]) == 4
-    assert y.tolist() == [1, 2, 3, 7, 1]
+        kernel[(1, )](b, 1)
+        assert b[0, 0] == 1
+        kernel[(1, )](b, 0)
+        assert b[0, 0] == 0
+        kernel[(1, )](a, 0)
+        assert a[0, 0] == 0
+        kernel[(1, )](a, 1)
+        assert a[0, 0] == 1
+        kernel[(1, )](a, 2)
+        assert a[0, 0] == 2

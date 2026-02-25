@@ -258,9 +258,9 @@ void BlockData::mulBlock(BlockData &lBlock, BlockData &rBlock, Location loc,
   assert(!(lBlock.hasSource() && rBlock.hasSource()));
 
   if (lBlock.isScalar() && rBlock.isScalar()) {
-    LLVM_DEBUG({llvm::dbgs() << "lBlock.scalar:" << lBlock.getScalar() 
-                       << " rBlbock.scalar:" << rBlock.getScalar() << "\n"; });   
-    
+    LLVM_DEBUG({llvm::dbgs() << "lBlock.scalar:" << lBlock.getScalar()
+                       << " rBlbock.scalar:" << rBlock.getScalar() << "\n"; });
+
     auto scalar = mulOpFoldResult(lBlock.getScalar(), rBlock.getScalar(), loc, rewriter);
     this->scalar = scalar;
   }
@@ -959,7 +959,7 @@ void BlockDataParser::parseSelect(
   auto resType = dyn_cast<ShapedType>(op.getResult().getType());
 
   assert(llvm::all_of(resType.getShape(), [](int64_t dim) { return dim == 1; }));
-  assert(isa<IntegerType>(resType.getElementType()) || 
+  assert(isa<IntegerType>(resType.getElementType()) ||
         isa<IndexType>(resType.getElementType()));
 
   size_t loopLimit = resType.getShape().size();
@@ -970,7 +970,7 @@ void BlockDataParser::parseSelect(
   }
   auto extractOp = rewriter.create<tensor::ExtractOp>(loc, res, indices);
   OpFoldResult IndexOfr = extractOp.getResult();
-  if (isa<IntegerType>(extractOp.getType())) { 
+  if (isa<IntegerType>(extractOp.getType())) {
     IndexOfr = getOpFoldResultOfLayoutInfo(extractOp.getResult(), rewriter);
   }
   // Set scalar for mul state
@@ -1150,17 +1150,6 @@ void BlockDataParser::rewriteMakeTensorPtrOp(
   BlockData data;
 
   auto orderSize = op.getOrder().size();
-  if (orderSize > 1) {
-    // Declaration of llvm::ArrayRef::slice(n, m)
-    // - Chop off the first N elements of the array, and keep M elements
-    //   in the array.
-    // Take care that 'm' means chunk length
-    for (auto [first, second] :
-         llvm::zip(op.getOrder().slice(0, orderSize - 1),
-                   op.getOrder().slice(1, orderSize - 1))) {
-        assert(first == second + 1 && "Currently only support default order on block pointers");
-    }
-  }
 
   // Handle base is defined by tt.bitcast
   BlockDataParser::parse(op.getBase(), data, loc, rewriter, known);
@@ -1177,6 +1166,8 @@ void BlockDataParser::rewriteMakeTensorPtrOp(
 
   data.getOffsetsRef() =
       std::move(llvm::map_to_vector(op.getOffsets(), [&](Value v) {
+        auto zeroVal = rewriter.create<arith::ConstantOp>(loc, rewriter.getI32IntegerAttr(0));
+        v = rewriter.create<arith::MaxSIOp>(loc, v, zeroVal);
         return getOpFoldResultOfLayoutInfo(v, rewriter);
       }));
   data.getStridesRef() =
@@ -1509,7 +1500,7 @@ BlockDataParser::rewriteTerminator(
   } else {
     newOp = rewriter.replaceOpWithNewOp<scf::ConditionOp>(op, op.getCondition(), operands);
   }
-  
+
   assert(op->getNumResults() == 0);
 
   LLVM_DEBUG({
@@ -1832,7 +1823,7 @@ void BlockDataParser::rewriteLoopOp(
         if (!isUsedForRegionArg) {
           BlockData data;
           auto regionArg = regionArgs[i];
-          auto regionArgType = cast<RankedTensorType>(regionArg.getType()); 
+          auto regionArgType = cast<RankedTensorType>(regionArg.getType());
           data.getOffsetsRef().resize(regionArgType.getRank());
           data.getStridesRef().resize(regionArgType.getRank());
           for (auto &offset: data.getOffsetsRef()) {
@@ -1846,7 +1837,7 @@ void BlockDataParser::rewriteLoopOp(
             stride = *newArgIter;
             ++newArgIter;
           }
-          
+
           auto key = mapping.lookupOrNull(regionArg);
           if (!key) {
             // Create IndexTensor regionArg from computed offset and stride data
@@ -1904,9 +1895,9 @@ void BlockDataParser::rewriteLoopOp(
     llvm::SmallDenseSet<size_t> blockArgIdxSetForAfter;
     SmallVector<int64_t> iterArgIdxMapForAfter;
     SmallVector<bool> maskIterArgsForAfter(whileOp->getNumResults());
-    
+
     int64_t indexCnt = 0;
-    
+
     for (auto newInitArg: newInitArgs) {
       usedForBeforeRegionArgs.push_back(newInitArg ? true:false);
     }

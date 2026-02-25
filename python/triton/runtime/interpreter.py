@@ -14,6 +14,24 @@ from functools import partial
 from .._C.libtriton import interpreter as _interpreter
 from .._C.libtriton import ir as _ir
 
+# Import Ascend-specific interpreter builder (with deferred import to avoid circular dependency)
+_has_ascend_support = False
+AscendInterpreterBuilder = None
+
+def _try_import_ascend():
+    global _has_ascend_support, AscendInterpreterBuilder
+    try:
+        from . import ascend_interpreter
+        AscendInterpreterBuilder = ascend_interpreter.AscendInterpreterBuilder
+        _has_ascend_support = True
+    except ImportError as e:
+        _has_ascend_support = False
+        AscendInterpreterBuilder = None
+    except Exception as e:
+        # Catch other exceptions (like circular import) and log them
+        _has_ascend_support = False
+        AscendInterpreterBuilder = None
+
 
 class TensorHandle:
 
@@ -116,7 +134,7 @@ class InterpreterOptions:
     supported_fp8_dtypes: Tuple[str] = ("fp8e5", "fp8e5b16", "fp8e4nv", "fp8e4b8", "fp8e4b15")
     deprecated_fp8_dtypes: Tuple[str] = ()
     default_dot_input_precision: str = "tf32"
-    allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "ieee")
+    allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "ieee", "hf32")
     max_num_imprecise_acc_default: int = 0
     backend_name: str = "interpreter"
 
@@ -281,8 +299,6 @@ class InterpreterBuilder:
         # For interpreter mode, don't enforce GPU hardware shape constraints
         # NumPy matmul works with any size, including small matrices
         self.codegen_fns["min_dot_size"] = lambda lhsType, rhsType: (1, 1, 1)
-        # Sub-vector core ID for simulating 1:2 hardware ratio
-        self.sub_vec_id = 0
 
     def set_grid_idx(self, x, y, z):
         if not x < self.grid_dim[0]:
@@ -651,256 +667,7 @@ class InterpreterBuilder:
         else:  # scalar
             return TensorHandle(np.full(shape, arg.data, dtype=_get_np_dtype(arg.dtype)), arg.dtype.scalar)
 
-    # Extension ops for Ascend
-    def create_extract_scalar(self, tensor_handle, indices):
-        """
-        Extract a scalar from a tensor using indices (equivalent to get_element).
-        
-        :param tensor_handle: The tensor to extract from
-        :param indices: List of scalar indices (can be TensorHandle or Python int)
-        :return: Scalar value
-        """
-        # Convert indices from TensorHandle or Python int to integers
-        index_values = []
-        for idx in indices:
-            if isinstance(idx, int):
-                # Python int passed directly (e.g., from loop counter)
-                index_values.append(idx)
-            elif isinstance(idx, TensorHandle):
-                # Interpreter TensorHandle
-                index_values.append(int(idx.data.item()) if hasattr(idx.data, 'item') else int(idx.data))
-            else:
-                # Fallback: try to extract data
-                index_values.append(int(idx.data.item()) if hasattr(idx, 'data') and hasattr(idx.data, 'item') 
-                                  else int(idx.data) if hasattr(idx, 'data') else int(idx))
-        
-        # Extract the scalar value
-        scalar_data = tensor_handle.data[tuple(index_values)]
-        return TensorHandle(np.array([scalar_data]), tensor_handle.dtype.scalar)
 
-    def create_insert_slice(self, full_tensor, sub_tensor, offsets, sizes, strides):
-        """
-        Insert a sub-tensor into a full tensor at specified offsets.
-        
-        :param full_tensor: The full tensor (destination)
-        :param sub_tensor: The sub-tensor to insert
-        :param offsets: List of offset TensorHandle objects or Python ints
-        :param sizes: List of size integers
-        :param strides: List of stride integers
-        :return: Modified tensor with sub_tensor inserted
-        """
-        result = full_tensor.data.copy()
-        
-        # Convert offsets from TensorHandle or Python int to integers
-        offset_values = []
-        for off in offsets:
-            if isinstance(off, int):
-                # Python int passed directly
-                offset_values.append(off)
-            elif isinstance(off, TensorHandle):
-                # Interpreter TensorHandle
-                offset_values.append(int(off.data.item()) if hasattr(off.data, 'item') else int(off.data))
-            else:
-                # Fallback
-                offset_values.append(int(off.data.item()) if hasattr(off, 'data') and hasattr(off.data, 'item')
-                                   else int(off.data) if hasattr(off, 'data') else int(off))
-        
-        # Build slices for insertion
-        slices = []
-        for i, (offset, size, stride) in enumerate(zip(offset_values, sizes, strides)):
-            end = offset + size * stride
-            if stride == 1:
-                slices.append(slice(offset, end))
-            else:
-                slices.append(slice(offset, end, stride))
-        
-        # Insert the sub-tensor
-        result[tuple(slices)] = sub_tensor.data
-        
-        return TensorHandle(result, full_tensor.dtype.scalar)
-
-    def create_extract_slice(self, full_tensor, offsets, sizes, strides):
-        """
-        Extract a slice from a full tensor.
-        
-        :param full_tensor: The full tensor
-        :param offsets: List of offset TensorHandle objects or Python ints
-        :param sizes: List of size integers
-        :param strides: List of stride integers
-        :return: Extracted sub-tensor
-        """
-        # Convert offsets from TensorHandle or Python int to integers
-        offset_values = []
-        for off in offsets:
-            if isinstance(off, int):
-                # Python int passed directly
-                offset_values.append(off)
-            elif isinstance(off, TensorHandle):
-                # Interpreter TensorHandle
-                offset_values.append(int(off.data.item()) if hasattr(off.data, 'item') else int(off.data))
-            else:
-                # Fallback
-                offset_values.append(int(off.data.item()) if hasattr(off, 'data') and hasattr(off.data, 'item')
-                                   else int(off.data) if hasattr(off, 'data') else int(off))
-        
-        # Build slices for extraction
-        slices = []
-        for i, (offset, size, stride) in enumerate(zip(offset_values, sizes, strides)):
-            end = offset + size * stride
-            if stride == 1:
-                slices.append(slice(offset, end))
-            else:
-                slices.append(slice(offset, end, stride))
-        
-        # Extract the slice
-        extracted = full_tensor.data[tuple(slices)]
-        
-        return TensorHandle(extracted, full_tensor.dtype.scalar)
-
-    def create_index_select_simd(self, src_ptr, index_tensor, dim, src_shape, src_offset, read_shape, result_shape):
-        """
-        SIMD index_select operation (gather with indices along a dimension).
-        
-        :param src_ptr: Source tensor pointer
-        :param index_tensor: 1D tensor of indices
-        :param dim: Dimension to select from
-        :param src_shape: List of source shape (int or TensorHandle)
-        :param src_offset: List of source offset (int or TensorHandle)
-        :param read_shape: List of read shape (int or TensorHandle)
-        :param result_shape: List of result shape (int or TensorHandle)
-        :return: Result tensor with selected indices
-        """
-        # Convert src_shape, src_offset, read_shape to integers
-        def to_int(val):
-            if isinstance(val, TensorHandle):
-                return int(val.data.item())
-            return int(val)
-        
-        src_shape_vals = [to_int(s) for s in src_shape]
-        src_offset_vals = [to_int(o) if o != -1 else -1 for o in src_offset]
-        read_shape_vals = [to_int(r) if r != -1 else -1 for r in read_shape]
-        result_shape_vals = [to_int(r) for r in result_shape]
-        
-        # Get index values - handle both array and TensorHandle
-        if isinstance(index_tensor, TensorHandle):
-            indices = index_tensor.data.flatten()
-        else:
-            indices = np.asarray(index_tensor).flatten()
-        
-        # Ensure indices are integers
-        if indices.dtype not in [np.int32, np.int64]:
-            indices = indices.astype(np.int32)
-        
-        # Create result tensor
-        result = np.empty(result_shape_vals, dtype=src_ptr.data.dtype)
-        
-        # Perform index_select: for each index, read the specified data
-        for out_idx, in_idx in enumerate(indices):
-            in_idx = int(in_idx)
-            
-            # Validate index bounds
-            if not (0 <= in_idx < src_shape_vals[dim]):
-                # Out of bounds - fill with zeros
-                result_slices = [slice(None)] * len(result_shape_vals)
-                result_slices[dim] = slice(out_idx, out_idx + 1)
-                result[tuple(result_slices)] = 0
-                continue
-            
-            # Build source slice
-            src_slices = []
-            for d in range(len(src_shape_vals)):
-                if d == dim:
-                    src_slices.append(slice(in_idx, in_idx + 1))
-                else:
-                    offset = src_offset_vals[d] if src_offset_vals[d] != -1 else 0
-                    read_size = read_shape_vals[d] if read_shape_vals[d] != -1 else src_shape_vals[d]
-                    # Clamp to valid range
-                    offset = max(0, min(offset, src_shape_vals[d] - 1))
-                    read_size = min(read_size, src_shape_vals[d] - offset)
-                    src_slices.append(slice(offset, offset + read_size))
-            
-            # Build result slice
-            result_slices = []
-            for d in range(len(result_shape_vals)):
-                if d == dim:
-                    result_slices.append(slice(out_idx, out_idx + 1))
-                else:
-                    result_slices.append(slice(None))
-            
-            # Copy data with proper shape handling
-            try:
-                src_data = src_ptr.data[tuple(src_slices)]
-                # Handle shape mismatch by resizing
-                target_shape = [result_shape_vals[d] if d != dim else 1 for d in range(len(result_shape_vals))]
-                if src_data.shape != tuple(target_shape):
-                    # Pad or trim as needed
-                    pad_width = [(0, target_shape[d] - src_data.shape[d]) for d in range(len(target_shape))]
-                    src_data = np.pad(src_data, pad_width, mode='constant', constant_values=0)
-                result[tuple(result_slices)] = src_data
-            except Exception as e:
-                # On error, fill with zeros
-                result[tuple(result_slices)] = 0
-        
-        return TensorHandle(result, src_ptr.dtype.scalar)
-
-    def create_get_sub_vec_id(self):
-        """
-        Get the Vector Core index on the AI Core.
-        
-        In Interpreter mode, simulate multiple vector cores by maintaining
-        a sub_vec_id counter. This is used for 1:2 hardware ratio emulation
-        where different vector cores process different partitions of the data.
-        
-        :return: Vector Core ID as TensorHandle (int64, scalar)
-        """
-        # Return the current sub_vec_id (set by GridExecutor)
-        vec_id = np.int64(self.sub_vec_id)
-        return TensorHandle(np.array([vec_id], dtype=np.int64), tl.int64)
-
-    def sync_block_set(self, sender, receiver, event_id, sender_pipe_value, receiver_pipe_value):
-        """
-        Set synchronization event between compute and vector units.
-        
-        In Interpreter mode, this is a no-op since we execute single-threaded.
-        Synchronization is not needed in CPU emulation.
-        
-        :param sender: Source unit ("cube" or "vector")
-        :param receiver: Destination unit ("cube" or "vector")
-        :param event_id: Event ID (TensorHandle)
-        :param sender_pipe_value: Sender pipe value
-        :param receiver_pipe_value: Receiver pipe value
-        """
-        # No-op in interpreter mode: single-threaded execution doesn't need sync
-        pass
-
-    def sync_block_wait(self, sender, receiver, event_id, sender_pipe_value, receiver_pipe_value):
-        """
-        Wait for synchronization event between compute and vector units.
-        
-        In Interpreter mode, this is a no-op since we execute single-threaded.
-        Synchronization is not needed in CPU emulation.
-        
-        :param sender: Source unit ("cube" or "vector")
-        :param receiver: Destination unit ("cube" or "vector")
-        :param event_id: Event ID (TensorHandle)
-        :param sender_pipe_value: Sender pipe value
-        :param receiver_pipe_value: Receiver pipe value
-        """
-        # No-op in interpreter mode: single-threaded execution doesn't need sync
-        pass
-
-    def sync_block_all(self, mode, event_id):
-        """
-        Synchronize all compute or vector units globally.
-        
-        In Interpreter mode, this is a no-op since we execute single-threaded.
-        Synchronization is not needed in CPU emulation.
-        
-        :param mode: Sync mode ("all_cube", "all_vector", "all", "all_sub_vector")
-        :param event_id: Event ID (int, constexpr, or TensorHandle)
-        """
-        # No-op in interpreter mode: single-threaded execution doesn't need sync
-        pass
 
     def create_atomic_cas(self, ptr, cmp, val, sem, scope):
         if sem not in self.ir_sem_to_interpreter_sem:
@@ -1348,41 +1115,9 @@ def _patch_lang(fn):
         _patch_lang_tensor(lang.tensor)
         _patch_lang_core(lang)
     
-    # Patch all modules in fn's globals that might be extension modules
-    for name, value in list(fn.__globals__.items()):
-        if value is None:
-            continue
-        try:
-            # Check if it looks like an extension module (has builtin functions)
-            if hasattr(value, '__name__') and 'extension' in str(value.__name__):
-                _patch_builtin(value, interpreter_builder)
-            # Also try patching any module-like object that might have builtin functions
-            elif hasattr(value, '__dict__') and not isinstance(value, type):
-                # Try to patch it and ignore if it fails
-                try:
-                    _patch_builtin(value, interpreter_builder)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    
-    # Also try importing extension directly as fallback
-    try:
-        import triton.language.extra.cann.extension as extension
-        _patch_builtin(extension, interpreter_builder)
-    except (ImportError, AttributeError):
-        # Extension module not available (e.g., non-Ascend backend)
-        pass
-    _patch_builtin(tl.core._experimental_tensor_descriptor_base, interpreter_builder)
-
-
-def _tuple_create(arg, contents):
-    # NamedTuples and tuples have different construction semantics. NamedTuple
-    # has a constructor that takes individual arguments, while tuple takes an
-    # iterable. Both have type "tuple" making it difficult to distinguish
-    # between them, but only NamedTuple has "_fields" and apparently this is how
-    # everyone does the check.
-    return type(arg)(*contents) if hasattr(arg, "_fields") else type(arg)(contents)
+    # Patch Ascend extensions if using AscendInterpreterBuilder
+    if hasattr(interpreter_builder, 'patch_extensions'):
+        interpreter_builder.patch_extensions(fn)
 
 
 # TODO: wrap everything in triton tensors
@@ -1411,21 +1146,19 @@ def _implicit_cvt(arg):
     return arg
 
 
-interpreter_builder = InterpreterBuilder()
+# Use AscendInterpreterBuilder if available, otherwise fall back to base InterpreterBuilder
+_try_import_ascend()
+if _has_ascend_support and AscendInterpreterBuilder is not None:
+    interpreter_builder = AscendInterpreterBuilder()
+else:
+    interpreter_builder = InterpreterBuilder()
 
 # These keywords are not supported by the interpreter
-RESERVED_KWS = ["num_warps", "num_stages", "num_ctas", "enable_fp_fusion", "grid", "maxnreg", "multibuffer"]
+RESERVED_KWS = ["num_warps", "num_stages", "num_ctas", "enable_fp_fusion", "grid", "maxnreg"]
 
-def _unwrap_tensor(t):
-    if isinstance(t, triton.runtime.jit.TensorWrapper):
-        return t.base
-    return t
-
-
-def _rewrap_tensor(t, original_tensor):
-    if isinstance(original_tensor, triton.runtime.jit.TensorWrapper):
-        return triton.runtime.jit.TensorWrapper(t, original_tensor.dtype)
-    return t
+# Allow Ascend interpreter to extend reserved keywords
+if hasattr(interpreter_builder, 'get_additional_reserved_keywords'):
+    RESERVED_KWS.extend(interpreter_builder.get_additional_reserved_keywords())
 
 
 class GridExecutor:
@@ -1512,25 +1245,13 @@ class GridExecutor:
         grid = grid + (1, ) * (3 - len(grid))
         interpreter_builder.set_grid_dim(*grid)
         
-        # Infer the number of sub-vector cores from kernel parameters
-        # Check for M and sub_M parameters (common pattern for 1:2 ratio)
-        num_sub_vec_ids = 1
-        if 'M' in args and 'sub_M' in args:
-            M = args['M']
-            sub_M = args['sub_M']
-            # Extract scalar values if they're TensorHandle
-            if isinstance(M, TensorHandle):
-                M = int(M.data.item() if hasattr(M.data, 'item') else M.data)
-            if isinstance(sub_M, TensorHandle):
-                sub_M = int(sub_M.data.item() if hasattr(sub_M.data, 'item') else sub_M.data)
-            # Number of vector cores = M / sub_M
-            if isinstance(M, int) and isinstance(sub_M, int) and sub_M > 0:
-                num_sub_vec_ids = max(1, M // sub_M)
-        
         try:
-            # Loop over sub-vector IDs to simulate parallel vector core execution
-            for sub_vec_id in range(num_sub_vec_ids):
-                interpreter_builder.sub_vec_id = sub_vec_id
+            # Execute kernels - sub_vec_id simulation handled by AscendInterpreterBuilder
+            if hasattr(interpreter_builder, 'execute_with_sub_vec_simulation'):
+                # Ascend builder with sub-vector simulation
+                interpreter_builder.execute_with_sub_vec_simulation(self.fn, args, grid)
+            else:
+                # Standard execution for base interpreter
                 for x in range(grid[0]):
                     for y in range(grid[1]):
                         for z in range(grid[2]):

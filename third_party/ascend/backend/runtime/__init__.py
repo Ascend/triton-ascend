@@ -18,7 +18,16 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-from .autotuner import ascend_autotune
+
+def _patch_autotune():
+    try:
+        import triton
+    except ImportError:
+        return
+
+    from .autotuner import autotune
+
+    triton.autotune = autotune
 
 
-__all__ = ["ascend_autotune"]
+_patch_autotune()

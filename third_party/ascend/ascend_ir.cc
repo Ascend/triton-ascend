@@ -44,6 +44,7 @@ namespace py = pybind11;
 struct AscendNPUIROpBuilder : public TritonOpBuilder {
   std::string target;
   static constexpr char kTarget910_95[] = "Ascend910_95";
+  static constexpr char kTarget950[] = "Ascend950";
 
   explicit AscendNPUIROpBuilder(MLIRContext *context, std::string target = "")
       : TritonOpBuilder(context), target(target) {}
@@ -52,9 +53,15 @@ struct AscendNPUIROpBuilder : public TritonOpBuilder {
   {
     // TODO: Use enum instead of strings after enabling HACC in satandalone
     // build
-    constexpr size_t kTargetLen = sizeof(kTarget910_95) - 1;
-    return target.size() >= kTargetLen &&
-           target.compare(0, kTargetLen, kTarget910_95) == 0;
+    constexpr size_t kLen910 = sizeof(kTarget910_95) - 1;
+    bool match_910 = target.size() >= kLen910 &&
+      target.compare(0, kLen910, kTarget910_95) == 0;
+
+    constexpr size_t kLen950 = sizeof(kTarget950) - 1;
+    bool match_950 = target.size() >= kLen950 &&
+      target.compare(0, kLen950, kTarget950) == 0;
+
+    return match_910 || match_950;
   }
 };
 
@@ -235,6 +242,10 @@ void init_ascend_ir(py::module &&m) {
            [](AscendNPUIROpBuilder &self, hivm::VFMode mode) -> Attribute {
              return self.getBuilder().getAttr<hivm::VFModeAttr>(mode);
            })
+      .def("get_t_core_type_attr_name",
+           [](AscendNPUIROpBuilder &self) -> std::string {
+             return hivm::TCoreTypeAttr::name.str();
+           })
       .def("get_t_core_type_cube_attr",
            [](AscendNPUIROpBuilder &self) -> Attribute {
              return hivm::TCoreTypeAttr::get(self.getBuilder().getContext(),
@@ -275,6 +286,20 @@ void init_ascend_ir(py::module &&m) {
              auto op = self.create<hivm::FixpipeOp>(
                  mlir::TypeRange{}, src, dst, dma_mode_attr, dual_dst_mode_attr,
                  pre_quant_mode_attr, pre_relu_mode_attr, channel_split);
+           })
+      .def("create_annotation_mark",
+           [](TritonOpBuilder &self, Value &ptr, const std::string &attrKey,
+              Attribute &attrVal) {
+             auto annotationOp = self.create<annotation::MarkOp>(ptr);
+             annotationOp->setAttr(self.getBuilder().getStringAttr(attrKey),
+                                   attrVal);
+           })
+      .def("create_bind_buffer",
+           [](TritonOpBuilder &self, Value &src, Value &alloc) -> void {
+             auto ctx = self.getBuilder().getContext();
+             auto bind = StringAttr::get(ctx, "bind_buffer");
+             self.create<annotation::MarkOp>(src, ValueRange{alloc},
+                                             ArrayAttr::get(ctx, bind));
            })
       .def("create_debug_barrier",
            [](TritonOpBuilder &self, Value &ptr, const std::string &attrKey,

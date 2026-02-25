@@ -90,7 +90,7 @@ public:
     MemType currentType = MemType::deafaultType;
 
     MemOpTransformer(MemType memType, bool optimizeDynamicOffset = false)
-        : currentType(memType), optimizeDynamicOffset(optimizeDynamicOffset) {}
+        : currentType(memType), optimizeDynamicOffset(optimizeDynamicOffset)  {}
 
     Value materializeImplicitBroadcast(Value srcTensor, const Location loc,
                                        PatternRewriter& rewriter);

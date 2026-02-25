@@ -39,43 +39,6 @@ from ._utils import _convert_elem_to_ir_value
 
 @_tensor_member_fn
 @builtin
-def index_select(src: tensor, idx: tensor, bound, lstdim_blksiz, offsets, numels, _builder=None):
-    """
-    Embedding
-    :src_ptr:
-    :idx:
-    """
-
-    def embedding_gather_impl(
-        src: tl.tensor,
-        idx: tl.tensor,
-        bound: int,
-        blksiz: int,
-        offsets: Tuple,
-        numels: Tuple,
-        builder: ir.builder
-    ) -> tl.tensor:
-        assert idx.dtype.is_int(), "index must be an integer tensor"
-        if not src.dtype.element_ty.is_floating():
-            raise ValueError(f"Expected dtype fp16/fp32/bf16, but got {src.dtype.element_ty}")
-
-        require_i64 = idx.dtype.is_int64()
-        # require_i64 = True
-        offsets = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in offsets]
-        numels = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in numels]
-        ret = builder.create_embedding_gather(src.handle, idx.handle, bound, blksiz, offsets, numels)
-        ret_shape = [_unwrap_if_constexpr(s) for s in idx.shape]
-        ret_shape.append(blksiz)
-        return wrap_tensor(ret, src.dtype.element_ty, ret_shape)
-
-    bound = _constexpr_to_value(bound)
-    lstdim_blksiz = _constexpr_to_value(lstdim_blksiz)
-
-    return embedding_gather_impl(src, idx, bound, lstdim_blksiz, offsets, numels, _builder)
-
-
-@_tensor_member_fn
-@builtin
 def index_put(
     ptr: tensor,
     index: tensor,
@@ -618,9 +581,26 @@ def index_select_simd(
             f"index must be 1D tensor, got {len(index.shape)}D"
         assert dim < ndim - 1, \
             f"index_select_simd cannot support trailing dimension as dim={dim}, ndim={ndim}"
-        
-        newsrc_shape = [o.handle for o in src_shape]
-        newsrc_offset = [o.handle for o in src_offset]
+        # Handle both tensor and int offsets (for interpreter mode)
+        newsrc_shape = []
+        for s in src_shape:
+            if isinstance(s, tensor):
+                newsrc_shape.append(s.handle)
+            elif isinstance(s, int):
+                # For interpreter mode: keep as int
+                newsrc_shape.append(s)
+            else:
+                newsrc_shape.append(s.handle if hasattr(s, 'handle') else s)
+        newsrc_offset = []
+        for s in src_offset:
+            if isinstance(s, tensor):
+                newsrc_offset.append(s.handle)
+            elif isinstance(s, int):
+                # For interpreter mode: keep as int
+                newsrc_offset.append(s)
+            else:
+                newsrc_offset.append(s.handle if hasattr(s, 'handle') else s)
+
         # Create output type
         return_shape = [
             index.shape[0] if i == dim else read_shape[i] 

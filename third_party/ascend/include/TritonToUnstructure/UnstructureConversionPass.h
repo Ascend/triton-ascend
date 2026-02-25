@@ -144,4 +144,7 @@ private:
 
 } // namespace
 
+void replacePtrArguments(triton::FuncOp funcOp,
+                         llvm::DenseMap<Value, PtrOffsetInfo> &offsetMap);
+
 #endif // TRITON_ADAPTER_UNSTRUCTURECONVERSION_H

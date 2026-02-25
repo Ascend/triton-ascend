@@ -118,7 +118,7 @@ def test_scope_cube_mode():
     )
     assert "scope.scope" in mlir
     # Check for cube core type attribute
-    assert "hivm.t_core_type" in mlir or "CUBE" in mlir.upper()
+    assert "hivm.tcore_type" in mlir or "CUBE" in mlir.upper()
 
 
 def test_scope_vector_mode():
@@ -128,7 +128,7 @@ def test_scope_vector_mode():
     )
     assert "scope.scope" in mlir
     # Check for vector core type attribute
-    assert "hivm.t_core_type" in mlir or "VECTOR" in mlir.upper()
+    assert "hivm.tcore_type" in mlir or "VECTOR" in mlir.upper()
 
 
 def test_scope_disable_auto_sync():

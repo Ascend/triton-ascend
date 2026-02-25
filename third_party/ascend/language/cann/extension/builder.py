@@ -66,6 +66,7 @@ def setup_unified_builder(main_builder, ascend_builder):
     ascend_methods = [
         'create_scope_op',
         'scope_return',
+        'get_t_core_type_attr_name',
         'get_t_core_type_cube_attr',
         'get_t_core_type_vector_attr',
         'get_target_attribute',
@@ -73,6 +74,8 @@ def setup_unified_builder(main_builder, ascend_builder):
         'create_copy_buffer',
         'create_copy_tensor',
         'create_fixpipe',
+        'create_annotation_mark',
+        'create_bind_buffer',
         'create_debug_barrier',
         'is_910_95',
         "sync_block_set",

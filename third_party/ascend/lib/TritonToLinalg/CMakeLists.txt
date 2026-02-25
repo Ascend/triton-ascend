@@ -8,6 +8,7 @@ add_triton_library(TritonToLinalg
         BlockPtrAnalysis.cpp
         MaskAnalysis.cpp
         UseAnalysis.cpp
+        ImplicitPermute.cpp
         DescriptorConverter
 
   DEPENDS

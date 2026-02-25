@@ -15,14 +15,17 @@ using namespace triton;
 // A custom op builder that keeps track of the last location
 class TritonOpBuilder {
 public:
-  TritonOpBuilder(mlir::MLIRContext *context) {
+  TritonOpBuilder(mlir::MLIRContext *context, const std::string &compile_mode = "simd") {
     builder = std::make_unique<OpBuilder>(context);
     lastLoc = std::make_unique<Location>(builder->getUnknownLoc());
+    this->compile_mode = compile_mode;
   }
 
   OpBuilder &getBuilder() { return *builder; }
 
   bool isLineInfoEnabled() { return lineInfoEnabled; }
+
+  bool isSimtMode() const { return compile_mode == "simt"; }
 
   void setLastLoc(Location loc) {
     if (lineInfoEnabled)
@@ -93,6 +96,7 @@ private:
   std::unique_ptr<OpBuilder> builder;
   std::unique_ptr<Location> lastLoc;
   bool lineInfoEnabled = !triton::tools::getBoolEnv("TRITON_DISABLE_LINE_INFO");
+  std::string compile_mode;
 };
 
 namespace ir {

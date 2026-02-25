@@ -37,8 +37,8 @@ from .utils import (
     get_byte_per_numel,
     next_power_of_2,
     num_vector_core,
-    num_ub_max,
-    num_register_max_simt,
+    ub_size_in_kbytes,
+    rf_size_in_kbytes,
 )
 
 
@@ -69,7 +69,7 @@ class KernelMeta:
         dtype: torch.dtype,
         persistent_reduction: bool,
         dual_reduction: bool,
-        input_ptr_num: int,
+        num_buffers: int,
         is_simt_mode: bool,
     ):
         """
@@ -122,7 +122,7 @@ class KernelMeta:
         self.dtype = dtype
         self.persistent_reduction = persistent_reduction
         self.dual_reduction = dual_reduction
-        self.input_ptr_num = input_ptr_num
+        self.num_buffers = num_buffers
         self.is_simt_mode = is_simt_mode
 
     @classmethod
@@ -174,18 +174,19 @@ class TileGenerator:
         self.candidate_blocks = []
         self.configs = []
         self.dtype_bytes = get_byte_per_numel(kernel_meta.dtype)
- 
-        self.input_ptr_num = 3 if kernel_meta.input_ptr_num == 0 else min(kernel_meta.input_ptr_num, 3)
+
+        self.num_buffers = 3 if kernel_meta.num_buffers == 0 else min(kernel_meta.num_buffers, 3)
         self.is_simt_mode = kernel_meta.is_simt_mode
-        if self.is_simt_mode: 
-            self.max_numel_threshold = num_register_max_simt * 1024
-        else:
-            self.max_numel_threshold = num_ub_max // self.input_ptr_num * 1024
+        local_mem_size = (
+            rf_size_in_kbytes
+            if self.is_simt_mode
+            else ub_size_in_kbytes
+        )
+        self.max_numel_threshold = local_mem_size * 1024 // self.dtype_bytes // self.num_buffers
         self.max_total_numel = functools.reduce(lambda x, y: x * y, [x.block_size for x in self.blocks]) if self.blocks else 1
         self.tiny_kernel = self.max_total_numel < 128 * 1024
         self.stop_numel = min(1024 // self.dtype_bytes, self.max_total_numel // (num_vector_core * 2)) if self.tiny_kernel else 1024 // self.dtype_bytes
-        self. max_programs_num = 65535
-
+        self.max_programs_num = 65535
 
     @classmethod
     def init_blocks_info(cls, kernel_meta: KernelMeta) -> List[BlockInfo]:
@@ -217,21 +218,14 @@ class TileGenerator:
         last_blocks = (self.numels[axis_idx] + last_splits - 1) // last_splits
         return last_blocks
 
-
-    def aligned_numel(self, numel):
+    def aligned_numel(self, numel, align_bytes=32):
         if self.is_simt_mode:
             return next_power_of_2(numel)
-        else:
-            min_numel = 32 // self.dtype_bytes
-            if numel <= min_numel:
-                return numel
-            aligned = ((numel + min_numel - 1) // min_numel) * min_numel
-            return aligned
 
-    def valid_tile_numel(self, tile_numel):
-        byte_num = self.dtype_bytes
-        max_numel = self.max_numel_threshold // byte_num
-        return tile_numel <= max_numel
+        align_numel = align_bytes // self.dtype_bytes
+        if numel <= align_numel:
+            return numel
+        return ((numel + align_numel - 1) // align_numel) * align_numel
 
     def calculate_tile_numel(self):
         tile_numel = 1
@@ -249,7 +243,10 @@ class TileGenerator:
                 continue
             block_info = self.blocks[axis.index]
             if axis.is_split_axis:
-                cfg[block_info.block_name] = candi_block[axis.index]
+                curr_numel = candi_block[axis.index]
+                if not axis.is_tiling_axis:
+                    curr_numel = self.aligned_numel(curr_numel)
+                cfg[block_info.block_name] = curr_numel
             if axis.is_tiling_axis:
                 tiling_numel = self.aligned_numel(block_info.sub_block_size)
                 cfg[block_info.sub_block_name] = min(tiling_numel, candi_block[axis.index])
@@ -265,7 +262,11 @@ class TileGenerator:
         self.fill_config(newcfg, candi_block)
         tile_numel = self.calculate_tile_numel()
         stop_numel_threshold = 0 if len(self.configs) < 10 or self.tiny_kernel else self.stop_numel + 100
-        if self.valid_tile_numel(tile_numel) and not self.find_config(newcfg) and tile_numel >= stop_numel_threshold:
+        if (
+            tile_numel <= self.max_numel_threshold
+            and tile_numel >= stop_numel_threshold
+            and not self.find_config(newcfg)
+        ):
             self.configs.append(Config(newcfg, num_warps=1, num_stages=1))
             return True
         return False
@@ -338,7 +339,7 @@ class TileGenerator:
                             self.blocks[axis_idx].block_size = last_blocks
                             self.candidate_blocks.append(tuple([x.block_size for x in self.blocks]))
                         break
-                   
+
                 program_threshold = num_vector_core // 8 if self.tiny_kernel else num_vector_core // 2
                 if total_programs > program_threshold or self.dual_reduction:
                     if len(self.candidate_blocks) > 2:
@@ -348,13 +349,7 @@ class TileGenerator:
                         self.add_to_configs(list(tuple([x.block_size for x in self.blocks])))
                     slow_decend_split = (total_programs > num_vector_core_tile // 2)
 
-                if self.is_simt_mode:
-                    if axis.is_tiling_axis:
-                        new_size = numel // 2
-                        self.blocks[axis_idx].block_size = next_power_of_2(new_size) if new_size > 0 else 1
-                    else:
-                        self.blocks[axis_idx].block_size = numel // 2
-                elif not slow_decend_split:
+                if not slow_decend_split:
                     self.blocks[axis_idx].block_size = numel // 2
                 else:
                     step = numel // 4 if numel // 4 > 1 else 1
@@ -364,15 +359,11 @@ class TileGenerator:
                 if self.blocks[axis_idx].block_size == 1 and (total_programs > program_threshold or self.dual_reduction):
                     self.candidate_blocks.append(tuple([x.block_size for x in self.blocks]))
             else:
-                if self.is_simt_mode:
-                    new_size = numel // 2
-                    self.blocks[axis_idx].sub_block_size = next_power_of_2(new_size) if new_size > 0 else 1
-                elif numel >= 32:
+                if numel >= 32:
                     self.blocks[axis_idx].sub_block_size = next_power_of_2(numel // 2)
                 else:
                     self.blocks[axis_idx].sub_block_size = numel - 1
         return reached_stop_numel
-
 
     def descend_all_low_dims(self):
         low_dim_numels = [self.blocks[x.index].sub_block_size for x in self.kernel_meta.low_dims_axis]
@@ -390,16 +381,12 @@ class TileGenerator:
                     continue
                 if min_numel > 1 and abs(numel - min_numel) / min_numel < 0.2:
                     continue
-                if self.is_simt_mode and axis.is_tiling_axis:
-                    new_size = numel // 2
-                    self.blocks[axis.index].sub_block_size = next_power_of_2(new_size) if new_size > 0 else 1
+                if numel >= 128:
+                    self.blocks[axis.index].sub_block_size = next_power_of_2(numel // 2)
                 else:
-                    if numel >= 128:
-                        self.blocks[axis.index].sub_block_size = next_power_of_2(numel // 2)
-                    else:
-                        numel = self.blocks[axis.index].sub_block_size
-                        numel = numel // 2
-                        self.blocks[axis.index].sub_block_size = min(self.aligned_numel(numel), next_power_of_2(numel))
+                    numel = self.blocks[axis.index].sub_block_size
+                    numel = numel // 2
+                    self.blocks[axis.index].sub_block_size = min(self.aligned_numel(numel), next_power_of_2(numel))
 
         if len(self.candidate_blocks) == 0:
             # means there is no split axis and tiling_not_low_dim axis

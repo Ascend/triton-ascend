@@ -98,8 +98,8 @@ def ilogb(arg0, _builder=None):
 def ldexp(arg0, arg1, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0, arg1], {
-            (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_ldexpf", core.dtype("fp32")),
-            (core.dtype("fp16"), core.dtype("fp16")): ("__hmf_ldexpDh", core.dtype("fp16")),
+            (core.dtype("fp32"), core.dtype("int32")): ("__hmf_ldexpf", core.dtype("fp32")),
+            (core.dtype("fp16"), core.dtype("int32")): ("__hmf_ldexpDh", core.dtype("fp16")),
         }, is_pure=True, _builder=_builder)
 
 @core.extern
@@ -143,7 +143,7 @@ def trunc(arg0, _builder=None):
 def round(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("__hmf_roundf", core.dtype("fp32")),            
+            (core.dtype("fp32"), ): ("__hmf_roundf", core.dtype("fp32")),
         }, is_pure=True, _builder=_builder)
 
 @core.builtin
@@ -174,11 +174,11 @@ def acos(arg0: core.tensor, _builder: ir.builder):
     # 0.5<|x|<0.9, acos(x) = 2*arctan(t), t=sqrt((1-abs_x)/(1+abs_x))
     numerator_mid = semantic.sub(1.0, abs_x, True, _builder)
     denom_mid = semantic.add(1.0, abs_x, True, _builder)
-    div_mid = semantic.truediv(numerator_mid, denom_mid,  _builder) 
+    div_mid = semantic.truediv(numerator_mid, denom_mid, _builder)
     t_mid = math.sqrt(div_mid, _builder=_builder)
-    t2_mid = semantic.mul(t_mid, t_mid, True, _builder)  
-    t4_mid = semantic.mul(t2_mid, t2_mid, True, _builder) 
-    t6_mid = semantic.mul(t4_mid, t2_mid, True, _builder) 
+    t2_mid = semantic.mul(t_mid, t_mid, True, _builder)
+    t4_mid = semantic.mul(t2_mid, t2_mid, True, _builder)
+    t6_mid = semantic.mul(t4_mid, t2_mid, True, _builder)
 
     # 1 + t2*(-0.3333310 + t2*(0.1999341 + t2*(-0.1420890 + t2*0.1065976)))
     poly_mid1 = semantic.mul(0.1065976, t2_mid, True, _builder)
@@ -260,7 +260,7 @@ def expm1(arg0: core.tensor, _builder: ir.builder):
     return semantic.sub(tmp, 1, True, _builder)
 
 @core.builtin
-@math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
+@math._check_dtype(dtypes=["fp16", "fp32"])
 @math._add_math_2arg_docstr("nextafter")
 def nextafter(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
     x = semantic.to_tensor(arg0, _builder)
@@ -407,7 +407,7 @@ def cyl_bessel_i0(arg0: core.tensor, _builder: ir.builder):
         b_n_1 = b_n
         b_n = semantic.sub(semantic.mul(x_b, b_n_1, True, _builder), b_n_2, True, _builder)
         b_n = semantic.add(b_n, param2[i], True, _builder)
-    
+
     half_exp = semantic.mul(core.tensor(_builder.create_exp(abs_x.handle), abs_x.type), 0.5, True, _builder)
     res_a = semantic.mul(half_exp, semantic.sub(a_n, a_n_2, True, _builder), True, _builder)
     res_b = semantic.fdiv(semantic.mul(half_exp, semantic.sub(b_n, b_n_2, True, _builder), True, _builder), \
@@ -425,14 +425,14 @@ def signbit(arg0, _builder=None):
         int_ty = core.int32
     else: # arg0 type: float16 / bfloat16
         int_ty = core.int16
-    
+
     arg0 = semantic.to_tensor(arg0, _builder)
     int_tensor = semantic.bitcast(arg0, int_ty, _builder)
     if int_ty == core.int32:
         shift = 31
     elif int_ty == core.int16:
         shift = 15
-    
+
     shift = semantic.full(arg0.shape, shift, int_ty, _builder)
     sign_bit_tensor = semantic.lshr(int_tensor, shift, _builder)
     sign_bit_tensor = semantic.and_(
@@ -441,11 +441,11 @@ def signbit(arg0, _builder=None):
 
 
 # Note:
-# For inputs x very close to ±1 (criterion: 1 - |x| < 1.1e-4), erfinv(x) → ±∞ and the 
-# inverse error function becomes extremely sensitive to tiny changes in x. The asymptotic 
-# behavior includes terms like sqrt(-ln(1-|x|)), so tiny relative changes in (1-|x|) map 
+# For inputs x very close to ±1 (criterion: 1 - |x| < 1.1e-4), erfinv(x) → ±∞ and the
+# inverse error function becomes extremely sensitive to tiny changes in x. The asymptotic
+# behavior includes terms like sqrt(-ln(1-|x|)), so tiny relative changes in (1-|x|) map
 # to large absolute changes in erfinv, leading to numerical instability and loss of precision,
-# resulting in deviations from the reference results. 
+# resulting in deviations from the reference results.
 @core.extern
 @math._check_dtype(dtypes=["fp32"])
 def erfinv(arg0, _builder=None):
@@ -464,7 +464,7 @@ def erfinv(arg0, _builder=None):
     numerator_low_range = semantic.full(
         arg0.shape, coeff_low_numerator[0], arg0_scalar_ty, _builder).handle
     for i in range(1, len(coeff_low_numerator)):
-        numerator_low_range = _builder.create_fma(numerator_low_range, arg0_squared, 
+        numerator_low_range = _builder.create_fma(numerator_low_range, arg0_squared,
             semantic.full(arg0.shape, coeff_low_numerator[i], arg0_scalar_ty, _builder).handle)
 
     denominator_low_range = semantic.full(
@@ -473,7 +473,7 @@ def erfinv(arg0, _builder=None):
         denominator_low_range = _builder.create_fma(
             denominator_low_range, arg0_squared, semantic.full(
                 arg0.shape, coeff_low_denominator[i], arg0_scalar_ty, _builder).handle)
-    
+
     low_res = _builder.create_fmul(arg0.handle, _builder.create_fdiv(numerator_low_range, denominator_low_range))
 
     # high cal
@@ -496,13 +496,13 @@ def erfinv(arg0, _builder=None):
         numerator_high_range = _builder.create_fma(
             numerator_high_range, arg0_erf_trans, semantic.full(
                 arg0.shape, coeff_high_numerator[i], arg0_scalar_ty, _builder).handle)
-    
+
     denominator_high_range = semantic.full(arg0.shape, coeff_high_denominator[0], arg0_scalar_ty, _builder).handle
     for i in range(1, len(coeff_high_denominator)):
         denominator_high_range = _builder.create_fma(
             denominator_high_range, arg0_erf_trans, semantic.full(
                 arg0.shape, coeff_high_denominator[i], arg0_scalar_ty, _builder).handle)
-        
+
     high_res = _builder.create_fdiv(numerator_high_range, denominator_high_range)
     high_res = semantic.mul(
         semantic.where(
@@ -526,7 +526,7 @@ def erfinv(arg0, _builder=None):
                             _builder.create_fmul(low_res, low_res)
                         )
                     )
-                )                               
+                )
             )
         )
 
@@ -545,7 +545,7 @@ def erfinv(arg0, _builder=None):
                 )
             )
         )
-    
+
     arg0_abs = core.tensor(_builder.create_fabs(arg0.handle), arg0.type)
     # Check if |arg0| > 1
     arg0_over = semantic.greater_than(
@@ -574,11 +574,11 @@ def erfinv(arg0, _builder=None):
     )
 
 
-# Note: 
+# Note:
 # The gamma function is implemented using the reflection formula for negative inputs:
-# gamma(x) = pi / (sin(pi * x) * gamma(1 - x)). For inputs x close to a negative integer 
+# gamma(x) = pi / (sin(pi * x) * gamma(1 - x)). For inputs x close to a negative integer
 # (e.g., -1, -2, ... ), criterion: x = -1 ± 0.66e-3, x = -2 ± 1.30e-3, x = -3 ± 2.30e-3, ...
-# The denominator sin(pi * x) approaches zero, leading to numerical instability and loss 
+# The denominator sin(pi * x) approaches zero, leading to numerical instability and loss
 # of precision. Resulting in deviations from the reference results;
 # Similar issues occur near other negative integers.
 @core.extern
@@ -602,7 +602,7 @@ def gamma(arg0, _builder=None):
     reflect_arg0 = semantic.where(
         condition, semantic.sub(1, arg0, True, _builder), arg0, _builder
     )
-    
+
     x = semantic.full(arg0.shape, 0.99999999999980993, arg0_scalar_ty, _builder)
     for i in range(0, len(lanczos_coeff)):
         x = semantic.add(
@@ -619,7 +619,7 @@ def gamma(arg0, _builder=None):
                 t, semantic.sub(reflect_arg0, 0.5, True, _builder), _builder=_builder
             ).handle
         ),
-        _builder.create_fmul(            
+        _builder.create_fmul(
             x.handle, _builder.create_exp(
                 _builder.create_fmul(
                     t.handle, semantic.full(arg0.shape, -1, arg0_scalar_ty, _builder).handle
@@ -629,7 +629,7 @@ def gamma(arg0, _builder=None):
     )
 
     gamma_res_reflect = _builder.create_fdiv(
-        _builder.create_fdiv(pi_tensor, gamma_res), 
+        _builder.create_fdiv(pi_tensor, gamma_res),
         _builder.create_sin(_builder.create_fmul(pi_tensor, arg0.handle))
     )
 
@@ -641,19 +641,19 @@ def gamma(arg0, _builder=None):
     neg_inf_tensor = semantic.full(arg0.shape, float('-inf'), arg0_scalar_ty, _builder)
     gamma_res_reflect = semantic.where(
         is_neg_int, pos_inf_tensor, core.tensor(gamma_res_reflect, arg0.type), _builder)
-    
+
     res = semantic.where(condition, gamma_res_reflect, core.tensor(gamma_res, arg0.type), _builder)
     is_pos_inf_input = semantic.equal(arg0, pos_inf_tensor, _builder)
     is_neg_inf_input = semantic.equal(arg0, neg_inf_tensor, _builder)
 
     return semantic.where(is_pos_inf_input, pos_inf_tensor, semantic.where(
-            is_neg_inf_input, neg_inf_tensor, res, _builder), _builder) 
+            is_neg_inf_input, neg_inf_tensor, res, _builder), _builder)
 
 
-# Note: 
+# Note:
 # The lgamma function computes the natural logarithm of the absolute value of the gamma function.
 # Since it uses gamma(x) internally, it inherits the same numerical instability near negative integers:
-# For inputs x close to a negative integer (e.g., -1, -2, ...), criterion: x = -1 ± 5.75e-5, 
+# For inputs x close to a negative integer (e.g., -1, -2, ...), criterion: x = -1 ± 5.75e-5,
 # x = -2 ± 1.39e-6, ..., the computation involves log(|pi / (sin(pi * x) * gamma(1 - x))|).
 # As sin(pi * x) approaches zero near negative integers, this leads to numerical instability and loss
 # of precision, resulting in deviations from the reference results.
@@ -680,23 +680,23 @@ def lgamma(arg0, _builder=None):
 def trunc(arg0: core.tensor, _builder: ir.builder):
     """
     Truncate the input to the nearest integer toward zero.
-    
+
     For positive numbers, this is equivalent to floor(x).
     For negative numbers, this is equivalent to ceil(x).
-    
+
         Special cases:
         - trunc(±0) returns ±0.
         - trunc(±inf) returns ±inf.
         - trunc(NaN) returns NaN.
     """
     arg0 = semantic.to_tensor(arg0, _builder)
-    
+
     zero = semantic.full(arg0.shape, 0.0, arg0.type.scalar, _builder)
     condition = semantic.greater_equal(arg0, zero, _builder)
-    
+
     floor_result = core.tensor(_builder.create_floor(arg0.handle), arg0.type)
     ceil_result = core.tensor(_builder.create_ceil(arg0.handle), arg0.type)
-    
+
     return semantic.where(condition, floor_result, ceil_result, _builder)
 
 
@@ -706,46 +706,46 @@ def trunc(arg0: core.tensor, _builder: ir.builder):
 def nearbyint(arg0: core.tensor, _builder: ir.builder):
     """
     Round argument x to an integer value in floating-point format.
-    
+
     Uses the current rounding mode (round-to-nearest-even, aka banker's rounding).
     """
     arg0 = semantic.to_tensor(arg0, _builder)
-    
+
     half = semantic.full(arg0.shape, 0.5, arg0.type.scalar, _builder)
-    
+
     positive_adjust = semantic.add(arg0, half, True, _builder)
     negative_adjust = semantic.sub(arg0, half, True, _builder)
-    
+
     positive_result = core.tensor(_builder.create_floor(positive_adjust.handle), arg0.type)
     negative_result = core.tensor(_builder.create_ceil(negative_adjust.handle), arg0.type)
-    
+
     zero = semantic.full(arg0.shape, 0.0, arg0.type.scalar, _builder)
     is_positive = semantic.greater_equal(arg0, zero, _builder)
     basic_round = semantic.where(is_positive, positive_result, negative_result, _builder)
-    
+
     # Banker's rounding special treatment: For values exactly in the middle, round to the nearest even number.
     fractional = semantic.sub(arg0, basic_round, True, _builder)
     abs_fractional = core.tensor(_builder.create_fabs(fractional.handle), fractional.type)
-    
+
     is_half = semantic.equal(abs_fractional, half, _builder)
-    
+
     two = semantic.full(arg0.shape, 2.0, arg0.type.scalar, _builder)
-    
+
     half_value = math.fdiv(basic_round, two, _builder=_builder)
     half_floor = core.tensor(_builder.create_floor(half_value.handle), half_value.type)
     double_half = semantic.mul(half_floor, two, True, _builder)
-    
+
     is_even = semantic.equal(basic_round, double_half, _builder)
-    
-    adjustment = semantic.where(is_positive, 
-                               semantic.full(arg0.shape, -1.0, arg0.type.scalar, _builder), 
-                               semantic.full(arg0.shape, 1.0, arg0.type.scalar, _builder), 
+
+    adjustment = semantic.where(is_positive,
+                               semantic.full(arg0.shape, -1.0, arg0.type.scalar, _builder),
+                               semantic.full(arg0.shape, 1.0, arg0.type.scalar, _builder),
                                _builder)
-    
-    banker_result = semantic.where(is_even, basic_round, 
-                                  semantic.add(basic_round, adjustment, True, _builder), 
+
+    banker_result = semantic.where(is_even, basic_round,
+                                  semantic.add(basic_round, adjustment, True, _builder),
                                   _builder)
-    
+
     # Final result: Use banker's rounding for cases exactly at 0.5, otherwise use basic rounding.
     return semantic.where(is_half, banker_result, basic_round, _builder)
 
@@ -756,12 +756,12 @@ def nearbyint(arg0: core.tensor, _builder: ir.builder):
 def asin(arg0: core.tensor, _builder: ir.builder):
     """
     Calculate the principal value of the arc sine of the input argument x.
-    
+
     Returns result in radians, in the interval [-π/2, +π/2] for x inside [-1, +1].
     Returns NaN for x outside [-1, +1].
     """
     arg0 = semantic.to_tensor(arg0, _builder)
-    
+
     # asin(x) = π/2 - acos(x)
     half_pi = semantic.full(arg0.shape, 1.5707963267948966, arg0.type.scalar, _builder)  # π/2
     acos_val = acos(arg0, _builder=_builder)
@@ -774,15 +774,15 @@ def asin(arg0: core.tensor, _builder: ir.builder):
 def log10(arg0: core.tensor, _builder: ir.builder):
     """
     Calculate the base 10 logarithm of the input argument x.
-    
+
     Returns NaN for x < 0, -inf for x = 0, and +0 for x = 1.
     log10(x) = log(x) / log(10)
     """
     arg0 = semantic.to_tensor(arg0, _builder)
-    
+
     log_val = math.log(arg0, _builder=_builder)
     log10_const = semantic.full(arg0.shape, 2.302585092994046, arg0.type.scalar, _builder)
-    
+
     return math.fdiv(log_val, log10_const, _builder=_builder)
 
 @core.builtin
@@ -794,22 +794,22 @@ def copysign(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
     """
     x = semantic.to_tensor(arg0, _builder)
     y = semantic.to_tensor(arg1, _builder)
-    
+
     magnitude = core.tensor(_builder.create_fabs(x.handle), x.type)
-    
+
     zero = semantic.full(y.shape, 0.0, y.type.scalar, _builder)
     one = semantic.full(y.shape, 1.0, y.type.scalar, _builder)
-    
+
     is_zero = semantic.equal(y, zero, _builder)
     reciprocal = math.fdiv(one, y, _builder=_builder)
     is_negative_reciprocal = semantic.less_than(reciprocal, zero, _builder)
     is_negative_zero = semantic.and_(is_zero, is_negative_reciprocal, _builder)
-    
+
     is_negative_nonzero = semantic.less_than(y, zero, _builder)
     is_negative = semantic.or_(is_negative_zero, is_negative_nonzero, _builder)
-    
+
     neg_magnitude = semantic.mul(magnitude, semantic.full(magnitude.shape, -1.0, magnitude.type.scalar, _builder), True, _builder)
-    
+
     return semantic.where(is_negative, neg_magnitude, magnitude, _builder)
 
 

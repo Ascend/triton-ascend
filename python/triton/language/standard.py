@@ -183,7 +183,11 @@ def max(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
                 input = input.to(core.float32)
             else:
                 assert input.dtype.is_int(), "Expecting input to be integer type"
-                input = input.to(core.int32)
+                # FIXME: Skip int8/int16 -> int32 promotion on Ascend.
+                # Converting small integer types (e.g., int8) to int32 consumes excessive UB (Unified Buffer) memory,
+                # which can lead to "UB overflow" errors during kernel execution.
+                # Therefore, we keep the original narrow integer type and rely on backend support.
+                pass  # Do not promote to int32
         if not propagate_nan:
             return core.reduce(input, axis, _elementwise_max_default, keep_dims=keep_dims)
         else:
@@ -245,7 +249,11 @@ def min(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
                 input = input.to(core.float32)
             else:
                 assert input.dtype.is_int(), "Expecting input to be integer type"
-                input = input.to(core.int32)
+                # FIXME: Skip int8/int16 -> int32 promotion on Ascend.
+                # Converting small integer types (e.g., int8) to int32 consumes excessive UB (Unified Buffer) memory,
+                # which can lead to "UB overflow" errors during kernel execution.
+                # Therefore, we keep the original narrow integer type and rely on backend support.
+                pass  # Do not promote to int32
         return core.reduce(input, axis, _elementwise_min, keep_dims=keep_dims)
 
 

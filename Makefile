@@ -16,8 +16,8 @@ LLVM_COMMIT_SHORT           := $(shell cut -c1-8 cmake/llvm-hash.txt)
 LLVM_INSTALL_DIR            := llvm-$(LLVM_COMMIT_SHORT)-$(OS_ID)-$(ARCH_NAME)
 LLVM_TARBALL                := $(LLVM_INSTALL_DIR).tar.gz
 SUDO                        := $(shell command -v sudo >/dev/null 2>&1 && echo sudo || echo)
-TOOLKIT_URL                 := https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/cann/Ascend-cann-toolkit_8.2.RC1_linux-$(ARCH).run
-KERNEL_URL                  := https://triton-ascend-artifacts.obs.cn-southwest-2.myhuaweicloud.com/cann/Ascend-cann-kernels-910b_8.2.RC1_linux-$(ARCH).run
+TOOLKIT_URL                 := https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20$(CANN_VERSION)/Ascend-cann-toolkit_$(CANN_VERSION)_linux-$(ARCH).run
+# KERNEL_URL                  := https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20$(CANN_VERSION)/Ascend-cann-$(CHIP_TYPE)-ops_$(CANN_VERSION)_linux-$(ARCH).run
 CANN_TOOLKIT                := Ascend-cann-toolkit.run
 CANN_KERNELS                := Ascend-cann-kernels.run
 DEPS_STAMP                  := .deps_installed
@@ -42,6 +42,29 @@ PYPI_CONFIG                 := ~/.pypirc
 
 
 .DEFAULT_GOAL := all
+# =====================
+# CANN Kernel URL
+# =====================
+IS_8_5_0 		:= $(filter 8.5.0, $(CANN_VERSION))
+IS_RC_VERSION 	:= $(filter 8.3.RC% 8.2.RC%, $(CANN_VERSION))
+CANN_BASE_URL 	:= https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20$(CANN_VERSION)
+ifeq ($(IS_8_5_0), $(CANN_VERSION)) # VERSION 8.5.0: Unified naming convention
+	KERNEL_URL := $(CANN_BASE_URL)/Ascend-cann-A3-ops_$(CANN_VERSION)_linux-$(ARCH).run
+else ifeq ($(IS_RC_VERSION), $(CANN_VERSION)) # VERSIONS 8.3.RCx/8.2.RCx: Suffix is "-kernels". Special naming for A3 (Atlas-A3-cann-kernels)
+	ifeq ($(CHIP_TYPE), A3)
+		KERNEL_URL := $(CANN_BASE_URL)/Atlas-A3-cann-kernels_$(CANN_VERSION)_linux-$(ARCH).run
+	else
+		KERNEL_URL := $(CANN_BASE_URL)/Ascend-cann-kernels-$(CHIP_TYPE)_$(CANN_VERSION)_linux-$(ARCH).run
+	endif
+else
+	KERNEL_URL:= $(CANN_BASE_URL)/Ascend-cann-toolkit_$(CANN_VERSION)_linux-$(ARCH).run
+endif
+
+.PHONY: check_cann_url
+check_cann_url:
+	@echo "TOOLKIT_URL: $(TOOLKIT_URL)"
+	@echo "KERNEL_URL: $(KERNEL_URL)"
+
 
 # ======================
 # Help
@@ -226,6 +249,7 @@ llvm: ## Conditional build and upload of LLVM
 .PHONY: test-unit
 test-unit: ## Run unit tests
 	cd third_party/ascend/unittest/pytest_ut && $(PYTEST) -s -v -n $(NUM_PROCS) --dist=loadfile
+	cd third_party/ascend/unittest/autotune_ut && $(PYTEST) -s -v -n $(NUM_PROCS) --dist=loadfile
 	cd third_party/ascend/unittest/kernels && $(PYTEST) -s -v -n $(NUM_PROCS) --dist=loadfile test_triton_kernel.py
 
 .PHONY: test-inductor
@@ -367,8 +391,8 @@ ifeq ($(OS_ID),ubuntu)
 	$(SUDO) apt-get update
 	$(SUDO) apt-get install --yes --no-install-recommends \
 		ca-certificates ccache clang ninja-build libzstd-dev \
-	        lld git python3 python3-dev python3-pip zlib1g-dev
-	@python3 -m pip install cmake ninja
+	        lld git python3 python3-dev python3-pip zlib1g-dev cmake
+	@python3 -m pip install ninja
 else ifeq ($(OS_ID),almalinux)
 	@echo "Installing dependencies for AlmaLinux..."
 	dnf install --assumeyes clang lld cmake ccache git

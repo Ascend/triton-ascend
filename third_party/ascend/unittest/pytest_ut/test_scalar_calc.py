@@ -152,7 +152,7 @@ def test_scalar_remf_calc(param_list):
 
     def torch_func(x0):
         y = x0[0]
-        y = y % 2.0
+        y = y - 2.0 * torch.div(y, 2.0, rounding_mode="trunc")
         return torch.tensor(y)
 
     dtype, N = param_list

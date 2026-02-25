@@ -30,6 +30,8 @@
 #include "ascend/include/TritonToLinalg/DescriptorConverter.h"
 #include "ascend/include/TritonToLinalg/HoistBroadcast.h"
 #include "ascend/include/TritonToLinalg/UseAnalysis.h"
+#include "ascend/include/TritonToLinalg/ImplicitPermute.h"
+#include "ascend/include/TritonToStructured/CannonicalizerConverter.h"
 #include "ascend/include/Utils/InterleaveOptimization.h"
 #include "ascend/include/Utils/Utils.h"
 
@@ -109,7 +111,6 @@ static bool isSIMTOp(Operation *op)
            custom_op.getVFMode() == hivm::VFMode::SIMT;
   }
   return isa<
-      triton::ascend::EmbeddingGatherOp,
       triton::ascend::IndexPutOp,
       triton::ascend::GatherOutToUbOp,
       triton::ascend::ScatterUbToOutOp,
@@ -657,7 +658,6 @@ void TritonToLinalgPass::populateTritonToLinalgCanonicalizationPatterns(RewriteP
         // TTOpConverters::ScalarMathCanonicalizer<arith::ExtFOp>
         // TTOpConverters::ScalarMathCanonicalizer<arith::TruncFOp>
         >(patterns.getContext());
-    patterns.add<TTOpConverters::MakeTensorPtrCanonicalizer>(patterns.getContext());
     patterns.add<TTOpConverters::ReduceSingleCanonicalizer>(patterns.getContext());
     if (this->enableSelectAnalysis) {
       patterns.add<TTOpConverters::SelectCanonicalizer>(patterns.getContext());
@@ -678,7 +678,11 @@ void TritonToLinalgPass::populateTritonToLinalgConversionPatterns(
   patterns.add<FunctionConverter::GetNumProgramsConverter>(
       patterns.getContext());
   patterns.add<LoadStoreConverter::LoadConverter>(patterns.getContext());
-  patterns.add<LoadStoreConverter::AtomicRMWConverter>(patterns.getContext());
+  if (compileOn91095Flag && existDotFlag) {
+    patterns.add<LoadStoreConverter::AtomicRMWNewConverter>(patterns.getContext());
+  } else {
+    patterns.add<LoadStoreConverter::AtomicRMWConverter>(patterns.getContext());
+  }
   patterns.add<LoadStoreConverter::AtomicCASConverter>(patterns.getContext());
   patterns.add<TTOpConverters::MakeRangeConverter>(patterns.getContext());
   patterns.add<TTOpConverters::SplatConverter>(patterns.getContext());
@@ -721,7 +725,6 @@ void TritonToLinalgPass::populateTritonToLinalgConversionPatterns(
   patterns.add<TTOpConverters::GatherOutToUbConverter>(patterns.getContext());
   patterns.add<TTOpConverters::ScatterUbToOutConverter>(patterns.getContext());
   patterns.add<TTOpConverters::IndexSelectSimdConverter>(patterns.getContext());
-  patterns.add<TTOpConverters::EmbeddingGatherConverter>(patterns.getContext());
   patterns.add<TTOpConverters::IndexPutConverter>(patterns.getContext());
   patterns.add<TTOpConverters::SortOpConverter>(patterns.getContext());
   patterns.add<TTOpConverters::FlipOpConverter>(patterns.getContext());
@@ -809,7 +812,6 @@ void TritonToLinalgPass::annotateTensorKindForModule(ModuleOp moduleOp) {
     // INPUT tensors
     this->walkAndMarkTensorKind<TensorKind::INPUT, triton::LoadOp,
                                                    triton::ascend::IndexSelectSimdOp,
-                                                   triton::ascend::EmbeddingGatherOp,
                                                    triton::ascend::GatherOutToUbOp,
                                                    triton::ascend::IndirectLoadOp>(func);
 
@@ -824,6 +826,27 @@ void TritonToLinalgPass::annotateTensorKindForModule(ModuleOp moduleOp) {
                                 triton::AtomicRMWOp,
                                 triton::AtomicCASOp>(func);
   });
+}
+
+LogicalResult TritonToLinalgPass::processImplicitPermuteOperations(ModuleOp moduleOp)
+{
+  mlir::RewritePatternSet patterns(&getContext());
+  patterns.add<ImplicitPermute::LoadConverter>(patterns.getContext());
+  patterns.add<ImplicitPermute::StoreConverter>(patterns.getContext());
+  patterns.add<ImplicitPermute::AtomicRMWConverter>(patterns.getContext());
+  patterns.add<ImplicitPermute::AtomicCASConverter>(patterns.getContext());
+  patterns.add<CannonicalizerConverter::SplatCmpConverter>(patterns.getContext());
+
+  if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns)))) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "ImplicitPermute: rewrite MemOp failed\n";
+    });
+  }
+
+  mlir::PassManager pm(&getContext(), moduleOp.getOperationName());
+  pm.addPass(createCSEPass());
+  pm.addPass(createCanonicalizerPass());
+  return runPipeline(pm, getOperation());
 }
 
 void TritonToLinalgPass::runOnOperation() {
@@ -859,16 +882,23 @@ void TritonToLinalgPass::runOnOperation() {
     return WalkResult::advance();
   });
 
-  RewritePatternSet canonicalizerPatterns(&getContext());
-
   // Execute tensor descriptor operations conversion
   if (failed(processDescriptorOperations(moduleOp))) {
+    signalPassFailure();
+  }
+
+  // Execute implicit permute
+  if (failed(processImplicitPermuteOperations(moduleOp))) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "Failed to process implicit permute operations\n";
+    });
     signalPassFailure();
   }
 
   // 0. Annotate Memory-Related Triton FuncOps with tensor_kind (used by profiling).
   annotateTensorKindForModule(moduleOp);
 
+  RewritePatternSet canonicalizerPatterns(&getContext());
   // 1. Canonicalize load/store related patterns.
   this->populateTritonToLinalgCanonicalizationPatterns(canonicalizerPatterns);
   if (failed(applyPatternsGreedily(moduleOp,

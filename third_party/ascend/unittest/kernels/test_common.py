@@ -27,9 +27,9 @@ def validate_cmp(dtype, y_cal, y_ref, overflow_mode: Optional[str] = None, devic
             raise ValueError('Invalid parameter "dtype" is found : {}'.format(dtype))
         y_ref = torch.clamp(y_ref, min=min_value, max=max_value)
     if dtype == 'float16':
-        torch.testing.assert_close(y_ref, y_cal, rtol=5e-03, atol=5e-03, equal_nan=True)
+        torch.testing.assert_close(y_ref, y_cal, rtol=1e-03, atol=1e-03, equal_nan=True)
     elif dtype == 'bfloat16':
-        torch.testing.assert_close(y_ref.to(torch.float32), y_cal.to(torch.float32), rtol=5e-03, atol=5e-03, equal_nan=True)
+        torch.testing.assert_close(y_ref.to(torch.float32), y_cal.to(torch.float32), rtol=1e-03, atol=1e-03, equal_nan=True)
     elif dtype == 'float32':
         torch.testing.assert_close(y_ref, y_cal, rtol=1e-03, atol=1e-03, equal_nan=True)
     elif dtype in ['int64', 'int32', 'int16', 'int8']:
@@ -67,7 +67,14 @@ def compare_data_precision(dict_ref: dict, dict_cal: dict, device_type: str):
             raise ValueError("The data type of two dicts are different")
 
         if isinstance(val_a, torch.Tensor):
-            validate_cmp(dtype=str(val_a.dtype).split('.')[-1], y_ref=val_a, y_cal=val_b, device_type=device_type)
+            try:
+                promoted_dtype = torch.promote_types(val_a.dtype, val_b.dtype)
+            except Exception:
+                # Fallback: if promote_types fails for some exotic dtypes, cast both to float32
+                promoted_dtype = torch.float32
+            val_a_cmp = val_a.to(promoted_dtype) if val_a.dtype != promoted_dtype else val_a
+            val_b_cmp = val_b.to(promoted_dtype) if val_b.dtype != promoted_dtype else val_b
+            validate_cmp(dtype=str(promoted_dtype).split('.')[-1], y_ref=val_a_cmp, y_cal=val_b_cmp, device_type=device_type)
 
 
 def run_and_compare_ptfile(ptfile_path: str, kernel_runner, device_type: str = DEVICE_TYPE_NPU):

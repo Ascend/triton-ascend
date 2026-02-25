@@ -40,7 +40,6 @@ libdevice.sqrt_rn = math.sqrt_rn
 libdevice.rsqrt = math.rsqrt
 libdevice.div_rn = math.div_rn
 libdevice.erf = math.erf
-libdevice.tanh = math.tanh
 libdevice.floor = math.floor
 libdevice.ceil = math.ceil
 libdevice.fdiv = math.fdiv

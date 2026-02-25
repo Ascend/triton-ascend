@@ -356,9 +356,8 @@ void parseTritonOp(Operation *tritonOp, const Location &loc,
   // else if (auto makeTensorDescOp =
   //                dyn_cast<triton::MakeTensorDescOp>(tritonOp)) {
   //   parseMakeTensorDesc(makeTensorDescOp, loc, rewriter, offsetMap);
-  // } 
-  else if (auto makeTensorPtrOp =
-                 dyn_cast<triton::MakeTensorPtrOp>(tritonOp)) {
+  // }
+  else if (auto makeTensorPtrOp = dyn_cast<triton::MakeTensorPtrOp>(tritonOp)) {
     parseMakeTensorPtr(makeTensorPtrOp, loc, rewriter, offsetMap);
   } else if (auto reduceOp = dyn_cast<triton::ReduceOp>(tritonOp)) {
     parseReduce(reduceOp, loc, rewriter, offsetMap);
@@ -527,7 +526,12 @@ void parseIndexCast(arith::IndexCastOp op, const Location &loc,
   parse(src, op.getLoc(), rewriter, offsetMap);
   // Set indexCast offset map
   auto dst = op.getOut();
-  offsetMap[dst] = offsetMap.at(src);
+  auto srcIt = offsetMap.find(src);
+  if (srcIt == offsetMap.end()) {
+    offsetMap[dst] = PtrOffsetInfo();
+  } else {
+    offsetMap.insert({dst, srcIt->second});
+  }
 }
 
 template <typename ConstOpTy>
@@ -556,7 +560,12 @@ void parseExtSI(arith::ExtSIOp op, const Location &loc, RewriterBase &rewriter,
   parse(src, op.getLoc(), rewriter, offsetMap);
   // Set extSI offset map
   auto dst = op.getOut();
-  offsetMap[dst] = offsetMap.at(src);
+  auto srcIt = offsetMap.find(src);
+  if (srcIt == offsetMap.end()) {
+    offsetMap[dst] = PtrOffsetInfo();
+  } else {
+    offsetMap.insert({dst, srcIt->second});
+  }
 }
 
 void parseBitcast(triton::BitcastOp op, const Location &loc,
@@ -910,6 +919,7 @@ void parseIf(scf::IfOp op, const Location &loc, RewriterBase &rewriter,
   parse(thenYieldedValue, op.getLoc(), rewriter, offsetMap);
   PtrOffsetInfo thenOffsetInfo = offsetMap.at(thenYieldedValue);
   SmallVector<bool> &thenStructured = thenOffsetInfo.getStructuredRef();
+  auto thenSrcPtr = thenOffsetInfo.getPtr();
   // Get if else region
   bool dstIsScalar = thenOffsetInfo.isScalarLike();
   SmallVector<bool> elseStructured;
@@ -920,9 +930,13 @@ void parseIf(scf::IfOp op, const Location &loc, RewriterBase &rewriter,
     PtrOffsetInfo elseOffsetInfo = offsetMap.at(elseYieldedValue);
     elseStructured = elseOffsetInfo.getStructuredRef();
     dstIsScalar = dstIsScalar && elseOffsetInfo.isScalarLike();
+    if (thenSrcPtr != elseOffsetInfo.getPtr()) {
+      emitError(loc) << "Currently ptr type from different source not supported";
+    }
   }
   // Set if offset map
   offsetMap[dst] = PtrOffsetInfo();
+  offsetMap[dst].setPtr(thenSrcPtr);
   offsetMap[dst].setScalarLike(dstIsScalar);
   SmallVector<bool> &dstStructured = offsetMap[dst].getStructuredRef();
   dstStructured.resize(thenStructured.size());
@@ -931,6 +945,13 @@ void parseIf(scf::IfOp op, const Location &loc, RewriterBase &rewriter,
       dstStructured[i] = thenStructured[i] && elseStructured[i];
     else
       dstStructured[i] = thenStructured[i];
+  SmallVector<Value> dstOffsets(thenOffsetInfo.getOffsetsRef().size());
+  if (!dstOffsets.empty()) {
+    // Assumes ifOp is already rewritten
+    for (size_t i = 0; i < dstOffsets.size(); i++)
+      dstOffsets[i] = op->getResult(index + i);
+    offsetMap[dst].setOffsets(dstOffsets);
+  }
 }
 
 void parseYield(scf::YieldOp op, const Location &loc, RewriterBase &rewriter,
@@ -962,7 +983,12 @@ void parseExtractSlice(tensor::ExtractSliceOp op, const Location &loc,
   parse(src, op.getLoc(), rewriter, offsetMap);
   // Set extractSlice offset map
   auto dst = op.getResult();
-  offsetMap[dst] = offsetMap.at(src);
+  auto srcIt = offsetMap.find(src);
+  if (srcIt == offsetMap.end()) {
+    offsetMap[dst] = PtrOffsetInfo();
+  } else {
+    offsetMap.insert({dst, srcIt->second});
+  }
 }
 
 void parseExtract(tensor::ExtractOp op, const Location &loc,

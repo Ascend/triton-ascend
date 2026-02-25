@@ -26,8 +26,15 @@ import pytest
 import test_common
 
 
-def torch_pointwise(x0, x1):
-    res = x0 % x1
+def torch_pointwise(x0, x1, dtype):
+    if dtype == 'float16':
+        x0 = x0.to(torch.float32)
+        x1 = x1.to(torch.float32)
+    elif dtype == 'float32':
+        x0 = x0.to(torch.float64)
+        x1 = x1.to(torch.float64)
+    res = torch.div(x0, x1, rounding_mode="trunc")
+    res = x0 - x1 * res
     return res
 
 
@@ -61,8 +68,9 @@ def test_case(param_list):
     else:
         x0 = test_common.generate_tensor(shape, dtype).npu()
         x1 = test_common.generate_tensor(shape, dtype).npu()
-    y_ref = torch_pointwise(x0.cpu(), x1.cpu())
-    y_ref = y_ref.npu()
+    y_ref = torch_pointwise(x0, x1, dtype)
+    if dtype == "float16":
+        y_ref = y_ref.to(torch.float16)
     y_cal = torch.zeros(shape, dtype = eval('torch.' + dtype)).npu()
     triton_mod[ncore, 1, 1](x0, x1, y_cal, xblock, xblock_sub)
     #test_common.validate_cmp(dtype, y_cal, y_ref.npu())

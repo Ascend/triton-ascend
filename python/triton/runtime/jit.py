@@ -9,9 +9,11 @@ import textwrap
 from collections import defaultdict
 from functools import cached_property
 from typing import Callable, Generic, Iterable, Optional, TypeVar, Union, overload, Dict, Any, Tuple
-from ..runtime.driver import driver
 from types import ModuleType
-from .._utils import find_paths_if, get_iterable_path
+
+from triton._C.libtriton import get_cache_invalidating_env_vars
+from .driver import driver
+from . import _async_compile
 
 TRITON_MODULE = __name__[:-len(".runtime.jit")]
 
@@ -549,20 +551,31 @@ class JITFunction(KernelInterface[T]):
             for k in kwargs:
                 if k not in options.__dict__ and k not in sigkeys:
                     raise KeyError("Keyword argument %s was specified but unrecognised" % k)
-            # constexprs
-            constexprs = find_paths_if(sigvals, lambda _, val: val == "constexpr")
-            constexprs = {path: get_iterable_path(list(bound_args.values()), path) for path in constexprs}
-            # attributes
-            attrvals = [x[1] for x in specialization]
-            attrs = find_paths_if(attrvals, lambda _, x: isinstance(x, str))
-            attrs = {k: backend.parse_attr(get_iterable_path(attrvals, k)) for k in attrs}
-            if self._call_hook(key, signature, device, constexprs, options, [attrs], warmup, before=True):
+
+            bound_vals = tuple(bound_args.values())
+
+            # `None` is nullptr. Implicitly convert to *i8. This needs to be
+            # done here rather than when we build the signature as otherwise
+            # the kernel cache key could not distinguish between byte pointers
+            # and None arguments, resulting in a downstream mismatch:
+            sigkeys = [self.params[i].name for i in self.non_constexpr_indices]
+            sigvals = sig_and_spec[:len(sigkeys)]
+            signature = {k: ('*i8' if (v == 'none') else v) for (k, v) in zip(sigkeys, sigvals)}
+
+            configs = (backend.get_attrs_descriptor(self.params, bound_vals), )
+            constant_params = configs[0].get_constants()
+            constants = {
+                p.name: v
+                for (v, p) in zip(bound_vals, self.params)
+                if p.is_constexpr or (p.num in constant_params) or v is None
+            }
+            for i, arg in constants.items():
+                if callable(arg):
+                    raise TypeError(f"Callable constexpr at index {i} is not supported")
+
+            kernel = self._do_compile(key, signature, device, backend, target, constants, options, configs[0], warmup)
+            if kernel is None:
                 return None
-            # compile the kernel
-            src = self.ASTSource(self, signature, constexprs, attrs)
-            kernel = self.compile(src, target=target, options=options.__dict__)
-            kernel_cache[key] = kernel
-            self._call_hook(key, signature, device, constexprs, options, [attrs], warmup, before=False)
 
         # Check that used global values have not changed.
         not_present = object()
@@ -580,6 +593,9 @@ class JITFunction(KernelInterface[T]):
             grid_0 = grid[0]
             grid_1 = grid[1] if grid_size > 1 else 1
             grid_2 = grid[2] if grid_size > 2 else 1
+            if hasattr(kernel, "result"):
+                kernel = kernel.result()
+
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
             kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata,
@@ -665,7 +681,8 @@ class JITFunction(KernelInterface[T]):
         return self.run(grid=grid, warmup=True, *map(MockTensor.wrap_dtype, args), **kwargs)
 
     def preload(self, specialization_data):
-        from ..compiler import compile, ASTSource
+        from ..compiler import make_backend
+        from triton.backends.compiler import AttrsDescriptor
         import json
         import triton.language as tl
         device = driver.active.get_current_device()
@@ -689,8 +706,47 @@ class JITFunction(KernelInterface[T]):
             for key, value in deserialized_obj['options'].items()
         }
         key = deserialized_obj['key']
-        kernel = compile(src, None, options)
-        self.device_caches[device][0][key] = kernel
+        target = driver.active.get_current_target()
+        backend = make_backend(target)
+        attrs = AttrsDescriptor.from_dict(deserialized_obj['attrs'])
+        return self._do_compile(
+            key,
+            signature,
+            device,
+            backend,
+            target,
+            constants,
+            options,
+            attrs,
+            warmup=True,
+        )
+
+    def _do_compile(self, key, signature, device, backend, target, constants, options, attrs, warmup):
+        kernel_cache = self.cache[device]
+
+        if self._call_hook(key, signature, device, constants, options, [attrs], warmup, before=True):
+            return None
+        src = self.ASTSource(self, signature, constants, attrs)
+
+        async_mode = _async_compile.active_mode.get()
+        if async_mode is not None:
+            from triton.compiler.compiler import get_cache_key
+
+            env_vars = get_cache_invalidating_env_vars()
+            cache_key = get_cache_key(src, backend, options, env_vars)
+
+            def async_compile():
+                return self.compile(src, target=target, options=options.__dict__, _env_vars=env_vars)
+
+            def finalize_compile(kernel):
+                kernel_cache[key] = kernel
+                self._call_hook(key, signature, device, constants, options, [attrs], warmup, before=False)
+
+            kernel = async_mode.submit(cache_key, async_compile, finalize_compile)
+        else:
+            kernel = self.compile(src, target=target, options=options.__dict__)
+            kernel_cache[key] = kernel
+            self._call_hook(key, signature, device, constants, options, [attrs], warmup, before=False)
         return kernel
 
     # we do not parse `src` in the constructor because

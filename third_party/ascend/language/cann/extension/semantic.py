@@ -110,6 +110,25 @@ def copy_from_ub_to_l1(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, b
         raise TypeError("src and dst must be tl.tensor or bl.buffer")
 
 
+def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], builder):
+    if not builder.is_910_95():
+        raise RuntimeError("this feature is only supported on Ascend910_95")
+    if isinstance(src, tl.tensor) or isinstance(dst, tl.tensor):
+        raise TypeError("tensor not support yet")
+    if src.shape != dst.shape:
+        raise TypeError("src and dst must have same shape")
+    if src.dtype != dst.dtype:
+        raise TypeError("src and dst need to have the same type")
+    if isinstance(src, bl.buffer) and isinstance(dst, bl.buffer):
+        if src.space != al.ascend_address_space.UB:
+            raise TypeError("src's AddressSpace must be UB")
+        if dst.space not in (al.ascend_address_space.L1, al.ascend_address_space.UB):
+            raise TypeError("dst's AddressSpace must be UB or L1")
+        builder.create_copy_buffer(src.handle, dst.handle)
+    else:
+        raise TypeError("src and dst must be tl.tensor or bl.buffer")
+
+
 def fixpipe(
     src: tl.tensor,
     dst,

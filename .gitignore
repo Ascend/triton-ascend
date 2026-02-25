@@ -78,6 +78,7 @@ docs/sg_execution_times.rst
 /compile_commands.json
 .vscode
 .vs
+.idea/
 
 # Vim
 *.swp
@@ -85,3 +86,16 @@ docs/sg_execution_times.rst
 # macOS
 .DS_Store
 triton_ascend.egg-info/
+
+# cann
+fusion_result.json
+kernel_meta/
+
+# compilation
+/triton/
+build/
+
+# artifact
+dist/
+*.egg-info/
+.eggs/

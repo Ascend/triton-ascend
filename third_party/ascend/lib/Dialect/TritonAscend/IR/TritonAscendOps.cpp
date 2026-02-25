@@ -20,13 +20,6 @@ using namespace mlir::triton;
 
 namespace mlir::triton::ascend {
 
-void EmbeddingGatherOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
-                       triton::GlobalMemory::get());
-}
-
 void GatherOutToUbOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects)
 {

@@ -29,37 +29,40 @@ def _init_npu_params():
     global _cached_params
     if _cached_params is not None:
         return _cached_params
-    
+
     from triton.runtime.driver import driver
-    
+
     target = driver.active.get_current_target()
     device = driver.active.get_current_device()
     prop = driver.active.utils.get_device_properties(device)
-    
+
     num_cube_core = prop["num_aicore"]
     num_vector_core = prop["num_aicore"]
-    num_ub_max = 192
-    
+    ub_size_in_kbytes = 192
+    rf_size_in_kbytes = None
+
     ASCEND_VARIANTS = ["Ascend910B", "Ascend910_93", "Ascend910_95"]
     if any(variant in target.arch for variant in ASCEND_VARIANTS):
         num_vector_core = num_cube_core * 2
-    
+
     if '910_95' in target.arch:
-        num_ub_max = 256
-    
+        ub_size_in_kbytes = 256
+        rf_size_in_kbytes = 128
+
     _cached_params = {
         'target': target,
         'device': device,
         'prop': prop,
         'num_cube_core': num_cube_core,
         'num_vector_core': num_vector_core,
-        'num_ub_max': num_ub_max,
+        'ub_size_in_kbytes': ub_size_in_kbytes,
+        'rf_size_in_kbytes': rf_size_in_kbytes,
     }
     return _cached_params
 
 
 def __getattr__(name):
-    if name in ['target', 'device', 'prop', 'num_cube_core', 'num_vector_core', 'num_ub_max']:
+    if name in ['target', 'device', 'prop', 'num_cube_core', 'num_vector_core', 'ub_size_in_kbytes', 'rf_size_in_kbytes']:
         return _init_npu_params()[name]
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
@@ -113,7 +116,3 @@ def next_power_of_2(n: int):
     n |= n >> 32
     n += 1
     return n
-
-num_register_max_simt = 16
-
-simt_candidate_warps = [8, 16, 32, 64]

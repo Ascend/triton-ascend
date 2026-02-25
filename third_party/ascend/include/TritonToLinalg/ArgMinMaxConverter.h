@@ -23,11 +23,11 @@
 #ifndef TRITON_ADAPTER_ARGMINMAXCONVERTER_H
 #define TRITON_ADAPTER_ARGMINMAXCONVERTER_H
 
+#include "ConversionPatterns.h"
 #include "ascend/include/Utils/Utils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
-#include "ConversionPatterns.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -36,6 +36,9 @@
 #define DEBUG_TYPE "triton-to-linalg"
 
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LogicalResult.h"
+
+#include <limits>
 
 namespace TTOpConverters {
 using namespace mlir;
@@ -256,12 +259,17 @@ public:
       }
     }
 
-    auto valuesAccBaseVal =
-        rewriter.create<arith::ConstantOp>(loc, valueType, valueAttr);
+    auto reduceWithIndexParams = getReduceWithIndexParams(op);
+    auto valuesAccBaseVal = rewriter.create<arith::ConstantOp>(loc, valueType, valueAttr);
+    int indicesInitValue =
+        (llvm::succeeded(reduceWithIndexParams) &&
+         reduceWithIndexParams->tieBreakType == TieBreakType::RIGHT)
+        ? -1
+        : std::numeric_limits<int32_t>::max();
 
     auto indexType = elemTypes[1];
     auto indicesAccBaseVal = rewriter.create<arith::ConstantOp>(
-        loc, indexType, rewriter.getIntegerAttr(indexType, -1));
+        loc, indexType, rewriter.getIntegerAttr(indexType, indicesInitValue));
 
     auto valueResultType = dyn_cast<RankedTensorType>(op.getType(0));
     const auto isScalarReduce = valueResultType == nullptr;
@@ -298,7 +306,10 @@ public:
     // before we rewrite the argmax reduce op, we know it has return value
     // so addReduceWithIndexAttrIfNeeded won't fail
     // but ignoring it will lead to compiling failure
-    auto logicalResult = addReduceWithIndexAttrIfNeeded(rewriter, linalgOp);
+    if (llvm::succeeded(reduceWithIndexParams) &&
+        reduceWithIndexParams->tieBreakType != TieBreakType::None) {
+        addReduceWithIndexAttr(*reduceWithIndexParams, rewriter, linalgOp);
+    }
 
     if (isScalarReduce) {
       SmallVector<Value> reduceResults{

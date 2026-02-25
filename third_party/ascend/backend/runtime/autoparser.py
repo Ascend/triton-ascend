@@ -95,6 +95,14 @@ class AxesKeyParser(AutoParser):
                 axis = self.handle_lt_node(var, child_node)
             elif isinstance(child_node, ast.Assign):
                 axis = self.handle_assign_node(var, child_node)
+
+            elif isinstance(child_node, ast.BinOp) and \
+                 isinstance(child_node.op, ast.BitAnd):
+                
+                axis = self.handle_lt_node(var, child_node.left)
+                if axis is None:
+                    axis = self.handle_lt_node(var, child_node.right)
+
             if axis is not None:
                 return axis
         self.checked_vars.append(var)
@@ -339,10 +347,37 @@ class ReductionAxesParser(AxesKeyParser):
         super().__init__(func_ast, keys)
         self.reduction_axes = list()
         self.reduction_func = ('sum', 'xor_sum', 'max', 'min', 'argmax', 'argmin') # tl.xxx
+        self.ndim = 1
 
     def parse(self) -> List[str]:
         super().parse()
         return self.reduction_axes
+
+    def visit_Assign(self, node):
+        self._scan_subscripts(node.value)
+        self.generic_visit(node)
+    
+    def _scan_subscripts(self, node):
+        if isinstance(node, ast.Subscript):
+            ndim = self._get_subscripts_ndim(node)
+            if ndim > self.ndim:
+                self.ndim = ndim
+        
+        for child in ast.iter_child_nodes(node):
+            self._scan_subscripts(child)
+    
+    def _get_subscripts_ndim(self, subscript_node):
+        slice_node = subscript_node.slice
+
+        if isinstance(slice_node, ast.Tuple):
+            # e.g. [:, None] -> Tuple(elts=[Slice(), Constant(None)])
+            return len(slice_node.elts)
+        elif isinstance(slice_node, (ast.Slice, ast.Constant, ast.Name, ast.UnaryOp, ast.BinOp)):
+            # e.g. [0], [:], [i], [-1], [i+1]
+            return 1
+        else:
+            # Fallback: treat as 1D
+            return 1
 
     def visit_Call(self, node):
         if not isinstance(node.func, ast.Attribute):
@@ -354,22 +389,42 @@ class ReductionAxesParser(AxesKeyParser):
         if func.attr not in self.reduction_func:
             return
         
+        axis_dim = None
         args = node.args
         if len(args) == 1:
-            keywords = node.keywords
-            for keyword in keywords:
+            # Axis passed as keyword argument
+            for keyword in node.keywords:
                 if keyword.arg == 'axis':
-                    if isinstance(keyword.value, ast.Constant):
-                        axis_dim = keyword.value.value
-        elif len(args) == 2:
-            if isinstance(args[1], ast.Constant): # check the second param
-                axis_dim = args[1].value
-        else:
-            return
+                    axis_dim = self.get_axis_dim(keyword.value)
+                    break
 
-        reduction_axis = self.get_axis(axis_dim)
-        if reduction_axis and reduction_axis not in self.reduction_axes:
-            self.reduction_axes.append(reduction_axis)
+        elif len(args) == 2:
+            # Axis passed as positional argument. Check the second param
+            axis_dim = self.get_axis_dim(args[1])
+                
+        else:
+            raise ValueError("Reduction funtions args error")
+
+        if axis_dim is not None:
+            reduction_axis = self.get_axis(axis_dim)
+            if reduction_axis and reduction_axis not in self.reduction_axes:
+                self.reduction_axes.append(reduction_axis)
+
+    def get_axis_dim(self, node):
+        if isinstance(node, ast.Constant):
+            axis_dim = node.value
+        elif isinstance(node, ast.UnaryOp) and \
+            isinstance(node.op, ast.USub):
+            operand = node.operand
+            if isinstance(operand, ast.Constant):
+                axis_dim = self.ndim - operand.value
+        else:
+            raise ValueError(f"Reduction function axis error, got: {ast.dump(node)}")
+
+        if not isinstance(axis_dim, int):
+            raise ValueError("Reduction function axis must be an integer, " 
+                             f"got {type(node.value).__name__}: {node.value}")
+        return axis_dim
 
     def get_axis(self, axis_dim: int):
         """

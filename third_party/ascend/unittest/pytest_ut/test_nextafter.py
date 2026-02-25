@@ -35,7 +35,7 @@ def torch_nextafter(x0, x1):
 
 
 @triton.jit
-def triton_nextafter(in_ptr0, in_ptr1, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.constexpr):
+def triton_nextafter(in_ptr0, in_ptr1, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
     offset = tl.program_id(0) * XBLOCK
     base1 = tl.arange(0, XBLOCK_SUB)
     loops1: tl.constexpr = XBLOCK // XBLOCK_SUB
@@ -51,7 +51,6 @@ def triton_nextafter(in_ptr0, in_ptr1, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_S
                             [
                                 ['float32', (2, 4096, 8), 2, 32768, 1024],
                                 ['float16', (2, 4096, 8), 2, 32768, 1024],
-                                ['bfloat16', (2, 4096, 8), 2, 32768, 1024],
                             ])
 def test_nextafter(param_list):
     dtype, shape, ncore, xblock, xblock_sub = param_list

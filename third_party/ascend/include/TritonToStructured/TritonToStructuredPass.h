@@ -51,7 +51,7 @@ public:
     TritonToStructuredPass() = default;
 
     TritonToStructuredPass(bool enableMaskFallbackConversion, bool optimizeDynamicOffset) {
-        this->enableMaskFallbackConversion = enableMaskFallbackConversion; 
+        this->enableMaskFallbackConversion = enableMaskFallbackConversion;
         this->optimizeDynamicOffset = optimizeDynamicOffset;
     };
     void getDependentDialects(DialectRegistry &registry) const override;
@@ -60,10 +60,12 @@ public:
 private:
     void populateTritonToStructuredCanonicalizationPatterns(
         RewritePatternSet &patterns);
-    
+
     void populateTritonToStructuredPatterns(
         RewritePatternSet &patterns, bool optimizeDynamicOffset,
         bool enableMaskFallbackConversion);
+
+    LogicalResult processSplatBinaryOperations(ModuleOp moduleOp);
 };
 
 #endif  // TRITON_ADAPTER_CONVERSION_TRITONTOSTRUCTURED_H

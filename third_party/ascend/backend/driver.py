@@ -23,6 +23,7 @@ import tempfile
 import os
 import os.path
 import re
+import fcntl
 import subprocess
 import sysconfig
 from typing import Optional
@@ -49,7 +50,7 @@ class NPUUtils(object):
         if not hasattr(cls, 'instance'):
             cls.instance = super(NPUUtils, cls).__new__(cls)
         return cls.instance
-
+    
     def __init__(self):
         dirname = os.path.dirname(os.path.realpath(__file__))
         src_path = os.path.join(dirname, "npu_utils.cpp")
@@ -58,12 +59,12 @@ class NPUUtils(object):
         cache = get_cache_manager(key)
         fname = "npu_utils.so"
         cache_path = cache.get_file(fname)
+            
         if cache_path is None:
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp_src_path = os.path.join(tmpdir, "npu_utils.cpp")
-                with open(tmp_src_path, "w") as f:
-                    f.write(src)
-                so = _build_npu_ext("npu_utils", None, tmp_src_path)
+                so = _exec_cmd_with_lock(tmp_src_path, "npu_utils", 
+                                         lambda: self._write_npu_utils_and_compile(tmp_src_path, src))
                 with open(so, "rb") as f:
                     cache_path = cache.put(f.read(), fname, binary=True)
         import importlib.util
@@ -73,7 +74,14 @@ class NPUUtils(object):
         self.npu_utils_mod = mod
         # setup for remote run
         env_arch = get_ascend_arch_from_env()
-
+    
+    
+    def _write_npu_utils_and_compile(self, tmp_src_path, src):
+        with open(tmp_src_path, "w") as f:
+            f.write(src)
+        return _build_npu_ext("npu_utils", None, tmp_src_path)
+    
+    
     def load_binary(self, name, kernel, shared, device):
         fnname, mix_mode = name.split()
         return self.npu_utils_mod.load_kernel_binary(fnname, kernel, shared, device, mix_mode)
@@ -222,6 +230,20 @@ class NPUDriver(DriverBase):
         return get_backend_func("get_empty_tensor", cache_size // 4)
 
 
+# fixed the issue of file corrupted in multi-threaded scenarios.
+def _exec_cmd_with_lock(lock_path, lock_name, fn, debug=False):
+    src_path = os.path.dirname(lock_path)
+    lock_path = os.path.join(src_path, lock_name + ".lock")
+    if debug:
+        print(f"lock_path: {lock_path}")
+    with open(lock_path, "a+") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            return fn()
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     """
     Generate the launcher stub to launch the kernel
@@ -230,10 +252,15 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     cache = get_cache_manager(precompile_hash)
     header_path = cache.get_file("precompiled.h")
     gch_path = cache.get_file("precompiled.h.gch")
+    
+    enable_precompile = not os.getenv("TRITON_DISABLE_PRECOMPILE", 'false').lower() in ('true', '1')
     # if precompile header file and its gch file not exist, do precompile
     if header_path is None and gch_path is None:
         header_path = cache.put(header_src, "precompiled.h", binary=False)
-        _precompile_npu_ext(header_path)
+        # only enable_precompile=true , do precompile
+        if enable_precompile:
+            header_path = _exec_cmd_with_lock(header_path, "precompile",
+                                              lambda: _precompile_npu_ext(header_path), debug=debug)
 
     # try to get cached file
     so_cache_key = hashlib.sha256(wrapper_src.encode("utf-8")).hexdigest()
@@ -261,12 +288,18 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     enable_taskqueue = os.getenv("TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
     if not enable_taskqueue:
         kernel_launcher_type = None
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        src_path = os.path.join(tmpdir, f"{name}.cxx")
-        with open(src_path, "w") as f:
+        
+    def _write_launcher_and_compile(wrapper_src, name, launcher_path, header_path, kernel_launcher_type, enable_precompile):
+        with open(launcher_path, "w") as f:
             f.write(wrapper_src)
-        so_path = _build_npu_ext(name, header_path, src_path, kernel_launcher=kernel_launcher_type, precompile=True)
+        return _build_npu_ext(name, header_path, launcher_path, kernel_launcher=kernel_launcher_type, precompile=enable_precompile)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        launcher_path = os.path.join(tmpdir, f"{name}.cxx")
+        so_path = _exec_cmd_with_lock(launcher_path, 
+                                      "launcher", 
+                                      lambda: _write_launcher_and_compile(wrapper_src, name, launcher_path, header_path, kernel_launcher_type, enable_precompile), 
+                                      debug=debug)
         if debug:
             with open(so_path, "rb") as f:
                 dump_manager.put(f.read(), so_name, binary=True)
@@ -726,12 +759,12 @@ extern "C" {
     ret = rtKernelLaunch(func, blockNum, static_cast<void*>(&args), sizeof(args), NULL, stream);
 """
     if compile_on_910_95 and enable_simt:
-        cpp_kernel_launch = """
-    rtArgsEx_t argsInfo = {};
+        cpp_kernel_launch = f"""
+    rtArgsEx_t argsInfo = {{}};
     argsInfo.args = static_cast<void*>(&args);
     argsInfo.argsSize = sizeof(args);
-    rtTaskCfgInfo_t cfgInfo = {};
-    cfgInfo.localMemorySize = 216 * 1024;
+    rtTaskCfgInfo_t cfgInfo = {{}};
+    cfgInfo.localMemorySize = {metadata.shared_mem_dynamic_size};
     ret = rtKernelLaunchWithFlagV2(func, blockNum, &argsInfo, NULL, stream, 0, &cfgInfo);
 """
 
@@ -761,10 +794,10 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
   name.append(kernelName);
   void *workspace_addr_ptr = NULL;
   uint32_t blockNum4Workspace = gridX * gridY * gridZ;
+  {get_backend_func("pre_launch")}
   {f'''
   uint64_t totalWorkSpaceSize = {workspace_size} * blockNum4Workspace;
-  auto optionsWorkspace = at::TensorOptions().device(at::kPrivateUse1).dtype(at::kByte);
-  workspace_addr_ptr = {get_backend_func("allocate_memory", "totalWorkSpaceSize", "optionsWorkspace")}
+  workspace_addr_ptr = {get_backend_func("allocate_memory", "totalWorkSpaceSize", "stream")}
   ''' if workspace_size > 0 else ''}
   {'auto launch_call = [=]() -> rtError_t' if enable_taskqueue else ''} {{
     uint32_t blockNum = gridX * gridY * gridZ;
@@ -776,7 +809,6 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
         warned = true;
     }}
     #endif  
-    {get_backend_func("pre_launch")}
     {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if enable_auto_map_parallel_blocks else ''}
     // set mixBlockNumRation for nodeBasicBlockDim for msprof report
     uint32_t mixBlockNumRation = {mix_block_dim_ratio};

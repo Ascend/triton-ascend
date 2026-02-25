@@ -76,7 +76,6 @@ Descriptor unpackDescriptor(TensorDescType type, Value desc, ConversionPatternRe
 
     Descriptor res;
 
-    // 直接回溯处理的 tt.make_tensor_descriptor
     res.base = makeDescOp.getBase();
     for (auto s : makeDescOp.getShape()) {
         res.shape.push_back(rewriter.createOrFold<arith::ExtSIOp>(makeDescOp.getLoc(), rewriter.getI64Type(), s));
@@ -93,7 +92,7 @@ SmallVector<int32_t> computeOrder(ArrayRef<int64_t> shape)
     SmallVector<int32_t> order;
     int rank = shape.size();
     order.reserve(rank);
-    // 默认采用逆序 [dims - 1, ..., 0]
+    // default by [dims - 1, ..., 0]
     for (int i = rank - 1; i >= 0; --i) {
         order.push_back(i);
     }
@@ -108,27 +107,47 @@ LogicalResult DescriptorLoadConverter::matchAndRewrite(triton::DescriptorLoadOp 
     auto descTy = op.getDesc().getType();
     auto indices = op.getIndices();
 
-    // 1. 解包 descriptor
+    // 1. unpack descriptor
     auto desc = unpackDescriptor(descTy, adaptor.getDesc(), rewriter);
 
-    // 2. 新增 make_tensor_ptr
+    // 2. create make_tensor_ptr
     SmallVector<int32_t> tensorShapeValues;
     for (auto dim : blockShape) {
         tensorShapeValues.push_back(static_cast<int32_t>(dim));
     }
     Value tensorPtr = rewriter.create<triton::MakeTensorPtrOp>(loc,
-                                                               desc.base,               // 基址
-                                                               desc.shape,              // 形状
-                                                               desc.strides,            // 步长
-                                                               indices,                 // 偏移
+                                                               desc.base,               // base
+                                                               desc.shape,              // shape
+                                                               desc.strides,            // strides
+                                                               indices,                 // offset
                                                                tensorShapeValues,       // tensorShape
-                                                               computeOrder(blockShape) // 使用动态计算的 order
+                                                               computeOrder(blockShape) // order
     );
-    // 3. 替换 tt.load 操作
-    auto newLoad = rewriter.replaceOpWithNewOp<triton::LoadOp>(op, descTy.getSignlessBlockType(), tensorPtr);
+    // 3. replace tt.load
+    auto boundaryCheck = rewriter.getDenseI32ArrayAttr({});
+    triton::PaddingOptionAttr padding = nullptr;
+    auto cache = triton::CacheModifierAttr::get(rewriter.getContext(), triton::CacheModifier::NONE);
+    auto evict = triton::EvictionPolicyAttr::get(rewriter.getContext(), triton::EvictionPolicy::NORMAL);
+    auto isVolatile = rewriter.getBoolAttr(false);
 
-    // 保留原始操作的其他属性
-    newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
+    if (auto a = op->getAttrOfType<triton::CacheModifierAttr>("cache")) cache = a;
+    if (auto a = op->getAttrOfType<triton::EvictionPolicyAttr>("evict")) evict = a;
+    if (auto a = op->getAttrOfType<BoolAttr>("isVolatile")) isVolatile = a;
+
+    auto newLoad = rewriter.create<triton::LoadOp>(
+        loc,
+        descTy.getSignlessBlockType(),
+        tensorPtr,
+        Value(),    // mask
+        Value(),    // other
+        boundaryCheck,
+        padding,
+        cache,
+        evict,
+        isVolatile
+    );
+
+    rewriter.replaceOp(op, newLoad.getResult());
 
     return success();
 }
@@ -141,46 +160,42 @@ LogicalResult DescriptorStoreConverter::matchAndRewrite(triton::DescriptorStoreO
     auto descTy = op.getDesc().getType();
     auto indices = op.getIndices();
 
-    // 1. 解包 descriptor
+    // 1. unpack descriptor
     auto desc = unpackDescriptor(descTy, adaptor.getDesc(), rewriter);
 
-    // 2. 新增 make_tensor_ptr
+    // 2. create make_tensor_ptr
     SmallVector<int32_t> tensorShapeValues;
     for (auto dim : blockShape) {
         tensorShapeValues.push_back(static_cast<int32_t>(dim));
     }
     Value tensorPtr = rewriter.create<triton::MakeTensorPtrOp>(loc,
-                                                               desc.base,               // 基址
-                                                               desc.shape,              // 形状
-                                                               desc.strides,            // 步长
-                                                               indices,                 // 偏移
+                                                               desc.base,               // base
+                                                               desc.shape,              // shape
+                                                               desc.strides,            // strides
+                                                               indices,                 // offset
                                                                tensorShapeValues,       // tensorShape
-                                                               computeOrder(blockShape) // 使用动态计算的 order
+                                                               computeOrder(blockShape) // order
     );
 
-    // 3. 替换 tt.store 操作
+    // 3. replace tt.store
     Value valueToStore = adaptor.getSrc();
 
     auto maskType = RankedTensorType::get(blockShape, rewriter.getI1Type());
     rewriter.create<arith::ConstantOp>(loc, DenseElementsAttr::get(maskType, true));
-
-    // 创建属性
-    auto boundaryCheck = rewriter.getDenseI32ArrayAttr({}); // 空的边界检查
+    auto boundaryCheck = rewriter.getDenseI32ArrayAttr({});
     auto cacheModifier = triton::CacheModifierAttr::get(rewriter.getContext(), triton::CacheModifier::NONE);
     auto evictionPolicy = triton::EvictionPolicyAttr::get(rewriter.getContext(), triton::EvictionPolicy::NORMAL);
 
-    // 创建 store 操作并替换原始操作
-    auto newStore = rewriter.replaceOpWithNewOp<triton::StoreOp>(op,            // 要替换的操作
-                                                                 tensorPtr,     // 指针
-                                                                 valueToStore,  // 要存储的值
-                                                                 nullptr,       // 掩码
-                                                                 boundaryCheck, // 边界检查
-                                                                 cacheModifier, // 缓存修饰符
-                                                                 evictionPolicy // 驱逐策略
+    auto newStore = rewriter.create<triton::StoreOp>(loc,
+        tensorPtr,
+        valueToStore,
+        Value(),   // mask
+        boundaryCheck,
+        cacheModifier,
+        evictionPolicy
     );
 
-    // 保留原始操作的其他属性
-    newStore->setAttrs(filterSegmentSizes(op->getAttrs()));
+    rewriter.eraseOp(op);
     return success();
 }
 

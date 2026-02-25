@@ -25,6 +25,7 @@ __all__ = [
     "builtin",
     "CORE",
     "copy_from_ub_to_l1",
+    "copy",
     "debug_barrier",
     "fixpipe",
     "FixpipeDMAMode",
@@ -164,7 +165,22 @@ def copy_from_ub_to_l1(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, b
     :param dst: The destination buffer located in L1 memory.
     :type dst: tl.tensor | bl.buffer
     """
+    from warnings import warn
+    warn("copy_from_ub_to_l1 is deprecated, please use copy instead.")
     return semantic.copy_from_ub_to_l1(src, dst, _builder)
+
+
+@builtin
+def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _builder: None) -> None:
+    """
+    Copies data from the Unified Buffer (UB) to the Unified Buffer (UB) or L1 Buffer.
+
+    :param src: The source data located in the Unified Buffer.
+    :type src: tl.tensor | bl.buffer
+    :param dst: The destination buffer located Unified Buffer (UB) or L1 memory.
+    :type dst: tl.tensor | bl.buffer
+    """
+    return semantic.copy(src, dst, _builder)
 
 
 def create_sync_block(sender, receiver, event_id, is_set: bool,
@@ -267,6 +283,35 @@ def fixpipe(
         raise TypeError("dst is not of buffer type")
     if dst.space != ascend_address_space.UB:
         raise TypeError("dst must be located in the UB memory region")
+
+    if len(dst.shape) == 2 and (
+        dst.type.element_ty == tl.float32 or dst.type.element_ty == tl.int32
+    ):
+        N = dst.shape[1]
+        if N % 8 != 0:
+            raise ValueError("32b Fixpipe last dim must be aligned to 8")
+        if (dma_mode != FixpipeDMAMode.NZ2ND) and (N % 16 != 0):
+            raise ValueError("32b non-NZ2ND Fixpipe last dim must be aligned to 16")
+        if (dual_dst_mode == FixpipeDualDstMode.COLUMN_SPLIT) and (N % 32 != 0):
+            raise ValueError(
+                "32b Column split dual Fixpipe last dim must be aligned to 32"
+            )
+        M = dst.shape[0]
+        if (dma_mode == FixpipeDMAMode.NZ2DN) and (M % 8 != 0):
+            raise ValueError("32b NZ2DN Fixpipe first dim must be aligned to 8")
+    dst16bits = (
+        dst.type.element_ty == tl.float16
+        or dst.type.element_ty == tl.int16
+        or dst.type.element_ty == tl.bfloat16
+    )
+    if len(dst.shape) == 2 and dst16bits:
+        N = dst.shape[1]
+        if N % 16 != 0:
+            raise ValueError("16b Fixpipe last dim must be aligned to 16")
+        M = dst.shape[0]
+        if (dma_mode == FixpipeDMAMode.NZ2DN) and (M % 16 != 0):
+            raise ValueError("16b NZ2DN Fixpipe first dim must be aligned to 16")
+
     return semantic.fixpipe(
         src, dst, dma_mode, dual_dst_mode, FixpipePreQuantMode.NO_QUANT, FixpipePreReluMode.NO_RELU, _builder
     )

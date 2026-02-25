@@ -318,7 +318,11 @@ class CodeGenerator(ast.NodeVisitor):
                  module=None, is_kernel=False, function_types: Optional[Dict] = None, noinline=False,
                  file_name: Optional[str] = None, begin_line=0):
         self.context = context
-        self.builder = ir.builder(context)
+        # Only NPUOptions has force_simt_only attribute, so check for NPU backend
+        if hasattr(options, "force_simt_only") and options.force_simt_only:
+            self.builder = ir.builder(context, compile_mode="simt")
+        else:
+            self.builder = ir.builder(context, compile_mode="simd")
         self.file_name = file_name
         # node.lineno starts from 1, so we need to subtract 1
         self.begin_line = begin_line - 1

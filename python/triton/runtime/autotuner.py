@@ -132,11 +132,7 @@ class Autotuner(KernelInterface):
             self.do_bench = do_bench
 
     def _bench(self, *args, config, **meta):
-        from ..compiler.errors import CompileTimeAssertionFailure
-
-        verbose = os.environ.get("TRITON_PRINT_AUTOTUNING", None) == "1"
-        if verbose:
-            print(f"Autotuning kernel {self.base_fn.__name__} with config {config}")
+        from ..compiler.errors import CompileTimeAssertionFailure, MLIRCompilationError
 
         # check for conflicts, i.e. meta-parameters both provided
         # as kwargs and by the autotuner
@@ -168,9 +164,7 @@ class Autotuner(KernelInterface):
 
         try:
             return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
-        except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
-            if verbose:
-                print(f"Autotuning failed with {e}")
+        except (OutOfResources, CompileTimeAssertionFailure, MLIRCompilationError):
             return [float("inf"), float("inf"), float("inf")]
 
     def run(self, *args, **kwargs):

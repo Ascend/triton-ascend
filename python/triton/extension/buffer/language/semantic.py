@@ -37,6 +37,7 @@ def alloc(
     etype: tl.dtype,
     shape: List[tl.constexpr],
     address_space: bl.address_space,
+    is_mem_unique,
     builder: ir.builder
 ) -> bl.buffer:
     shape = tl._unwrap_shape(shape)
@@ -50,6 +51,12 @@ def alloc(
     )
     memref_ty = builder.get_buffer_ty(shape, element_ty_ir, addr_space_attr)
     handle = builder.alloc(memref_ty)
+    if is_mem_unique:
+        builder.create_annotation_mark(handle, "mem_unique", builder.get_unit_attr())
+    builder.create_annotation_mark(
+        handle, "effects", builder.get_str_array_attr(["write", "read"])
+    )
+
     buffer_ty = bl.buffer_type(element_ty=etype, shape=shape, space=address_space)
     return bl.buffer(handle, buffer_ty)
 
@@ -57,10 +64,16 @@ def alloc(
 def to_buffer(
     tensor: tl.tensor,
     address_space: bl.address_space,
+    bind_buffer: bl.buffer,
     builder: ir.builder,
 ) -> bl.buffer:
     if not isinstance(tensor.shape, (tuple, list)) or not tensor.shape:
         raise TypeError("scalar type cannot be converted to buffer")
+    if isinstance(bind_buffer, bl.buffer):
+        builder.create_bind_buffer(tensor.handle, bind_buffer.handle)
+        return bind_buffer
+    if not (bind_buffer is None):
+        raise ValueError("bind_buffer must be a buffer or None")
     address_space = tl._constexpr_to_value(address_space)
     addr_space_attr = (
         address_space.to_ir(builder) if address_space else builder.get_null_attr()

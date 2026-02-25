@@ -39,6 +39,9 @@ class my_custom_op:
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMT
 
+    def __init__(self, x, ptr1, ptr2, offset: tl.int64, other, out=None):
+        pass
+
 
 @triton.jit
 def my_kernel(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
@@ -46,6 +49,8 @@ def my_kernel(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
     x = tl.load(x_ptr + i, mask=i < n)
     y = tl.load(y_ptr + i, mask=i < n)
     result = al.custom("my_custom_op", x, x_ptr, y_ptr + i, (1, 2, 3), [4.1, 5.2], out=y)
+    a = 123
+    result = al.custom("my_custom_op", x, x_ptr, y_ptr, (a, n), (1.2, 3.4), out=result)
     tl.store(out_ptr + i, result, mask=i < n)
 
 
@@ -68,6 +73,9 @@ def test_custom_op():
             assert "hivm.pipe = #hivm.pipe" in line
             assert "hivm.tcore_type = #hivm.tcore_type" in line
             assert "hivm.vf_mode = #hivm.vf_mode" in line
+            # All offset converted to int64.
+            assert 'i64, ' in line
+            assert 'i32, ' not in line
 
 
 # ============== Main for manual testing ==============
