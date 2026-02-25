@@ -79,7 +79,7 @@ class NPUUtils(object):
     def _write_npu_utils_and_compile(self, tmp_src_path, src):
         with open(tmp_src_path, "w") as f:
             f.write(src)
-        return _build_npu_ext("npu_utils", None, tmp_src_path)
+        return _build_npu_ext("npu_utils", None, tmp_src_path, kernel_launcher=None)
     
     
     def load_binary(self, name, kernel, shared, device):
@@ -281,9 +281,6 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
         return cache_path
 
     kernel_launcher_type = "torch"
-    enable_taskqueue = os.getenv("TRITON_ENABLE_TASKQUEUE", 'true').lower() in ('true', '1')
-    if not enable_taskqueue:
-        kernel_launcher_type = None
         
     def _write_launcher_and_compile(wrapper_src, name, launcher_path, header_path, kernel_launcher_type, enable_precompile):
         with open(launcher_path, "w") as f:
