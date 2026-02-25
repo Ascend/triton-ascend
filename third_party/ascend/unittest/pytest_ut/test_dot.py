@@ -59,6 +59,59 @@ def triton_dot_2_None(output_ptr, x_ptr, y_ptr, B: tl.constexpr, C: tl.constexpr
     tl.store(output_ptr + oidx, ret, mask=out_mask)
 
 
+@triton.jit
+def triton_dot_2_allow_tf32(output_ptr, x_ptr, y_ptr, B: tl.constexpr, C: tl.constexpr, D: tl.constexpr):
+    bidx = tl.arange(0, B)
+    cidx = tl.arange(0, C)
+    didx = tl.arange(0, D)
+
+    x_mask = (bidx[:, None] < B) & (cidx[None, :] < C)
+    y_mask = (cidx[:, None] < C) & (didx[None, :] < D)
+    out_mask = (bidx[:, None] < B) & (didx[None, :] < D)
+    Xidx = bidx[:, None] * C + cidx[None, :]
+    Yidx = cidx[:, None] * D + didx[None, :]
+    X = tl.load(x_ptr + Xidx, mask=x_mask, other=0.0)
+    Y = tl.load(y_ptr + Yidx, mask=y_mask, other=0.0)
+    ret = tl.dot(X, Y, allow_tf32=True)
+    oidx = bidx[:, None] * D + didx[None, :]
+    tl.store(output_ptr + oidx, ret, mask=out_mask)
+
+
+@triton.jit
+def triton_dot_2_input_tf32(output_ptr, x_ptr, y_ptr, B: tl.constexpr, C: tl.constexpr, D: tl.constexpr):
+    bidx = tl.arange(0, B)
+    cidx = tl.arange(0, C)
+    didx = tl.arange(0, D)
+
+    x_mask = (bidx[:, None] < B) & (cidx[None, :] < C)
+    y_mask = (cidx[:, None] < C) & (didx[None, :] < D)
+    out_mask = (bidx[:, None] < B) & (didx[None, :] < D)
+    Xidx = bidx[:, None] * C + cidx[None, :]
+    Yidx = cidx[:, None] * D + didx[None, :]
+    X = tl.load(x_ptr + Xidx, mask=x_mask, other=0.0)
+    Y = tl.load(y_ptr + Yidx, mask=y_mask, other=0.0)
+    ret = tl.dot(X, Y, input_precision="tf32")
+    oidx = bidx[:, None] * D + didx[None, :]
+    tl.store(output_ptr + oidx, ret, mask=out_mask)
+
+
+@triton.jit
+def triton_dot_2_ignore_tf32(output_ptr, x_ptr, y_ptr, B: tl.constexpr, C: tl.constexpr, D: tl.constexpr):
+    bidx = tl.arange(0, B)
+    cidx = tl.arange(0, C)
+    didx = tl.arange(0, D)
+
+    x_mask = (bidx[:, None] < B) & (cidx[None, :] < C)
+    y_mask = (cidx[:, None] < C) & (didx[None, :] < D)
+    out_mask = (bidx[:, None] < B) & (didx[None, :] < D)
+    Xidx = bidx[:, None] * C + cidx[None, :]
+    Yidx = cidx[:, None] * D + didx[None, :]
+    X = tl.load(x_ptr + Xidx, mask=x_mask, other=0.0)
+    Y = tl.load(y_ptr + Yidx, mask=y_mask, other=0.0)
+    ret = tl.dot(X, Y, input_precision="hf32")
+    oidx = bidx[:, None] * D + didx[None, :]
+    tl.store(output_ptr + oidx, ret, mask=out_mask)
+
 testlist1 = [
     (10, 13, 35, 39),
 ]
@@ -80,4 +133,46 @@ def test_dot_2(restore_npu_hf32_setting, sigtype, B, C, D):
     z_ref = torch_dot_None(x, y).to(torch.float32)
     z = torch.zeros((B, D), dtype=torch.float32).npu()
     triton_dot_2_None[1, 1, 1](z, x, y, B, C, D)
+    test_common.validate_cmp(sigtype, z, z_ref)
+
+
+@pytest.mark.parametrize("B, C, D", testlist2)
+@pytest.mark.parametrize("sigtype", typelist)
+def test_dot_2_allow_tf32(restore_npu_hf32_setting, sigtype, B, C, D):
+    x = test_common.generate_tensor((B, C), sigtype).npu()
+    y = test_common.generate_tensor((C, D), sigtype).npu()
+    z_ref = torch_dot_None(x, y).to(torch.float32)
+    z = torch.zeros((B, D), dtype=torch.float32).npu()
+    triton_dot_2_allow_tf32[1, 1, 1](z, x, y, B, C, D)
+    test_common.validate_cmp(sigtype, z, z_ref)
+
+
+@pytest.mark.parametrize("B, C, D", testlist2)
+@pytest.mark.parametrize("sigtype", typelist)
+def test_dot_2_input_tf32(restore_npu_hf32_setting, sigtype, B, C, D):
+    x = test_common.generate_tensor((B, C), sigtype).npu()
+    y = test_common.generate_tensor((C, D), sigtype).npu()
+    z_ref = torch_dot_None(x, y).to(torch.float32)
+    z = torch.zeros((B, D), dtype=torch.float32).npu()
+    triton_dot_2_input_tf32[1, 1, 1](z, x, y, B, C, D)
+    test_common.validate_cmp(sigtype, z, z_ref)
+
+
+@pytest.mark.parametrize("B, C, D", testlist2)
+@pytest.mark.parametrize("sigtype", typelist)
+def test_dot_2_ignore_tf32(sigtype, B, C, D):
+    input_type = "bfloat16"
+    x = test_common.generate_tensor((B, C), input_type).npu()
+    y = test_common.generate_tensor((C, D), input_type).npu()
+    z = torch.zeros((B, D), dtype=torch.float32).npu()
+
+    original_allow_hf32 = torch_npu.npu.matmul.allow_hf32
+    try:
+        torch_npu.npu.matmul.allow_hf32 = False
+        z_ref = torch_dot_None(x.to(torch.float32), y.to(torch.float32)).to(torch.float32)
+
+    finally:
+        torch_npu.npu.matmul.allow_hf32 = original_allow_hf32
+
+    triton_dot_2_ignore_tf32[1, 1, 1](z, x, y, B, C, D)
     test_common.validate_cmp(sigtype, z, z_ref)

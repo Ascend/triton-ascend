@@ -1541,13 +1541,17 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
       specified (i.e. at least one must be :code:`None`).
     """
     assert input_precision is None or allow_tf32 is None, "Only one of input_precision and allow_tf32 can be specified"
-    assert not allow_tf32, "allow_tf32 is deprecated, please use input_precision='hf32' on Ascend instead."
     if input_precision is None:
         supports_tf32 = _builder and "tf32" in _builder.options.allowed_dot_input_precisions
         default_precision = "tf32" if (supports_tf32 and (allow_tf32 or allow_tf32 is None)) else "ieee"
+        # when setting allow_tf32, use input_precision='hf32' on Ascend instead.
+        if allow_tf32:
+            default_precision = "hf32"
         input_precision = os.getenv("TRITON_F32_DEFAULT", default_precision)
     else:
-        assert input_precision not in ["tf32", "tf32x3"], "input_precision == tf32 or tf32x3 is invalid, please use input_precision='hf32' on Ascend instead."
+        if input_precision == "tf32":
+            input_precision = "hf32"
+
     input_precision = _constexpr_to_value(input_precision)
     out_dtype = _constexpr_to_value(out_dtype)
     max_num_imprecise_acc = _constexpr_to_value(max_num_imprecise_acc)

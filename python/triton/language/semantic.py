@@ -1605,7 +1605,8 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
 
     if (input_precision == getattr(ir.INPUT_PRECISION, "HF32")):
         if (not lhs.dtype.is_fp32() or not rhs.dtype.is_fp32() or not ret_scalar_ty.is_fp32()):
-            raise ValueError("input_precision = 'hf32' must be used with f32 * f32 = f32 on Ascend")
+            # when input and result is not fp32, ignore input_precision (default is ieee)
+            input_precision = _str_to_dot_input_precision(builder.options.default_dot_input_precision, builder)
 
     if max_num_imprecise_acc is not None:
         print("max_num_imprecise_acc in tl.dot is not supported on Ascend yet. Thus it is ignored.")
