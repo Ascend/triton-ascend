@@ -103,6 +103,7 @@ class AutoTilingTuner(Autotuner):
         else:
             self.user_configs = configs
         self.is_simt_mode = False
+        self.simt_stack_limit = 8192
         self.user_specified_warps = None
         self.print_autotuning = os.getenv("TRITON_PRINT_AUTOTUNING", None) == "1"
         # Compile kernels in parallel by default for triton.runtime.JITFunction,
@@ -305,6 +306,8 @@ class AutoTilingTuner(Autotuner):
 
     def run(self, *args, **kwargs):
         key = self.generate_key_and_configs(*args, **kwargs)
+        if self.is_simt_mode and kwargs.get('simt_stack_limit', None) is None:
+            kwargs['simt_stack_limit'] = self.simt_stack_limit
         used_cached_result = True
         if key not in self.cache:
             # prune configs
@@ -359,22 +362,26 @@ class AutoTilingTuner(Autotuner):
 
             max_workers = min(psutil.cpu_count(logical=False) // 2, len(kernels_call))
             future_kernels = []
-            with (
-                ThreadPoolExecutor(max_workers=max_workers) as executor,
-                triton.AsyncCompileMode(executor),
-            ):
-                for config, fn in kernels_call.items():
-                    future_kernels.append((config, fn(warmup=True)))
+            try:
+                with (
+                    ThreadPoolExecutor(max_workers=max_workers) as executor,
+                    triton.AsyncCompileMode(executor),
+                ):
+                    for config, fn in kernels_call.items():
+                        future_kernels.append((config, fn(warmup=True)))
 
-                for config, fut in future_kernels:
-                    try:
-                        if hasattr(fut, "result"):
-                            fut = fut.result()
-                        run_fns[config] = functools.partial(kernels_call[config], warmup=False)
-                    except (CompileTimeAssertionFailure, MLIRCompilationError) as e:
-                        import traceback
-                        exc_stack = traceback.format_exc()
-                        exc = e
+                    for config, fut in future_kernels:
+                        try:
+                            if hasattr(fut, "result"):
+                                fut = fut.result()
+                            run_fns[config] = functools.partial(kernels_call[config], warmup=False)
+                        except (CompileTimeAssertionFailure, MLIRCompilationError) as e:
+                            import traceback
+                            exc_stack = traceback.format_exc()
+                            exc = e
+            except Exception as e:
+                # ignore exception from __exit__() of AsyncCompileMode
+                triton.runtime._async_compile.active_mode.set(None)
         else:
             for config, fn in kernels_call.items():
                 try:
