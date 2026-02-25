@@ -260,56 +260,99 @@ tensor::ExtractSliceOp makeExtractSliceOp(Value src,
 
 std::optional<Operation *> getFullShapeOp(Value val,
                                           ConversionPatternRewriter &rewriter) {
-  assert(isa<BaseMemRefType>(val.getType()));
+  while (true) {
+    if (isa<BlockArgument>(val)) {
+      auto blockArg = dyn_cast<BlockArgument>(val);
+      Operation *parentOp = blockArg.getOwner()->getParentOp();
 
-  if (isa<BlockArgument>(val)) {
-    auto blockArg = dyn_cast<BlockArgument>(val);
-    auto blockOp = blockArg.getOwner()->getParentOp();
-    if (isa<scf::ForOp>(blockOp)) {
-      auto forOp = dyn_cast<scf::ForOp>(blockOp);
-      auto operand = forOp.getTiedLoopInit(blockArg)->get();
-      return getFullShapeOp(operand, rewriter);
-    } else {
+      // When BlockArgument is from the scf.for loop, trace its initial value
+      if (auto forOp = dyn_cast_or_null<scf::ForOp>(parentOp)) {
+        auto init = forOp.getTiedLoopInit(blockArg);
+        if (!init)
+          return std::nullopt;
+        val = init->get();
+        continue;
+      }
+
+      // When BlockArgument is not scf::ForOp but FuncOp, it means that shape information can no longer be tracked.
+      // In this case, std::nullopt is returned, and getBoundarySizes() is called to return the current shape as the boundary.
+      if (isa<func::FuncOp>(parentOp)) {
+        return std::nullopt;
+      }
+
       emitError(val.getLoc())
           << "getFullShapeOp() only support ReinterpretCastOp "
              "and scf.for's block argument, but got : "
           << val << "\n";
+      return std::nullopt;
     }
-    return std::nullopt;
-  }
 
-  if (!isa<memref::ReinterpretCastOp>(val.getDefiningOp())) {
+    Operation *defOp = val.getDefiningOp();
+    if (!defOp)
+      return std::nullopt;
+
+    if (auto castOp = dyn_cast<UnrealizedConversionCastOp>(defOp)) {
+      if (castOp.getInputs().size() == 1) {
+        val = castOp.getInputs()[0];
+        continue;
+      }
+      return std::nullopt;
+    }
+
+    if (!isa<BaseMemRefType>(val.getType()))
+      return std::nullopt;
+
+    if (auto reCastOp = dyn_cast<memref::ReinterpretCastOp>(defOp)) {
+    if (reCastOp->hasAttr("tensor_ptr_full_shape"))
+      return reCastOp;
+    val = reCastOp.getSource();
+    continue;
+    }
+
     emitError(val.getLoc())
         << "getFullShapeOp() only support ReinterpretCastOp "
            "and scf.for's block argument, but got : "
         << val << "\n";
     return std::nullopt;
   }
-
-  auto reCastOp = val.getDefiningOp<memref::ReinterpretCastOp>();
-  if (reCastOp->hasAttr("tensor_ptr_full_shape"))
-    return reCastOp;
-
-  return getFullShapeOp(reCastOp.getSource(), rewriter);
 }
 
 SmallVector<OpFoldResult>
 getBoundarySizes(llvm::ArrayRef<int32_t> boundaryCheck, Value ptr,
                  const Location &loc, ConversionPatternRewriter &rewriter) {
-  if (isa<triton::PointerType>(ptr.getType()))
+  if (isa<triton::PointerType>(ptr.getType())) {
     ptr = rewriter.getRemappedValue(ptr);
+  }
 
   auto shapedType = dyn_cast_if_present<ShapedType>(ptr.getType());
-  assert(shapedType && shapedType.hasStaticShape());
+  if (!shapedType) {
+    llvm::dbgs() << "ptr is not a ShapedType.\n";
+    return {};
+  }
+
+  if (!shapedType.hasStaticShape()) {
+    llvm::dbgs() << "shapedType does not have a static shape\n";
+    return {};
+  }
 
   auto fullShapeOp = getFullShapeOp(ptr, rewriter);
+  if (!fullShapeOp.has_value()) {
+    // If fullShapeOp has no value, the current shape is returned as the boundary.
+    SmallVector<OpFoldResult> boundarySize =
+        getAsIndexOpFoldResult(rewriter.getContext(), shapedType.getShape());
 
-  assert(fullShapeOp.has_value());
+    return boundarySize;
+  }
+
   SmallVector<OpFoldResult> boundarySize =
       getAsIndexOpFoldResult(rewriter.getContext(), shapedType.getShape());
 
   auto fullShapeReCast =
       dyn_cast<memref::ReinterpretCastOp>(fullShapeOp.value());
+  if (!fullShapeReCast) {
+    return getAsIndexOpFoldResult(rewriter.getContext(), shapedType.getShape());
+  }
+
   OpFoldResult curPtrOffset;
   if (auto curReCast = ptr.getDefiningOp<memref::ReinterpretCastOp>()) {
     curPtrOffset = curReCast.getConstifiedMixedOffset();
