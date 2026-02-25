@@ -34,6 +34,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <utility>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -42,7 +43,9 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/ValueRange.h"
 
@@ -824,10 +827,80 @@ BroadcastConverter::matchAndRewrite(triton::BroadcastOp op, OpAdaptor adaptor,
 
 // Reduce Converter
 bool ReduceConverter::isReductionOpSupported(Operation *redOp) const {
-  return isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MaximumFOp,
-          arith::MaxNumFOp, arith::MinimumFOp, arith::MinNumFOp,
+  return isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MulIOp,
+          arith::MaximumFOp, arith::MaxNumFOp, arith::MinimumFOp, arith::MinNumFOp,
           arith::MinSIOp, arith::MinUIOp, arith::MaxSIOp, arith::MaxUIOp,
           arith::AndIOp, arith::OrIOp, arith::XOrIOp>(redOp);
+}
+
+bool ReduceConverter::isMultiReductionOpSupported(Operation *redOp)
+{
+  return isa<arith::SubFOp, arith::SubIOp, arith::DivFOp, arith::DivSIOp, arith::DivUIOp,
+          arith::RemFOp, arith::RemSIOp, arith::RemUIOp>(redOp);
+}
+
+Value ReduceConverter::cloneReduceOps(OpBuilder &builder, Value in, Value out,
+ 	                                    Value opIns, Value opOuts, triton::ReduceOp op) const
+{
+  auto &reg = op->getRegion(0);
+  assert(reg.getBlocks().size() == 1);
+  auto &body = reg.getBlocks().front();
+  auto numArguments = 2;
+  assert(body.getNumArguments() == numArguments);
+  
+  Value ttIn = body.getArgument(0);
+  Value ttOut = body.getArgument(1);
+
+  IRMapping mapping;
+  mapping.map(ttIn, in);
+  mapping.map(ttOut, out);
+
+  for (auto &op : body.without_terminator()) {
+    builder.clone(op, mapping);
+  }
+  auto yield = cast<triton::ReduceReturnOp>(body.getTerminator());
+  return mapping.lookup(yield->getOperand(0));
+}
+
+void ReduceConverter::checkIsNotCallOp(
+    const llvm::SmallVector<Operation*>& reductionOps) const
+{
+  llvm::for_each(reductionOps, [](Operation* op) {
+    assert(!isa<triton::CallOp>(op) &&
+      "tt.call ops expected to be inlined in tt.reduce body in ttir building stage");
+  });
+}
+
+bool ReduceConverter::isSCFOpReduce(
+    const llvm::SmallVector<Operation*>& reductionOps) const
+{
+  return (reductionOps.size() == 1 && reductionOps.front()->getDialect()->getNamespace() == scf::SCFDialect::getDialectNamespace());
+}
+
+bool ReduceConverter::isMultiOpReduce(
+    const llvm::SmallVector<Operation*>& reductionOps) const
+{
+  this->checkIsNotCallOp(reductionOps);
+
+  return (reductionOps.size() > 1) ||
+  (reductionOps.size() == 1 && this->isMultiReductionOpSupported(reductionOps.front())) ||
+  this->isSCFOpReduce(reductionOps);
+}
+
+Value ReduceConverter::computeReduceResultWithCompileFlag(OpBuilder &opBuilder, Location loc, Value lhs, Value rhs,
+    Value source, Value initTensor, triton::ReduceOp op, bool compileOn91095Flag) const
+{
+  auto reductionOps = this->getReductionOps(op);
+  assert(reductionOps.size() == 1);
+  if (compileOn91095Flag) {
+    return this->cloneReduceOps(opBuilder,
+                                lhs, rhs,
+                                source, initTensor, op);
+  } else {
+    auto rop = reductionOps.front();
+    return this->getReductionElement(lhs, rhs, loc, rop,
+                                     opBuilder, false);
+  }
 }
 
 LogicalResult ReduceConverter::convertToTargetOp(
@@ -838,23 +911,30 @@ LogicalResult ReduceConverter::convertToTargetOp(
   auto elemType = sourceType.getElementType();
   auto resType = op.getResult().front().getType();
   auto loc = op.getLoc();
-  auto reductionOps = this->getRedOps(op);
-
+  auto reductionOps = this->getReductionOps(op);
+  auto multiOpReduce = this->isMultiOpReduce(reductionOps);
   // Reduction of arbitrary operations isn't supported because using the first
   // element across the reduction dimension requires us to iterate over a
   // subview that skips over each first element.
-  if (!this->isReductionOpSupported(reductionOps.front())) {
+  if (!multiOpReduce && !this->isReductionOpSupported(reductionOps.front())) {
+     if (compileOn91095Flag) {
+ 	  	       llvm_unreachable("All reduction cases expected to be covered");
+     }
     return rewriter.notifyMatchFailure(
-        op, "Only support lowering reduction with single op and limited types of reducetion");
+        op, "Only support lowering reduction with single op and limited types of reduction");
   }
 
   auto rop = reductionOps.front();
+  auto ropLoc = rop->getLoc();
   auto axis = op.getAxis();
   auto isVectorReduce = sourceType.getRank() == 1;
 
   auto constantType = elemType;
 
-  auto accBaseConstOp = this->getRedBaseConstOp(rewriter, rop, constantType);
+  auto accBaseConstOp = multiOpReduce ?
+ 	     this->getMultiOpReductionBaseConstOp(rewriter, op, ropLoc,  constantType) :
+ 	     this->getReductionBaseConstOp(rewriter, rop, constantType);
+
   Value initTensor;
 
   if (isVectorReduce) {
@@ -873,15 +953,16 @@ LogicalResult ReduceConverter::convertToTargetOp(
   }
 
   Value finalResult = rewriter.create<linalg::ReduceOp>(
-              loc, ValueRange{source}, ValueRange{initTensor},
-              SmallVector<int64_t>{axis},
-              [&](OpBuilder &opBuilder, Location loc, ValueRange inputs) {
-                assert(inputs.size() == 2);
-                Value result = this->getRedElement(inputs[0], inputs[1], loc, rop,
-                                             opBuilder, false);
-                opBuilder.create<linalg::YieldOp>(loc, result);
-              })
-          .getResult(0);
+    loc, ValueRange{source}, ValueRange{initTensor},
+    SmallVector<int64_t>{axis},
+    [&](OpBuilder &opBuilder, Location loc, ValueRange inputs) {
+      assert(inputs.size() == 2);
+      Value result = this->computeReduceResultWithCompileFlag(opBuilder, loc,
+ 	                                                            inputs[0], inputs[1],
+ 	                                                            source, initTensor, op, compileOn91095Flag);
+      opBuilder.create<linalg::YieldOp>(loc, result);
+    })
+  .getResult(0);
 
   if (sourceType.getRank() == 1) {
     finalResult = rewriter.create<tensor::ExtractOp>(loc, constantType, finalResult);
@@ -949,14 +1030,15 @@ LogicalResult ReduceConverter::convertToTargetOpExtended(
   return success();
 }
 
-bool ScanConverter::isReductionOpSupported(Operation *redOp) const {
-  return isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MulIOp>(redOp);
+bool ScanConverter::isReductionOpSupported(Operation *reductionOp) const
+{
+  return isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MulIOp>(reductionOp);
 }
 
 LogicalResult ScanConverter::convertToTargetOp(
     triton::ScanOp op, typename triton::ScanOp::Adaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
-  auto reductionOps = this->getRedOps(op);
+  auto reductionOps = this->getReductionOps(op);
   if (reductionOps.empty()) {
     return rewriter.notifyMatchFailure(op, "No reduction op found in scan body");
   }
