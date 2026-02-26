@@ -110,7 +110,7 @@ void triton::UseAnalysis::visitOperation(Operation *op,
       })
       // Consider triton::AtomicRMWOp as store operation
       .Case<triton::AtomicRMWOp>([&](auto atomicOp) {
-        propagateUse(operands[0], UseType::MetaUse);
+        propagateUse(operands[0], UseType::MixUse);
         propagateUse(operands[1], UseType::DataUse);
         auto value = atomicOp.getVal();
         auto mask = atomicOp.getMask();
