@@ -23,7 +23,7 @@
 #ifndef TRITON_ADAPTER_UNSTRUCTURECONVERSION_H
 #define TRITON_ADAPTER_UNSTRUCTURECONVERSION_H
 
-#include "TritonToUnstructure/OffsetAnalysis.h"
+#include "ascend/include/TritonToUnstructure/OffsetAnalysis.h"
 #include "mlir/Pass/Pass.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
