@@ -2514,45 +2514,52 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
   SmallVector<OpFoldResult> sizes, strides; // offsets are 0
   
   // Calculate strides from right to left (row-major layout)
-  SmallVector<Value> stridesList;
   Value currentStride = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+  strides.insert(strides.begin(), rewriter.getIndexAttr(1));
   
-  for (int i = fullSrcShape.size() - 1; i >= 0; --i) {
-    stridesList.insert(stridesList.begin(), currentStride);
-    
+  for (int i = fullSrcShape.size() - 1; i > 0; --i) {
     // Update stride for next dimension: stride *= size[i]
-    if (i > 0) {  // Don't need to calculate for the first dimension
-      if (fullSrcShape[i] != ShapedType::kDynamic) {
-        // Static dimension: multiply by constant
-        currentStride = rewriter.create<arith::MulIOp>(
-            loc, currentStride,
-            rewriter.create<arith::ConstantIndexOp>(loc, fullSrcShape[i]));
-      } else {
-        // Dynamic dimension: multiply by runtime value
-        Value dimSize = srcShapeVals[i];
-        if (!dimSize.getType().isIndex()) {
-          dimSize = rewriter.create<arith::IndexCastOp>(
-              loc, rewriter.getIndexType(), dimSize);
-        }
-        currentStride = rewriter.create<arith::MulIOp>(loc, currentStride, dimSize);
+    if (fullSrcShape[i] != ShapedType::kDynamic) {
+      // Static dimension: record specific integer values
+      currentStride = rewriter.createOrFold<arith::MulIOp>(
+          loc, currentStride,
+          rewriter.create<arith::ConstantIndexOp>(loc, fullSrcShape[i]));
+      if (auto constOp = currentStride.getDefiningOp<arith::ConstantIndexOp>()) {
+        strides.insert(strides.begin(), rewriter.getIndexAttr(constOp.value()));
+        continue;
       }
+        
+      strides.insert(strides.begin(), currentStride);
+      continue;
     }
+    // Dynamic dimension: multiply by runtime value
+    Value dimSize = srcShapeVals[i];
+    if (!dimSize.getType().isIndex()) {
+      dimSize = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), dimSize);
+    }
+    currentStride = rewriter.create<arith::MulIOp>(loc, currentStride, dimSize);
+
+    strides.insert(strides.begin(), currentStride);
   }
   
-  // Build offsets, sizes, and strides for ReinterpretCastOp
-  for (size_t i = 0; i < srcShapeVals.size(); ++i) {
-    // Convert Value to OpFoldResult for sizes
-    Value sizeVal = srcShapeVals[i];
-    if (!sizeVal.getType().isIndex()) {
-      sizeVal = rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getIndexType(), sizeVal);
+  for (auto shapeVal : srcShapeVals) {
+    OpFoldResult shapeSize;
+    if (auto constOp = shapeVal.getDefiningOp<arith::ConstantIndexOp>()) {
+      // Static dimension: 
+      // Use attributes to enable static_sizes to record specific integer values
+      shapeSize = rewriter.getIndexAttr(constOp.value());
+    } else {
+      // Dynamic dimension: converted to the index type and used as a value
+      Value idxVal = shapeVal;
+      if (!idxVal.getType().isIndex())
+        idxVal = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), idxVal);
+      shapeSize = idxVal;
     }
-    sizes.push_back(sizeVal);
-    
-    // Convert Value to OpFoldResult for strides
-    strides.push_back(stridesList[i]);
+    sizes.push_back(shapeSize);
   }
-
+  
+  // offset is always 0
   OpFoldResult offset = rewriter.getIndexAttr(0);
   
   // Use the correct builder method for ReinterpretCastOp
