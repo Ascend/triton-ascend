@@ -247,6 +247,32 @@ def to_tensor(
     return semantic.to_tensor(memref, writable, _builder, target_shape=target_shape)
 
 
+def check_subview(src, offsets, sizes, strides):
+    """Check data of subview methods which the data length and the offset value must be 32-byte aligned."""
+    bytes_per_block = 32
+    bits_per_byte = 8
+    base_byte = bytes_per_block // (src.dtype.primitive_bitwidth // bits_per_byte)
+    result_strides = []
+    result_offset = 0
+    outmost_vetex_offset = 0
+    length = len(strides)
+    src_strides = [1] * length
+    for i in range(length - 2, -1, -1):
+        src_strides[i] = src_strides[i + 1] * src.shape[i + 1]
+    for i in range(0, length):
+        if isinstance(offsets[i], tl.tensor):
+            return
+        result_strides.append(src_strides[i] * strides[i])
+        result_offset = result_offset + offsets[i] * src_strides[i]
+        outmost_vetex_offset = outmost_vetex_offset + (sizes[i] - 1) * result_strides[i]
+    outmost_vetex_offset = result_offset + outmost_vetex_offset
+    stride_1 = all(s == 1 for s in strides)
+    is_unaligned = result_offset % base_byte != 0 or (result_offset % base_byte == 0 and not stride_1
+                                                      and outmost_vetex_offset % base_byte != 0)
+    if is_unaligned:
+        raise TypeError(f"Sizes and the offset value must be 32-bytes aligned.")
+
+
 @builtin
 def subview(
     src: buffer,
@@ -290,6 +316,7 @@ def subview(
         else:
             raise TypeError(f"strides[{i}] must be constexpr, got {type(stride).__name__}")
 
+    check_offsets = []
     new_offsets = []
     for offset in offsets:
         if isinstance(offset, tl.constexpr):
@@ -297,13 +324,17 @@ def subview(
             if offset < 0:
                 raise ValueError(f"Offset value must be non-negative, got {offset}")
             new_offsets.append(real_semantic.to_tensor(offset, _builder))
+            check_offsets.append(offset)
         elif isinstance(offset, int):
             # Convert regular integers to constexpr and then to tensor
             if offset < 0:
                 raise ValueError(f"Offset value must be non-negative, got {offset}")
             new_offsets.append(real_semantic.to_tensor(tl.constexpr(offset), _builder))
+            check_offsets.append(tl.constexpr(offset))
         else:
             # Assume it's already a tensor
             new_offsets.append(offset)
+            check_offsets.append(offset)
 
+    check_subview(src, check_offsets, new_sizes, new_strides)
     return semantic.subview(src, new_offsets, new_sizes, new_strides, _builder)
