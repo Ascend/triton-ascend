@@ -1,9 +1,12 @@
 #include "TargetInfo.h"
 #include "TritonNVIDIAGPUToLLVM/PTXAsmFormat.h"
+#include "mlir/Analysis/TopologicalSortUtils.h"
+#include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
@@ -99,8 +102,92 @@ static void createBarrier(TritonLLVMIRRewriter &b, unsigned barIdx,
 }
 
 //===----------------------------------------------------------------------===//
+// elideTrivialCaptures
+//===----------------------------------------------------------------------===//
+
+static LogicalResult findTrivialSubcomputation(LLVM::LLVMFuncOp func,
+                                               Value capture,
+                                               SetVector<Operation *> &ops) {
+  SetVector<Value> worklist;
+  worklist.insert(capture);
+  for (unsigned i = 0; i != worklist.size(); ++i) {
+    Value capture = worklist[i];
+    // Check for a kernel argument.
+    if (auto arg = dyn_cast<BlockArgument>(capture)) {
+      if (arg.getOwner() == &func.getBody().front())
+        continue;
+      // Otherwise, this is some other block argument that cannot be elided.
+      return failure();
+    }
+
+    Operation *op = capture.getDefiningOp();
+    // Check if the defining op can be rematerialized. At the LLVM level,
+    // checking for pure is probably a good enough heuristic.
+    if (isPure(op)) {
+      ops.insert(op);
+      worklist.insert(op->operand_begin(), op->operand_end());
+      continue;
+    }
+    // The op cannot be rematerialized.
+    return failure();
+  }
+
+  // Cap the number of ops that can be rematerialized.
+  // FIXME: This is arbitrary.
+  return success(ops.size() <= 16);
+}
+
+static void elideTrivialCaptures(LLVM::LLVMFuncOp func,
+                                 ArrayRef<WarpSpecializeOp> wsOps) {
+  // The goal is to completely eliminate captures by hoisting or rematerializing
+  // computations. We could minimize captures by rematerializing
+  // subcomputations, but that is much more complicated. Prefer rematerializing
+  // because that reduces liveranges. If subgraphs are duplicated more than
+  // once, we will rely on CSE to clean them up.
+  SetVector<Operation *> subgraph;
+  for (WarpSpecializeOp wsOp : wsOps) {
+    llvm::BitVector toErase(wsOp.getNumOperands());
+    for (auto [i, capture] : llvm::enumerate(wsOp.getExplicitCaptures())) {
+      subgraph.clear();
+      if (failed(findTrivialSubcomputation(func, capture, subgraph)))
+        continue;
+      toErase.set(i);
+      subgraph = topologicalSort(subgraph);
+
+      for (Region *region : wsOp.getPartitionRegions()) {
+        OpBuilder b(region);
+        IRMapping mapping;
+        for (Operation *op : subgraph) {
+          b.clone(*op, mapping);
+        }
+        Value remat = capture;
+        if (!subgraph.empty()) {
+          unsigned resultIdx = cast<OpResult>(capture).getResultNumber();
+          remat = mapping.lookup(subgraph.back())->getResult(resultIdx);
+        }
+        region->getArgument(i).replaceAllUsesWith(remat);
+      }
+    }
+
+    wsOp->eraseOperands(toErase);
+    for (Region *region : wsOp.getPartitionRegions()) {
+      region->front().eraseArguments(toErase);
+    }
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // lowerWarpSpecialize
 //===----------------------------------------------------------------------===//
+
+static void createRegRealloc(TritonLLVMIRRewriter &b, int curRegs,
+                             int adjRegs) {
+  curRegs = std::min(256, curRegs);
+  adjRegs = std::min(256, adjRegs);
+  auto action = adjRegs < curRegs ? NVVM::SetMaxRegisterAction::decrease
+                                  : NVVM::SetMaxRegisterAction::increase;
+  b.create<NVVM::SetMaxRegisterOp>(adjRegs, action);
+}
 
 // Assign hardware barriers to each warp group and rewrite warp group barriers
 // into `barrier.sync` instructions. There is a maximum number of barriers.
@@ -118,7 +205,7 @@ static LogicalResult rewriteWarpGroupBarriers(LLVM::LLVMFuncOp func,
       TritonLLVMIRRewriter b(bar.getLoc(), bar);
       createBarrier(b, /*barIdx=*/0, defaultWarpGroupSize, /*aligned=*/true);
       bar.erase();
-      return WalkResult::advance();
+      return WalkResult::skip();
     }
     return WalkResult::advance();
   });
@@ -146,13 +233,20 @@ static LogicalResult rewriteWarpGroupBarriers(LLVM::LLVMFuncOp func,
 }
 
 static void rewritePartitionRegions(WarpSpecializeOp ws, Block *switchLoop,
-                                    const NVIDIA::TargetInfo &targetInfo) {
+                                    const NVIDIA::TargetInfo &targetInfo,
+                                    int lowRegs) {
   TritonLLVMIRRewriter b(ws.getLoc(), ws.getContext());
 
   for (Region *partition : ws.getPartitionRegions()) {
     // Load the explicit captures from shared memory and replace the block args
     // if there are any.
     b.setInsertionPointToStart(&partition->front());
+
+    if (auto actRegs = ws.getActualRegisters()) {
+      createRegRealloc(b, lowRegs,
+                       (*actRegs)[partition->getRegionNumber() + 1]);
+    }
+
     if (partition->getNumArguments()) {
       auto captureType = LLVM::LLVMStructType::getLiteral(
           b.getContext(), llvm::to_vector(partition->getArgumentTypes()),
@@ -179,12 +273,33 @@ static void rewritePartitionRegions(WarpSpecializeOp ws, Block *switchLoop,
 
     // Rewrite all warp returns.
     partition->walk([&](WarpReturnOp op) {
-      b.setInsertionPoint(op);
+      TritonLLVMIRRewriter b(op.getLoc(), op);
       createBarrier(b, kSwitchLoopBarrierIdx, /*numThreads=*/std::nullopt,
                     /*aligned=*/false);
+      if (auto actRegs = ws.getActualRegisters()) {
+        createRegRealloc(b, (*actRegs)[partition->getRegionNumber() + 1],
+                         lowRegs);
+      }
       b.replaceOpWithNewOp<LLVM::BrOp>(op, switchLoop);
     });
   }
+}
+
+// LLVM's LICM will be tempted to hoist code out of the switch loop generated by
+// the `ttg.warp_specialize` lowering. However, neither NVPTX or `ptxas` will
+// rematerialize this code back in to the partition regions, resulting in long
+// liveranges for an arbitrary number of registers.
+//
+// Due to reduced warp group registers, these live values can induce spilling
+// in the partition regions. Prevent this by disabling LICM on the switch loop.
+static void disableLICM(LLVM::BrOp latchBr) {
+  Builder b(latchBr.getContext());
+  MLIRContext *ctx = b.getContext();
+  auto licmMD = LLVM::LoopLICMAttr::get(ctx, b.getBoolAttr(true), {});
+  auto loopMD =
+      LLVM::LoopAnnotationAttr::get(b.getContext(), {}, {}, {}, {}, {}, licmMD,
+                                    {}, {}, {}, {}, {}, {}, {}, {}, {});
+  latchBr.setLoopAnnotationAttr(loopMD);
 }
 
 static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
@@ -203,6 +318,43 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   if (failed(rewriteWarpGroupBarriers(func, wsOps, threadsPerWarp,
                                       defaultWarpGroupSize)))
     return failure();
+
+  auto totalNumWarpsAttr =
+      module->getAttrOfType<IntegerAttr>("ttg.total-num-warps");
+  if (!totalNumWarpsAttr) {
+    return mlir::emitError(module.getLoc(),
+                           "module missing 'ttg.total-num-warps' attribute");
+  }
+  unsigned totalNumThreads = totalNumWarpsAttr.getInt() * threadsPerWarp;
+
+  // Determine how many registers the worker warps can surrender before they
+  // begin execution.
+  auto maxnreg = func->getParentOfType<ModuleOp>()->getAttrOfType<IntegerAttr>(
+      AttrMaxRegistersName);
+  int lowRegs = -1;
+  int defRegs = -1;
+  if (maxnreg) {
+    int numWorkerWarps = totalNumWarpsAttr.getInt() - defaultNumWarps;
+    int startRegs = maxnreg.getInt();
+
+    // First determine how many extra registers the default warp group can get
+    // if the workers surrender the maximum number of registers.
+    lowRegs = 24;
+    int extraRegs = (startRegs - lowRegs) * numWorkerWarps / defaultNumWarps;
+    defRegs = (startRegs + extraRegs) / 8 * 8;
+
+    // If the default warp group goes over 256 registers, the workers don't need
+    // to give up this much.
+    if (defRegs > 256) {
+      defRegs = 256;
+      int giveRegs = (defRegs - startRegs) * defaultNumWarps / numWorkerWarps;
+      lowRegs = (startRegs - giveRegs) / 8 * 8;
+    }
+  }
+
+  // Attempt to elide captures of trivial computations by hoisting them into the
+  // header or rematerializing them into each partition.
+  elideTrivialCaptures(func, wsOps);
 
   MLIRContext *ctx = func.getContext();
   TritonLLVMIRRewriter b(func.getLoc(), ctx);
@@ -229,15 +381,9 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
        llvm::zip(header->getArguments(), entry->getArguments()))
     oldArg.replaceAllUsesWith(arg);
   entry->eraseArguments([](auto) { return true; });
-
-  // Generate the switch loop.
-  auto totalNumWarpsAttr =
-      module->getAttrOfType<IntegerAttr>("ttg.total-num-warps");
-  if (!totalNumWarpsAttr) {
-    return mlir::emitError(module.getLoc(),
-                           "module missing 'ttg.total-num-warps' attribute");
-  }
-  unsigned totalNumThreads = totalNumWarpsAttr.getInt() * threadsPerWarp;
+  b.setInsertionPointToStart(entry);
+  if (maxnreg)
+    createRegRealloc(b, maxnreg.getInt(), defRegs);
 
   // ^switchLoop:
   //   barrier.sync 1
@@ -245,6 +391,8 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   //   %rel_tid = sub %tid, <default_warp_group_size>
   //   %rel_wid = udiv %rel_tid, 32
   b.setInsertionPointToStart(switchLoop);
+  if (maxnreg)
+    createRegRealloc(b, maxnreg.getInt(), lowRegs);
   createBarrier(b, kSwitchLoopBarrierIdx, /*numThreads=*/std::nullopt,
                 /*aligned=*/false);
   Value statePtr = LLVM::getSharedMemoryBase(b.getLoc(), b, targetInfo, func);
@@ -272,7 +420,7 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   SmallVector<SmallVector<int32_t>> warpToState(
       wsOps.size(), SmallVector<int32_t>(maxNumWarps, -1));
   for (auto [op, stateMap] : llvm::zip(wsOps, warpToState)) {
-    rewritePartitionRegions(op, switchLoop, targetInfo);
+    rewritePartitionRegions(op, switchLoop, targetInfo, lowRegs);
     for (auto [partition, partitionNumWarps, startId] :
          llvm::zip(op.getPartitionRegions(), op.getPartitionNumWarps(),
                    *op.getWarpGroupStartIds())) {
@@ -304,7 +452,8 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
                 /*aligned=*/false);
   createBarrier(b, kSwitchLoopBarrierIdx, /*numThreads=*/std::nullopt,
                 /*aligned=*/false);
-  b.create<LLVM::BrOp>(switchLoop);
+  auto latchBr = b.create<LLVM::BrOp>(switchLoop);
+  disableLICM(latchBr);
 
   // Exit state.
   Block *switchExit = new Block;
@@ -325,10 +474,11 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   for (auto [ws, stateMap] : llvm::zip(wsOps, warpToState)) {
     Block *before = ws->getBlock();
     Block *after = b.splitBlock(before, ws->getIterator());
-    b.setInsertionPointToEnd(before);
+    TritonLLVMIRRewriter b(ws.getLoc(), OpBuilder::atBlockEnd(before));
     Value statePtr = LLVM::getSharedMemoryBase(b.getLoc(), b, targetInfo, func);
     for (auto [i, state] : llvm::enumerate(stateMap)) {
-      b.store(b.i8_val(state), b.gep(ptrTy, i8_ty, statePtr, LLVM::GEPArg(i)));
+      Value stateVal = b.i8_val(state);
+      b.store(stateVal, b.gep(ptrTy, i8_ty, statePtr, LLVM::GEPArg(i)));
     }
 
     // Store the captures if there are any.
@@ -350,14 +500,18 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
     // they have read the captures before the memory is released upon entry.
     createBarrier(b, kSwitchLoopBarrierIdx, /*numThreads=*/std::nullopt,
                   /*aligned=*/false);
+    if (auto actRegs = ws.getActualRegisters())
+      createRegRealloc(b, defRegs, actRegs->front());
     createBarrier(b, kSwitchLoopBarrierIdx, /*numThreads=*/std::nullopt,
                   /*aligned=*/false);
     b.create<LLVM::BrOp>(&ws.getDefaultRegion().front());
 
-    ws.getDefaultRegion().walk([&](WarpYieldOp op) {
-      b.setInsertionPoint(op);
+    ws.getDefaultRegion().walk([&, ws = ws](WarpYieldOp op) mutable {
+      TritonLLVMIRRewriter b(op.getLoc(), op);
       createBarrier(b, kSwitchLoopBarrierIdx, /*numThreads=*/std::nullopt,
                     /*aligned=*/false);
+      if (auto actRegs = ws.getActualRegisters())
+        createRegRealloc(b, actRegs->front(), defRegs);
       b.replaceOpWithNewOp<LLVM::BrOp>(op, op.getOperands(), after);
     });
     after->getParent()->getBlocks().splice(after->getIterator(),
@@ -398,8 +552,7 @@ struct ConvertWarpSpecializeToLLVM
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     // FIXME: Assume warp specialization only happens on Blackwell.
-    NVIDIA::TargetInfo targetInfo(/*computeCapability=*/100,
-                                  /*ptxVersion=*/100);
+    NVIDIA::TargetInfo targetInfo(/*computeCapability=*/100, /*ptxVersion=*/87);
 
     // Convert types and cleanup unrealized conversions.
     mlir::LowerToLLVMOptions option(&getContext());
@@ -410,10 +563,9 @@ struct ConvertWarpSpecializeToLLVM
       if (isa<WarpSpecializeOp, WarpSpecializePartitionsOp, WarpYieldOp>(op))
         convertOpTypes(op, typeConverter);
     });
-    RewritePatternSet patterns(&getContext());
-    UnrealizedConversionCastOp::getCanonicalizationPatterns(patterns,
-                                                            &getContext());
-    if (failed(applyPatternsGreedily(mod, std::move(patterns))))
+    OpPassManager pm;
+    pm.addPass(createReconcileUnrealizedCastsPass());
+    if (failed(runPipeline(pm, mod)))
       return signalPassFailure();
 
     SmallVector<LLVM::LLVMFuncOp> kernels;

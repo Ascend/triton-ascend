@@ -15,6 +15,12 @@ public:
 
   llvm::AMDGPU::GPUKind getGPUKind() const;
 
+  bool isCDNA() const;
+
+  bool isRDNA() const;
+
+  int getWarpSize() const;
+
   int getSharedMemorySize() const;
 
   bool supportMaximumMinimum() const override;
@@ -58,10 +64,11 @@ public:
   std::string getMulhiFuncName(Type resultElementTy) const override;
 
   void printf(RewriterBase &rewriter, Value formatStrStart,
-              int formatStrByteCount, ValueRange args) const override;
+              int formatStrByteCount, ValueRange args,
+              ArrayRef<bool> isSigned = {}) const override;
 
-  void printf(RewriterBase &rewriter, StringRef msg,
-              ValueRange args) const override;
+  void printf(RewriterBase &rewriter, StringRef msg, ValueRange args,
+              ArrayRef<bool> isSigned = {}) const override;
 
   void assertFail(RewriterBase &rewriter, Location loc, StringRef message,
                   StringRef file, StringRef func, int line) const override;
@@ -72,12 +79,19 @@ public:
 
   bool supportVectorizedAtomics() const override;
 
-  void storeOpAnnotation(triton::gpu::LocalStoreOp op, size_t localStoreOpCount,
-                         Type type) const override;
+  void localStoreOpAnnotation(triton::gpu::LocalStoreOp op,
+                              size_t localStoreOpCount,
+                              Type type) const override;
+
+  bool supportsDirectToLdsLoadBitWidth(int bitWidth) const;
+
+  void localLoadOpAnnotation(triton::gpu::LocalLoadOp localLoadOp,
+                             Operation *llLoadOp) const override;
 
 private:
   void printfImpl(Value formatStrStart, int formatStrByteCount, ValueRange args,
-                  RewriterBase &rewriter, bool useStdErr) const;
+                  ArrayRef<bool> isSigned, RewriterBase &rewriter,
+                  bool useStdErr) const;
 
   std::string arch;
 };

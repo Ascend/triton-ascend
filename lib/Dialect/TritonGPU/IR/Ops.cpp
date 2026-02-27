@@ -1,11 +1,17 @@
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Tools/LayoutUtils.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/LogicalResult.h"
 
 #define GET_OP_CLASSES
 #include "triton/Dialect/TritonGPU/IR/Ops.cpp.inc"
@@ -113,12 +119,24 @@ struct CanonicalizeConvertFromHistogram
   mlir::LogicalResult
   matchAndRewrite(triton::HistogramOp op,
                   PatternRewriter &rewriter) const override {
-    auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    auto src = op.getSrc();
+    auto convert = src.getDefiningOp<ConvertLayoutOp>();
+    if (!convert) {
       return failure();
+    }
+    src = convert.getSrc();
+
+    // If mask is present, convert the layout of mask to match new src layout
+    auto mask = op.getMask();
+    if (mask) {
+      auto sharedType = getI1SameShape(src.getType());
+      rewriter.setInsertionPoint(op);
+      mask = rewriter.create<ConvertLayoutOp>(op.getLoc(), sharedType, mask);
+    }
+
     rewriter.replaceOpWithNewOp<triton::HistogramOp>(
-        op, op->getResult(0).getType(), convert.getSrc());
-    return mlir::success();
+        op, op->getResult(0).getType(), src, mask);
+    return success();
   }
 };
 
@@ -257,7 +275,8 @@ struct CanonicalizeConvertFromConvert
       // For histogram ops the input and output layouts are independent, so we
       // can always fold convert into the histogram op.
       rewriter.replaceOpWithNewOp<HistogramOp>(op, op->getResult(0).getType(),
-                                               histogram.getSrc());
+                                               histogram.getSrc(),
+                                               histogram.getMask());
       return success();
     }
 
@@ -269,7 +288,8 @@ struct CanonicalizeConvertFromConvert
       // memory side-effects between the LocalLoad op and the ConvertLayout op
       rewriter.setInsertionPoint(arg);
       rewriter.replaceOpWithNewOp<LocalLoadOp>(op, op->getResult(0).getType(),
-                                               sharedLoad.getSrc());
+                                               sharedLoad.getSrc(),
+                                               sharedLoad.getToken());
 
       return success();
     }
@@ -408,7 +428,7 @@ OpFoldResult MemDescTransOp::fold(FoldAdaptor adaptor) {
 
 LogicalResult
 MemDescTransOp::inferReturnTypes(MLIRContext *context,
-                                 std::optional<Location> location,
+                                 std::optional<Location> loc,
                                  MemDescTransOp::Adaptor adaptor,
                                  SmallVectorImpl<Type> &inferredReturnTypes) {
 
@@ -424,16 +444,61 @@ MemDescTransOp::inferReturnTypes(MLIRContext *context,
   if (argEncoding) {
     Dialect &dialect = argEncoding.getDialect();
     auto inferLayoutInterface = cast<DialectInferLayoutInterface>(&dialect);
-    if (inferLayoutInterface
-            ->inferTransOpEncoding(argEncoding, shape, order, retEncoding)
-            .failed()) {
+    if (failed(inferLayoutInterface->inferTransOpEncoding(
+            argEncoding, shape, order, retEncoding, loc))) {
       return failure();
     }
   }
+
+  // Permute the last `rank` dims of the source alloc shape.
+  SmallVector<int64_t> allocShape =
+      applyPermutation(argTy.getAllocShape().take_back(order.size()), order);
+  allocShape.insert(allocShape.begin(), argTy.getAllocShape().begin(),
+                    argTy.getAllocShape().end() - order.size());
+
   inferredReturnTypes.push_back(
       MemDescType::get(retShape, retEltTy, retEncoding, argTy.getMemorySpace(),
-                       argTy.getMutableMemory()));
+                       argTy.getMutableMemory(), allocShape));
   return success();
+}
+
+// MemDescReshapeOp
+LogicalResult MemDescReshapeOp::verify() {
+  MemDescType dstType = getResult().getType();
+  MemDescType srcType = getSrc().getType();
+  if (product(dstType.getShape()) != product(srcType.getShape())) {
+    return emitError(
+        "number of src and dst elements of reshape must be the same");
+  }
+  if (dstType.getElementType() != srcType.getElementType()) {
+    return emitError("result element type must match src element type");
+  }
+
+  // Infer the dst layout from the source and verify that it is equivalent.
+  auto srcEncoding = srcType.getEncoding();
+  Attribute inferedDstEncoding;
+
+  LinearLayout ll = inferReshapeLinearLayout(
+      srcType.getShape(), srcType.getEncoding(), dstType.getShape());
+  LinearLayout llDst =
+      triton::gpu::toLinearLayout(dstType.getShape(), dstType.getEncoding());
+  if (ll != llDst) {
+    return emitError("source and destination layout are incompatible.");
+  }
+  return success();
+}
+
+// MemDescReinterpretOp
+LogicalResult MemDescReinterpretOp::verify() {
+  if (getSrc().getType().getMemorySpace() != getType().getMemorySpace())
+    return emitError("source and destination memory space must match");
+  return success();
+}
+
+OpFoldResult MemDescReinterpretOp::fold(FoldAdaptor adaptor) {
+  if (getType() == getSrc().getType())
+    return getSrc();
+  return {};
 }
 
 // LocalAllocOp
@@ -447,12 +512,12 @@ void LocalAllocOp::getEffects(
   // op.
   if (!getType().getMutableMemory() && !op->hasAttr("allocation.offset"))
     return;
-  effects.emplace_back(MemoryEffects::Allocate::get(),
-                       mlir::triton::gpu::SharedMemory::get());
+  OpResult alloc = getOperation()->getOpResult(0);
+  effects.emplace_back(MemoryEffects::Allocate::get(), alloc,
+                       SharedMemory::get());
   if (getSrc())
-    effects.emplace_back(MemoryEffects::Write::get(),
-                         getOperation()->getOpResult(0),
-                         mlir::triton::gpu::SharedMemory::get());
+    effects.emplace_back(MemoryEffects::Write::get(), alloc,
+                         SharedMemory::get());
 }
 
 OpFoldResult LocalAllocOp::fold(FoldAdaptor adaptor) {
@@ -470,41 +535,53 @@ OpFoldResult LocalAllocOp::fold(FoldAdaptor adaptor) {
   return loadSrc;
 }
 
-LogicalResult LocalAllocOp::verify() {
-  if (!getSrc()) {
-    if (!getType().getMutableMemory())
-      return emitError("uninitialized alloc must have a mutable memdesc type");
-    return success();
-  }
-  auto srcTy = getSrc().getType();
-  auto dstTy = getType();
-
+LogicalResult verifyMemoryOpTypes(Operation *op, ShapedType srcTy,
+                                  ShapedType dstTy) {
   if (srcTy.getElementType() != dstTy.getElementType()) {
-    return emitError("result element type must match desc element type");
+    return op->emitOpError("source element type ")
+           << srcTy << " must match "
+           << "destination element type " << dstTy.getElementType();
+  }
+  if (srcTy.getShape() != dstTy.getShape()) {
+    return op->emitOpError("source shape [")
+           << srcTy.getShape() << "] must match ["
+           << "destination shape " << dstTy.getShape() << "]";
   }
   return success();
 }
 
-// LocalLoadOp
-void LocalLoadOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
-                       mlir::triton::gpu::SharedMemory::get());
+LogicalResult verifyAllocOp(Operation *op, Value src, MemDescType dstTy) {
+  if (dstTy.getShape() != dstTy.getAllocShape())
+    return op->emitOpError("result shape and its alloc shape must match");
+
+  if (!src) {
+    if (!dstTy.getMutableMemory()) {
+      return op->emitOpError(
+          "uninitialized alloc must have a mutable memdesc type");
+    }
+    return success();
+  }
+
+  return verifyMemoryOpTypes(op, cast<RankedTensorType>(src.getType()), dstTy);
+}
+
+LogicalResult LocalAllocOp::verify() {
+  if (!isa<SharedMemorySpaceAttr>(getType().getMemorySpace()))
+    return emitOpError("should create a buffer of shared memory");
+
+  return verifyAllocOp(*this, getSrc(), getType());
 }
 
 // LocalStoreOp
 LogicalResult LocalStoreOp::verify() {
   if (!getDst().getType().getMutableMemory())
     return emitOpError("Cannot store into immutable memory");
-  return success();
+  return verifyMemoryOpTypes(*this, getSrc().getType(), getDst().getType());
 }
 
-void LocalStoreOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable(),
-                       mlir::triton::gpu::SharedMemory::get());
+// LocalLoadOp
+LogicalResult LocalLoadOp::verify() {
+  return verifyMemoryOpTypes(*this, getSrc().getType(), getType());
 }
 
 // AsyncCopyGlobalToLocalOp
@@ -512,15 +589,6 @@ LogicalResult AsyncCopyGlobalToLocalOp::verify() {
   if (!getResult().getType().getMutableMemory())
     return emitOpError("Cannot store into immutable memory");
   return success();
-}
-
-void AsyncCopyGlobalToLocalOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
-                       mlir::triton::GlobalMemory::get());
-  effects.emplace_back(MemoryEffects::Write::get(), &getResultMutable(),
-                       mlir::triton::gpu::SharedMemory::get());
 }
 
 LogicalResult MemDescSubviewOp::verify() {
@@ -578,15 +646,96 @@ LogicalResult MemDescSubviewOp::verify() {
             "offsets other than the first one must be constant zeros");
       }
     }
+    return success();
   }
 
-  // TODO(jlebar): Currently we generate illegal encodings, so we can't add a
-  // verifier for them.  In particular, we use the same encoding for the src and
-  // dst of a subview op, when the subview removes a dimension.  That generates
-  // an illegal shared encoding (because the size of `order` doesn't match the
-  // rank of the tensor), but it's not checked anywhere, and we believe the
-  // resulting code ultimately works.
+  assert(isa<SharedEncodingTrait>(srcEnc));
 
+  // corner case: 1D -> 1D into a 1 element tensor (we don't have 0D tensors)
+  if (srcTy.getRank() == 1 && dstTy.getRank() == 1 &&
+      dstTy.getDimSize(0) == 1) {
+    return success();
+  }
+
+  // There are two cases:
+  // 1. The subview is rank-reducing
+  //  - We split along the first dimension. It can be with non-constant offsets
+  if (srcTy.getRank() != dstTy.getRank()) {
+    if (srcTy.getRank() - dstTy.getRank() != 1) {
+      return emitError(
+          "only nD -> (n-1)D rank-reducing subviews are supported");
+    }
+    for (auto offset : getOffsets().take_back(dstTy.getRank())) {
+      APInt value;
+      if (!matchPattern(offset, m_ConstantInt(&value))) {
+        return emitError("only constant values are allowed outside the front "
+                         "dimension in a rank-reducing subview");
+      }
+      if (!value.isZero()) {
+        return emitError(
+            "only first offset can be non-zero for a rank-reducing subview");
+      }
+    }
+    return success();
+  }
+  assert(srcTy.getRank() == dstTy.getRank());
+  // 2. The src is non-rank-reducing
+  //  - We split along at most one dim, but just with constant values
+  //  - The values where the split happens must not be within the swizzling
+  //  pattern
+  // Check which dimension we are splitting along
+  int dim = -1;
+  for (int i = 0; i < srcTy.getRank(); i++) {
+    if (srcTy.getDimSize(i) != dstTy.getDimSize(i)) {
+      if (dim != -1) {
+        return emitError(
+            "We don't allow subviews that split along multiple dimensions");
+      }
+      dim = i;
+    }
+  }
+  SmallVector<int64_t> offsets;
+  for (auto offset : getOffsets()) {
+    APInt value;
+    if (!matchPattern(offset, m_ConstantInt(&value)))
+      return emitError("only constant values are allowed for the split");
+    offsets.push_back(value.getSExtValue());
+  }
+  // Identity subview
+  if (dim == -1) {
+    return success();
+  }
+
+  for (auto [i, offset] : llvm::enumerate(offsets)) {
+    if (i != dim) {
+      if (offset != 0) {
+        return emitError("A non zero offset found in a dimension that is "
+                         "not being split");
+      }
+    } else {
+      if (offset & (dstTy.getDimSize(dim) - 1)) {
+        return emitError("The split offset may not touch the tile");
+      }
+    }
+  }
+  auto ctx = getContext();
+  // The order gives us the honest-to-goodness layout rank
+  auto srcAllocShape = srcTy.getAllocShape().take_back(getOrder(srcTy).size());
+  auto llInv =
+      triton::gpu::toLinearLayout(srcAllocShape, srcTy.getEncoding()).invert();
+  auto kDim = mlir::StringAttr::get(ctx, "dim" + llvm::Twine(dim));
+  llvm::SmallVector<std::pair<mlir::StringAttr, int32_t>> namedOffsets;
+  for (auto d : standardOutDimNames(ctx, srcTy.getRank())) {
+    namedOffsets.push_back({d, 0});
+  }
+  for (int dimSize = dstTy.getDimSize(dim); dimSize < srcTy.getDimSize(dim);
+       dimSize *= 2) {
+    namedOffsets[dim] = {kDim, dimSize};
+    if (!llvm::isPowerOf2_32(llInv.apply(namedOffsets)[0].second)) {
+      return emitError(
+          "We don't support splitting along the swizzling pattern");
+    }
+  }
   return success();
 }
 
@@ -687,6 +836,97 @@ LogicalResult WarpSpecializeOp::verify() {
   return success();
 }
 
+LogicalResult WarpSpecializeOp::canonicalize(WarpSpecializeOp op,
+                                             PatternRewriter &b) {
+  // Propagate unused results and captures by removing them from the op.
+  llvm::BitVector unusedArgs(op.getNumOperands());
+  llvm::BitVector unusedResults(op.getNumResults());
+  for (auto [i, result] : llvm::enumerate(op.getResults())) {
+    if (result.use_empty())
+      unusedResults.set(i);
+  }
+  // Remove duplicate captures.
+  DenseMap<Value, unsigned> uniqueCaptures;
+  for (auto [i, capture] : llvm::enumerate(op.getExplicitCaptures())) {
+    auto noUseInRegion = [i = i](Region *region) {
+      return region->getArgument(i).use_empty();
+    };
+    if (llvm::all_of(op.getPartitionRegions(), noUseInRegion)) {
+      unusedArgs.set(i);
+      continue;
+    }
+
+    auto [it, inserted] = uniqueCaptures.try_emplace(capture, i);
+    if (!inserted) {
+      unsigned duplicateIdx = it->second;
+      b.modifyOpInPlace(op, [&, i = i] {
+        for (Region *region : op.getPartitionRegions()) {
+          b.replaceAllUsesWith(region->getArgument(i),
+                               region->getArgument(duplicateIdx));
+        }
+      });
+      unusedArgs.set(i);
+    }
+  }
+  if (unusedArgs.none() && unusedResults.none())
+    return failure();
+
+  if (unusedArgs.any()) {
+    b.modifyOpInPlace(op, [&] {
+      for (Region *region : op.getPartitionRegions())
+        region->front().eraseArguments(unusedArgs);
+      op->eraseOperands(unusedArgs);
+    });
+  }
+
+  if (unusedResults.any()) {
+    for (Block &block : op.getDefaultRegion()) {
+      if (auto yield = dyn_cast<WarpYieldOp>(block.getTerminator())) {
+        b.modifyOpInPlace(yield, [&] { yield->eraseOperands(unusedResults); });
+      }
+    }
+
+    SmallVector<Type> newTypes;
+    for (auto [i, type] : llvm::enumerate(op.getResultTypes())) {
+      if (!unusedResults.test(i))
+        newTypes.push_back(type);
+    }
+    OperationState state(op.getLoc(), op->getName(), op.getOperands(), newTypes,
+                         op->getAttrs());
+    state.addRegion()->takeBody(op.getDefaultRegion());
+    state.addRegion()->takeBody(op.getPartitionOpHolder());
+    auto newOp = cast<WarpSpecializeOp>(b.create(state));
+    unsigned newResultIdx = 0;
+    for (auto [i, result] : llvm::enumerate(op.getResults())) {
+      if (!unusedResults.test(i))
+        result.replaceAllUsesWith(newOp.getResult(newResultIdx++));
+    }
+    assert(newResultIdx == newOp.getNumResults());
+    b.eraseOp(op);
+  }
+
+  return success();
+}
+
+void WarpSpecializeOp::build(OpBuilder &builder, OperationState &state,
+                             TypeRange resultTypes,
+                             ArrayRef<int32_t> partitionNumWarps,
+                             unsigned partitionNumRegions) {
+  build(builder, state, resultTypes, /*explicitCaptures=*/ValueRange(),
+        partitionNumWarps, {}, {}, {});
+  OpBuilder::InsertionGuard guard(builder);
+  Block *container = builder.createBlock(state.regions.back().get());
+  builder.create<WarpSpecializePartitionsOp>(state.location,
+                                             partitionNumRegions);
+}
+
+void WarpSpecializeOp::build(OpBuilder &builder, OperationState &state,
+                             TypeRange resultTypes, ValueRange explicitCaptures,
+                             ArrayRef<int32_t> partitionNumWarps) {
+  build(builder, state, resultTypes, explicitCaptures, partitionNumWarps, {},
+        {}, {});
+}
+
 ParseResult WarpSpecializeOp::parse(OpAsmParser &p, OperationState &result) {
   SmallVector<OpAsmParser::UnresolvedOperand> operands;
   SMLoc operandLoc = p.getCurrentLocation();
@@ -776,7 +1016,7 @@ LogicalResult WarpYieldOp::verify() {
 static size_t getSharedMemorySize(Type type) {
   if (isa<IntegerType, FloatType>(type))
     return llvm::divideCeil(type.getIntOrFloatBitWidth(), 8);
-  if (isa<PointerType>(type))
+  if (isa<PointerType, TensorDescType>(type))
     return 8;
   if (auto desc = dyn_cast<MemDescType>(type)) {
     if (!isa<SharedMemorySpaceAttr>(desc.getMemorySpace()))

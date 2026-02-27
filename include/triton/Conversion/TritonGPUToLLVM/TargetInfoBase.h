@@ -70,7 +70,8 @@ public:
   // the format string global variable; |args| are the arguments to fill
   // placeholders in the format string.
   virtual void printf(RewriterBase &rewriter, Value formatStrStart,
-                      int formatStrByteCount, ValueRange args) const = 0;
+                      int formatStrByteCount, ValueRange args,
+                      ArrayRef<bool> isSigned = {}) const = 0;
 
   // Emits LLVM code with |rewriter| to print a message, particularly useful for
   // backend debug. |msg| is the message to print, |args| are the arguments to
@@ -78,8 +79,8 @@ public:
   // NOTE: This function is used for backend debug. DO NOT DELETE.
   // Example use: targetInfo.printf(rewriter,"index: %d, value: %f", {index,
   // value});
-  virtual void printf(RewriterBase &rewriter, StringRef msg,
-                      ValueRange args) const = 0;
+  virtual void printf(RewriterBase &rewriter, StringRef msg, ValueRange args,
+                      ArrayRef<bool> isSigned = {}) const = 0;
 
   // Emits LLVM code with |rewriter| to perform assertion failure with the given
   // |message| from the given |func| in |file|.
@@ -93,10 +94,18 @@ public:
 
   virtual bool supportVectorizedAtomics() const = 0;
 
-  // Helper used by targets to annotate store operations during lowering to
-  // llvm.
-  virtual void storeOpAnnotation(triton::gpu::LocalStoreOp op,
-                                 size_t localStoreOpCount, Type type) const {}
+  virtual bool supportLdMatrix() const { return false; }
+  virtual bool supportStMatrix() const { return false; }
+
+  // Annotate target specific information to local store operations during
+  // lowering to LLVM.
+  virtual void localStoreOpAnnotation(triton::gpu::LocalStoreOp op,
+                                      size_t localStoreOpCount,
+                                      Type type) const {}
+  // Annotate target specific information to local load operations during
+  // lowering to LLVM. `llLoadOp` is the generated LLVM load op.
+  virtual void localLoadOpAnnotation(triton::gpu::LocalLoadOp localLoadOp,
+                                     Operation *llLoadOp) const {}
 
   virtual ~TargetInfoBase() {}
 };

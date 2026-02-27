@@ -10,6 +10,8 @@
 #include <numeric>
 
 namespace mlir {
+class DominanceInfo;
+class PostDominanceInfo;
 
 namespace triton {
 class ModuleAxisInfoAnalysis;
@@ -33,9 +35,11 @@ SmallVector<unsigned, 3> mmaVersionToInstrShape(int version,
 // Return true if the Load uses block pointer.
 bool isLoadFromTensorPtr(triton::LoadOp op);
 
-// Return an array of indices enumerating the elements of 'arr' in descending
-// order (so that result[i] is the index of the i-th largest element of 'arr')
-SmallVector<unsigned, 4> argSort(const SmallVector<int64_t> &arr);
+// Gets the order of a tensor from its contiguity. Places the dimensions with
+// the largest contiguity as the inner most dimension. If the contiguity is
+// all ones, returns the order {dim - 1, dim - 2, ..., 0}
+SmallVector<unsigned, 4>
+getOrderFromContiguity(const SmallVector<int64_t> &contiguity);
 
 // Return the operand used to access the memory in the operation
 Value getMemAccessPtr(Operation *op);
@@ -51,6 +55,10 @@ getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
 
 // Returns whether the op is a "view op", i.e. doesn't move any data
 bool isView(Operation *op);
+
+// Returns whether the op is a "noop op", i.e. has one input and one output
+// and lowers to llvm as the identity function (returns the input)
+bool isNoop(Operation *op);
 
 /* Dump Triton IR in graphviz dot format.
  *
@@ -131,18 +139,20 @@ bool canFoldIntoConversion(Operation *op, Attribute targetEncoding);
 // Replace ForOp with a new ForOp with extra operands. The YieldOp is not
 // updated and needs to be updated separately for the loop to be correct.
 scf::ForOp replaceForOpWithNewSignature(
-    RewriterBase &rewriter, scf::ForOp loop, ValueRange newIterOperands,
+    OpBuilder &rewriter, scf::ForOp loop, ValueRange newIterOperands,
     SmallVectorImpl<std::tuple<Value, Value>> &replacements);
-scf::ForOp replaceForOpWithNewSignature(RewriterBase &rewriter, scf::ForOp loop,
+scf::ForOp replaceForOpWithNewSignature(OpBuilder &rewriter, scf::ForOp loop,
                                         ValueRange newIterOperands);
+[[nodiscard]] scf::ForOp addIterArgsToLoop(OpBuilder &rewriter, scf::ForOp loop,
+                                           ValueRange newIterOperands);
 
 // Replace WhileOp with a new WhileOp with extra operands. The YieldOp is not
 // updated and needs to be updated separately for the loop to be correct.
 scf::WhileOp replaceWhileOpWithNewSignature(
-    RewriterBase &rewriter, scf::WhileOp loop, ValueRange newIterOperands,
+    OpBuilder &rewriter, scf::WhileOp loop, ValueRange newIterOperands,
     TypeRange newResultTypes,
     SmallVectorImpl<std::tuple<Value, Value>> &replacements);
-scf::WhileOp replaceWhileOpWithNewSignature(RewriterBase &rewriter,
+scf::WhileOp replaceWhileOpWithNewSignature(OpBuilder &rewriter,
                                             scf::WhileOp loop,
                                             ValueRange newIterOperands,
                                             TypeRange newResultTypes);
@@ -150,9 +160,9 @@ scf::WhileOp replaceWhileOpWithNewSignature(RewriterBase &rewriter,
 // Replace IfOp with a new IfOp with extra results operands. The YieldOp is not
 // updated and needs to be updated separately for the bodies to be correct.
 scf::IfOp replaceIfOpWithNewSignature(
-    RewriterBase &rewriter, scf::IfOp loop, TypeRange newResultTypes,
+    OpBuilder &rewriter, scf::IfOp loop, TypeRange newResultTypes,
     SmallVectorImpl<std::tuple<Value, Value>> &replacements);
-scf::IfOp replaceIfOpWithNewSignature(RewriterBase &rewriter, scf::IfOp ifOp,
+scf::IfOp replaceIfOpWithNewSignature(OpBuilder &rewriter, scf::IfOp ifOp,
                                       TypeRange newResultTypes);
 
 // Append the given |newOperands| to the |forOp|'s yield op.
@@ -213,6 +223,55 @@ triton::gpu::LocalAllocOp findShmemAlloc(Value operand);
 SmallVector<Operation *>
 getMMAsWithMultiBufferredOperands(scf::ForOp forOp,
                                   SmallVector<Operation *> &mmaOps);
+
+// Given a list of ops, find the naerest common dominator of all ops or return
+// null if one could not be found. The ops are allowed to be in different
+// regions. The result op is not necessarily one of the ops in the list.
+Operation *findNearestCommonDominator(ArrayRef<Operation *> ops,
+                                      DominanceInfo &domInfo);
+// Given a list of ops, find the naerest common postdominator of all ops or
+// return null if one could not be found. The ops are allowed to be in different
+// regions. The result op is not necessarily one of the ops in the list.
+Operation *findNearestCommonPostDominator(ArrayRef<Operation *> ops,
+                                          PostDominanceInfo &postDomInfo);
+
+/// Visit the operands of `op` and the operands of any nested ops defined
+/// outside of `op`.
+void visitNestedOperands(Operation *op,
+                         function_ref<void(OpOperand &)> visitor);
+/// Visit the operands of `op` and the operands of any nested ops defined
+/// outside of `op`.
+void visitNestedOperands(Operation *op, function_ref<void(Value)> visitor);
+/// Get the operands of `op` and the operands of any nested ops defined outside
+/// of `op`.
+SetVector<Value> getNestedOperands(Operation *op);
+
+// Erase the given loop carried values from the loop, where `loop` is replaced
+// with a new loop.
+void eraseLoopCarriedValues(scf::ForOp &loop, llvm::BitVector indices);
 } // namespace mlir
+
+namespace mlir::triton {
+/// Replace all uses of `oldUse` with `val` and propagate the type if needed.
+/// This is useful when we need to change a memory descriptor from immutable to
+/// mutable.
+void replaceUsesAndPropagateType(OpBuilder &builder, Operation *oldUse,
+                                 Value val);
+
+/// Replace all uses of `old` with a local load from `alloc` unless the use is a
+/// `ttg.local_alloc` with a matching shared encoding, in which case the shared
+/// memory is forwarded directly into the use.
+void replaceUsesWithLocalLoad(
+    OpBuilder &builder, OpResult old,
+    TypedValue<triton::gpu::MemDescType> alloc,
+    TypedValue<triton::gpu::AsyncTokenType> token = {});
+
+// Return true if the value comes from a load or a block argument.
+// This will skip convert layouts and memdesc views.
+// This is a helper useful to know if value is likely to come from shared memory
+// after converting loads into async loads.
+bool comesFromLoadOrBlockArg(Value v);
+
+} // namespace mlir::triton
 
 #endif // TRITON_DIALECT_TRITONGPU_TRANSFORMS_UTILITY_H_

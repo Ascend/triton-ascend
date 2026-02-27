@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.20)
 
 if(POLICY CMP0116)
 # Introduced in cmake 3.20
@@ -18,7 +18,6 @@ include(CTest)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # Options
-option(TRITON_BUILD_TUTORIALS "Build C++ Triton tutorials" ON)
 option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
 option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
 option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
@@ -163,7 +162,7 @@ add_subdirectory(lib)
 # TODO: Figure out which target is sufficient to fix errors; triton is
 # apparently not enough. Currently set linking libstdc++fs for all targets
 # to support some old version GCC compilers like 8.3.0.
-if (NOT WIN32 AND NOT APPLE)
+if (NOT WIN32 AND NOT APPLE AND NOT BSD)
   link_libraries(stdc++fs)
 endif()
 
@@ -289,6 +288,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
   add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                   ${PYTHON_SRC_PATH}/ir.cc
                   ${PYTHON_SRC_PATH}/../triton/extension/buffer/src/buffer_ir.cc
+                  ${PYTHON_SRC_PATH}/gluon_ir.cc
                   ${PYTHON_SRC_PATH}/passes.cc
                   ${PYTHON_SRC_PATH}/interpreter.cc
                   ${PYTHON_SRC_PATH}/llvm.cc)
@@ -304,6 +304,20 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endif()
   target_link_options(triton PRIVATE ${LLVM_LDFLAGS})
   add_library(entryC SHARED ${PROJECT_SOURCE_DIR}/lib/runtime/libentry/libentry.cpp)
+
+  if (NOT DEFINED LLVM_SYSPATH)
+      message(FATAL_ERROR "LLVM_SYSPATH must be set.")
+  endif()
+
+  if (NOT DEFINED TRITON_WHEEL_DIR)
+      message(FATAL_ERROR "TRITON_WHEEL_DIR must be set.")
+  endif()
+
+  configure_file(
+    "${LLVM_SYSPATH}/bin/FileCheck"
+    "${TRITON_WHEEL_DIR}/FileCheck"
+    COPYONLY)
+
 endif()
 
 if (UNIX AND NOT APPLE)

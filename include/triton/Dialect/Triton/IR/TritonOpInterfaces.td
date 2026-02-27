@@ -53,13 +53,28 @@ def DotOpInterface : OpInterface<"DotOpInterface"> {
       /*desc=*/"Verify the dimensions of the A and B DotOp operands.",
       /*retType=*/"bool",
       /*methodName=*/"verifyDims",
-      /*args=*/(ins)>
+      /*args=*/(ins)>,
+  InterfaceMethod<
+      /*desc=*/"Verify the dimensions of the DotOp output.",
+      /*retType=*/"bool",
+      /*methodName=*/"verifyOutputDims",
+      /*args=*/(ins),
+      /*methodBody=*/[{}],
+      /*defaultImpl=*/ [{
+        auto aTy = cast<ShapedType>($_op.getA().getType());
+        auto bTy = cast<ShapedType>($_op.getB().getType());
+        auto cTy = cast<ShapedType>($_op->getOperand(2).getType());
+        auto aShape = aTy.getShape();
+        auto bShape = bTy.getShape();
+        auto cShape = cTy.getShape();
+        return cShape[cShape.size() - 2] == aShape[aShape.size() - 2] &&
+               cShape[cShape.size() - 1] == bShape[aShape.size() - 1];
+      }]>
   ];
 
   let verify = [{ return ::mlir::triton::impl::verifyDotOpInterface($_op); }];
 }
 
-// FIXME TODO: When upgrading to Triton 3.4.0, sync with upstream changes.
 def TT_DescriptorOpInterface : OpInterface<"DescriptorOpInterface"> {
   let description = [{
     Common interface to get the descriptor argument from an operation on tensor descriptors.

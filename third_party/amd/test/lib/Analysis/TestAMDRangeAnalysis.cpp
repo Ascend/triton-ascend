@@ -2,24 +2,12 @@
 #include "mlir/Pass/Pass.h"
 #include "third_party/amd/include/Analysis/RangeAnalysis.h"
 #include "triton/Analysis/Utility.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 using namespace mlir;
 using namespace mlir::triton;
 
 namespace {
-
-void collectRanges(DataFlowSolver &solver, ValueRange values,
-                   SmallVectorImpl<ConstantIntRanges> &ranges) {
-  for (Value val : values) {
-    auto *maybeInferredRange =
-        solver.lookupState<dataflow::IntegerValueRangeLattice>(val);
-    if (!maybeInferredRange || maybeInferredRange->getValue().isUninitialized())
-      return;
-    const ConstantIntRanges &inferredRange =
-        maybeInferredRange->getValue().getValue();
-    ranges.push_back(inferredRange);
-  }
-}
 
 struct TestAMDRangeAnalysisPass
     : PassWrapper<TestAMDRangeAnalysisPass, OperationPass<ModuleOp>> {
@@ -39,36 +27,87 @@ struct TestAMDRangeAnalysisPass
     ModuleOp mod = getOperation();
 
     // Collect assumptions in the function
-    DenseSet<Value> assumptions;
-    mod.walk([&](LLVM::AssumeOp op) {
-      if (op.getCond().getDefiningOp<arith::CmpIOp>())
-        assumptions.insert(op.getCond());
-    });
-
+    DenseMap<Value, SetVector<Operation *>> assumptions =
+        AMD::TritonIntegerRangeAnalysis::collectAssumptions(getOperation());
     std::shared_ptr<DataFlowSolver> solver = createDataFlowSolver();
-    solver->load<AMD::TritonIntegerRangeAnalysis>();
+    AMD::TritonIntegerRangeAnalysis *rangeAnalysis =
+        solver->load<AMD::TritonIntegerRangeAnalysis>(assumptions);
+    AMD::initializeFuncOps(mod, rangeAnalysis);
     if (failed(solver->initializeAndRun(getOperation())))
       return signalPassFailure();
 
     auto nonNegativePred = [&solver](Value v) -> bool {
-      return succeeded(AMD::staticallyNonNegative(*solver, v));
+      if (const auto *r =
+              solver->lookupState<dataflow::IntegerValueRangeLattice>(v)) {
+        if (r->getValue().isUninitialized())
+          return false;
+        if (AMD::isEmptyInitializedRange(r->getValue().getValue()))
+          return false;
+      }
+      return succeeded(dataflow::staticallyNonNegative(*solver, v));
     };
-    mod->walk<WalkOrder::PreOrder>([&solver, nonNegativePred](Operation *op) {
-      SmallVector<ConstantIntRanges> outputRanges;
-      auto results = op->getResults();
-      collectRanges(*solver, results, outputRanges);
-      if (!outputRanges.empty()) {
-        for (const auto &[res, outR] : llvm::zip(results, outputRanges)) {
+
+    mod.walk<WalkOrder::PreOrder>([&solver](FuncOp funcOp) {
+      auto args = funcOp.getArguments();
+      if (auto argRanges = AMD::collectRanges(*solver, args)) {
+        int i = -1;
+        for (const auto &[arg, argR] : llvm::zip(args, *argRanges)) {
+          i++;
+          if (!argR)
+            continue;
           std::string rangeS;
           llvm::raw_string_ostream rangeSt(rangeS);
-          rangeSt << outR;
+          if (args.size() > 1)
+            rangeSt << "arg " << i << ": " << argR;
+          else
+            rangeSt << argR;
+          emitRemark(arg.getLoc(), rangeS);
+        }
+      }
+    });
+
+    mod->walk<WalkOrder::PreOrder>([&solver, nonNegativePred,
+                                    rangeAnalysis](Operation *op) {
+      auto results = op->getResults();
+      if (auto outputRanges = AMD::collectRanges(*solver, results)) {
+        int i = -1;
+        for (const auto &[res, outR] : llvm::zip(results, *outputRanges)) {
+          i++;
+          if (!outR)
+            continue;
+          std::string rangeS;
+          llvm::raw_string_ostream rangeSt(rangeS);
+          if (results.size() > 1)
+            rangeSt << "result " << i << ": " << outR;
+          else
+            rangeSt << outR;
           emitRemark(res.getLoc(), rangeS);
+        }
+
+        if (auto cmpOp = llvm::dyn_cast<arith::CmpIOp>(op)) {
+          if (AMD::cmpIIsStaticallyTrue(*solver, cmpOp))
+            emitRemark(op->getLoc(), "result is true");
         }
       }
 
-      if (!op->getResults().empty() &&
-          llvm::all_of(op->getResults(), nonNegativePred)) {
-        emitRemark(op->getLoc(), "non-neg");
+      int i = 0;
+      for (auto result : results) {
+        if (nonNegativePred(result)) {
+          std::string nonNegs;
+          llvm::raw_string_ostream nonNegSt(nonNegs);
+          if (results.size() > 1)
+            nonNegSt << "result " << i << ": non-neg";
+          else
+            nonNegSt << "non-neg";
+          emitRemark(result.getLoc(), nonNegs);
+        }
+        i++;
+      }
+
+      if (LoopLikeOpInterface loop = llvm::dyn_cast<LoopLikeOpInterface>(op)) {
+        int64_t loopTripCount = rangeAnalysis->getTotalLoopTripCount(loop);
+        emitRemark(loop.getLoc(), "inferred total trip count: " +
+                                      std::to_string(loopTripCount));
       }
     });
   }
@@ -76,10 +115,8 @@ struct TestAMDRangeAnalysisPass
 
 } // namespace
 
-namespace mlir {
-namespace test {
+namespace mlir::test {
 void registerTestTritonAMDGPURangeAnalysis() {
   PassRegistration<TestAMDRangeAnalysisPass>();
 }
-} // namespace test
-} // namespace mlir
+} // namespace mlir::test

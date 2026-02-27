@@ -199,7 +199,7 @@ Value mxfpScaleFp16(RewriterBase &rewriter, Location loc, Value v, Value scale,
   Value scaleF32 =
       b.bitcast(b.shl(b.zext(i32_ty, scale), b.i32_val(23)), f32_ty);
   Value scaleF16 =
-      LLVM::AMD::cvtFp32ToFp16(loc, rewriter, scaleF32, RoundingMode::RTNE);
+      LLVM::AMD::cvtFp32ToFp16RTNE_oneValue(loc, rewriter, scaleF32);
   Value mulF16 = b.fmul(v, scaleF16);
   if (fastMath)
     return mulF16;
@@ -279,8 +279,7 @@ public:
     if (mDim != 32 && mDim != 16)
       return rewriter.notifyMatchFailure(op, "NYI: non-mfma32/16 intrinsics");
 
-    int numThreads = triton::gpu::TritonGPUDialect::getThreadsPerWarp(
-        op->getParentOfType<ModuleOp>());
+    int numThreads = lookupThreadsPerWarp(rewriter);
     auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
 
     bool useFp16 = op.getType().getElementType().isF16();

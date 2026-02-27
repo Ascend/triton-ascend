@@ -24,10 +24,14 @@ public:
                     std::optional<Value> ctaId, Type elemTy,
                     Value pred) const override;
 
+  // FIXME: Need to kill this function
   bool canUseStMatrix(RankedTensorType tensorTy, ArrayRef<unsigned> repShape,
                       ArrayRef<unsigned> paddedRepShape,
                       ArrayRef<unsigned> order,
                       int swizzleByteSize) const override;
+
+  bool supportLdMatrix() const override { return computeCapability >= 75; }
+  bool supportStMatrix() const override { return computeCapability >= 90; }
 
   void storeMatrixShared(RewriterBase &rewriter, Location loc, Value ptr,
                          Value val) const override;
@@ -51,10 +55,12 @@ public:
   std::string getMulhiFuncName(Type resultElementTy) const override;
 
   void printf(RewriterBase &rewriter, Value formatStrStart,
-              int formatStrByteCount, ValueRange args) const override;
+              int formatStrByteCount, ValueRange args,
+              ArrayRef<bool> isSigned = {}) const override;
 
-  void printf(RewriterBase &rewriter, StringRef msg,
-              ValueRange args) const override;
+  void printf(RewriterBase &rewriter, StringRef msg, ValueRange args,
+
+              ArrayRef<bool> isSigned = {}) const override;
 
   void assertFail(RewriterBase &rewriter, Location loc, StringRef message,
                   StringRef file, StringRef func, int line) const override;

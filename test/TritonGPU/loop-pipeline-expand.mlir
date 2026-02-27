@@ -1,4 +1,4 @@
-// RUN: triton-opt %s -split-input-file -tritongpu-pipeline | FileCheck %s --check-prefixes=CHECK
+// RUN: triton-opt %s -tritongpu-pipeline | FileCheck %s --check-prefixes=CHECK
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>
@@ -12,8 +12,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     %c0_i32 = arith.constant 0 : i32
     %c1_i32 = arith.constant 1 : i32
     %c128_i32 = arith.constant 128 : i32
-    // CHECK: ttg.local_alloc  : () -> !ttg.memdesc<4x256x32xf32
-    // CHECK: ttg.local_alloc  : () -> !ttg.memdesc<4x32x128xf32
+    // CHECK: ttg.local_alloc : () -> !ttg.memdesc<4x256x32xf32
+    // CHECK: ttg.local_alloc : () -> !ttg.memdesc<4x32x128xf32
     %0:3 = scf.for %arg5 = %c0_i32 to %c128_i32 step %c1_i32 iter_args(%arg6 = %arg0, %arg7 = %arg1, %arg8 = %arg2) -> (tensor<256x128xf32, #mma>, tensor<256x32x!tt.ptr<f32>, #blocked>, tensor<32x128x!tt.ptr<f32>, #blocked1>)  : i32 {
       // CHECK: ttg.memdesc_subview {{.*}} : !ttg.memdesc<4x256x32xf32
       // CHECK: ttg.async_wait {{.*}} {num = 4 : i32}
@@ -28,7 +28,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       %6 = tt.addptr %arg7, %arg3 {loop.cluster = 3 : i32, loop.stage = 1 : i32} : tensor<256x32x!tt.ptr<f32>, #blocked>, tensor<256x32xi32, #blocked>
       %7 = tt.addptr %arg8, %arg4 {loop.cluster = 3 : i32, loop.stage = 1 : i32} : tensor<32x128x!tt.ptr<f32>, #blocked1>, tensor<32x128xi32, #blocked1>
       scf.yield %5, %6, %7 : tensor<256x128xf32, #mma>, tensor<256x32x!tt.ptr<f32>, #blocked>, tensor<32x128x!tt.ptr<f32>, #blocked1>
-    } {tt.num_stages = 4 : i32}
+    } {tt.num_stages = 4 : i32, tt.scheduled_max_stage = 1 : i32}
     tt.return %0#0, %0#1, %0#2 : tensor<256x128xf32, #mma>, tensor<256x32x!tt.ptr<f32>, #blocked>, tensor<32x128x!tt.ptr<f32>, #blocked1>
   }
 }

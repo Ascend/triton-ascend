@@ -1,8 +1,12 @@
+#include "mlir/IR/Dominance.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/MMAv5PipelineUtility.h"
+#include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Schedule.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "triton-loop-pipeline"
@@ -12,12 +16,13 @@
 using namespace mlir;
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
-
-namespace mlir {
-namespace triton {
-namespace gpu {
-
+namespace ttng = mlir::triton::nvidia_gpu;
+namespace mlir::triton::gpu {
 namespace {
+
+//===----------------------------------------------------------------------===//
+// scheduleLoops
+//===----------------------------------------------------------------------===//
 
 bool hasGpuBarriers(scf::ForOp forOp) {
   WalkResult result = forOp.walk(
@@ -26,7 +31,8 @@ bool hasGpuBarriers(scf::ForOp forOp) {
 }
 
 // Return true if the preconditions for pipelining the loop are met.
-bool isSafeToPipeline(scf::ForOp forOp) {
+bool isSafeToPipeline(scf::ForOp forOp,
+                      const DenseMap<Operation *, int> &opLatency) {
   // Skip loop with distance > 1.
   if (loopHasDistGreaterThanOne(forOp))
     return false;
@@ -63,6 +69,7 @@ CoarseSchedule scheduleKeyOps(scf::ForOp forOp,
   if (latOps.empty())
     return CoarseSchedule(0);
 
+  DominanceInfo domInfo(forOp);
   // Compute the longest path to the yield for each operation reachable
   // from any latency operation.
   DenseMap<Operation *, int> distance;
@@ -144,6 +151,56 @@ CoarseSchedule scheduleKeyOps(scf::ForOp forOp,
   return schedule;
 }
 
+// Get an initial schedule for the loop. This is the base schedule from which
+// the rest of the pass will backward propagate dependencies.
+CoarseSchedule getInitialSchedule(scf::ForOp forOp,
+                                  const DenseMap<Operation *, int> &opLatency) {
+  if (!isSafeToPipeline(forOp, opLatency))
+    return CoarseSchedule(0);
+
+  // If the loop has assigned latencies, use them to determine the initial
+  // schedule.
+  if (hasLatenciesAssigned(forOp, opLatency))
+    return scheduleKeyOps(forOp, opLatency);
+
+  // If the loop has an existing schedule, use it as the base schedule.
+  CoarseSchedule schedule;
+  if (forOp->hasAttr(kWarpSpecializeAttrName) &&
+      succeeded(schedule.deSerialize(forOp))) {
+    // The loop was partitioned from a warp-specialized loop, meaning it can
+    // have a partial view of the original loop stages. Re-schedule the loop
+    // root at the stages of the latency ops to prune unnecessary stages.
+    auto isLatencyOp = [&](Operation &op) {
+      return opLatency.count(&op) ||
+             isa<LoadOp, DescriptorLoadOp, DescriptorGatherOp, LocalStoreOp,
+                 LocalLoadOp, ttng::TMEMLoadOp, ttng::TMEMStoreOp,
+                 AsyncCopyGlobalToLocalOp, ttng::AsyncTMACopyGlobalToLocalOp,
+                 ttng::AsyncTMAGatherOp, ttng::MMAv5OpInterface,
+                 ttng::WaitBarrierOp, ttng::ArriveBarrierOp>(op);
+    };
+
+    // If there are no latency ops or all latency ops are in the same stage, we
+    // don't need to pipeline the loop. Return a new schedule with everything
+    // assigned to the same stage.
+    DenseSet<int> latencyStages;
+    auto ops = forOp.getBody()->without_terminator();
+    for (Operation &op : llvm::make_filter_range(ops, isLatencyOp))
+      latencyStages.insert(schedule[&op].first);
+    if (latencyStages.size() <= 1) {
+      CoarseSchedule normalized(/*numStages=*/1);
+      auto cluster = normalized.clusters.newAtFront();
+      for (Operation &op : ops)
+        normalized.insert(&op, 0, cluster);
+      return normalized;
+    }
+
+    schedule.shrinkToFit();
+    return schedule;
+  }
+
+  return CoarseSchedule(0);
+}
+
 // Find dependencies with distance of 1. They will go to the next stage,
 // but in the cluster before the current op.
 void scheduleDistanceOneDependencies(scf::ForOp forOp,
@@ -151,7 +208,7 @@ void scheduleDistanceOneDependencies(scf::ForOp forOp,
   int numStages = schedule.getNumStages();
 
   // Mapping from the cluster to the cluster before it.
-  DenseMap<CoarseSchedule::Cluster *, CoarseSchedule::Cluster> dist1Cluster;
+  DenseMap<CoarseSchedule::ClusterHash, CoarseSchedule::Cluster> dist1Cluster;
   for (auto &op : forOp.getBody()->without_terminator()) {
     if (schedule.count(&op) == 0)
       continue;
@@ -174,11 +231,16 @@ void scheduleDistanceOneDependencies(scf::ForOp forOp,
                                       /*includeArg=*/true,
                                       /*insertIfEarlier=*/true);
             } else {
-              if (dist1Cluster.count(&cluster) == 0) {
-                dist1Cluster[&cluster] = schedule.clusters.newBefore(cluster);
+              CoarseSchedule::ClusterHash clusterHash =
+                  CoarseSchedule::hashCluster(cluster);
+              if (dist1Cluster.count(clusterHash) == 0) {
+                dist1Cluster[clusterHash] =
+                    schedule.clusters.newBefore(cluster);
               }
-              schedule.insertIfAbsent(defOp, stage + 1, dist1Cluster[&cluster]);
-              schedule.insertDepsOfOp(defOp, stage + 1, dist1Cluster[&cluster],
+              schedule.insertIfAbsent(defOp, stage + 1,
+                                      dist1Cluster[clusterHash]);
+              schedule.insertDepsOfOp(defOp, stage + 1,
+                                      dist1Cluster[clusterHash],
                                       /*includeArg=*/true,
                                       /*includeIfEarlier=*/true);
             }
@@ -209,7 +271,7 @@ CoarseSchedule::Cluster schedulePrologueAndEpilogue(scf::ForOp forOp,
       BackwardSliceOptions opt;
       opt.omitBlockArguments = true;
       opt.omitUsesFromAbove = false;
-      getBackwardSlice((Operation *)op, &backwardSlice, opt);
+      (void)getBackwardSlice((Operation *)op, &backwardSlice, opt);
 
       for (auto op : backwardSlice) {
         if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
@@ -282,10 +344,8 @@ void scheduleRemainingToLastStage(scf::ForOp forOp, CoarseSchedule &schedule,
 
 void scheduleLoop(scf::ForOp forOp,
                   const DenseMap<Operation *, int> &opLatency) {
-  if (!hasLatenciesAssigned(forOp, opLatency) || !isSafeToPipeline(forOp))
-    return;
   // Based on the latencies, schedule the key ops to the stages.
-  CoarseSchedule schedule = scheduleKeyOps(forOp, opLatency);
+  CoarseSchedule schedule = getInitialSchedule(forOp, opLatency);
   if (schedule.empty())
     return;
   LLVM_DEBUG({
@@ -319,8 +379,7 @@ void scheduleLoop(scf::ForOp forOp,
   schedule.serialize(forOp);
 }
 
-} // namespace
-
+/// Schedule the loops based on the latencies assigned to the operations.
 void scheduleLoops(ModuleOp moduleOp) {
   DenseMap<Operation *, int> opLatency = deserializeLatencies(moduleOp);
   SmallVector<scf::ForOp> loops;
@@ -332,6 +391,19 @@ void scheduleLoops(ModuleOp moduleOp) {
   }
 }
 
-} // namespace gpu
-} // namespace triton
-} // namespace mlir
+} // namespace
+
+//===----------------------------------------------------------------------===//
+// Pass Definition
+//===----------------------------------------------------------------------===//
+
+#define GEN_PASS_DEF_TRITONGPUSCHEDULELOOPS
+#include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
+
+struct ScheduleLoops : public impl::TritonGPUScheduleLoopsBase<ScheduleLoops> {
+  using TritonGPUScheduleLoopsBase::TritonGPUScheduleLoopsBase;
+
+  void runOnOperation() override { scheduleLoops(getOperation()); }
+};
+
+} // namespace mlir::triton::gpu

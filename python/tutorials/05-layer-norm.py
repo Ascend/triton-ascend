@@ -185,6 +185,11 @@ def _layer_norm_bwd_dx_fused(DX,  # pointer to the input gradient
         partial_db += tl.load(DB, mask=mask)
     tl.store(DW, partial_dw, mask=mask)
     tl.store(DB, partial_db, mask=mask)
+
+    # need a barrier to ensure all threads finished before
+    # releasing the lock
+    tl.debug_barrier()
+
     # Release the lock
     tl.atomic_xchg(Lock, 0)
 
@@ -280,7 +285,7 @@ class LayerNorm(torch.autograd.Function):
             BLOCK_SIZE_N=ctx.BLOCK_SIZE,  #
             GROUP_SIZE_M=GROUP_SIZE_M,  #
             num_warps=ctx.num_warps)
-        grid = lambda meta: [triton.cdiv(N, meta['BLOCK_SIZE_N'])]
+        grid = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE_N']), )
         # accumulate partial sums in separate kernel
         _layer_norm_bwd_dwdb[grid](
             _dw, _db, dw, db, min(GROUP_SIZE_M, M), N,  #

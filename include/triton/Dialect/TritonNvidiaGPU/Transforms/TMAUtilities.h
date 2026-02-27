@@ -1,103 +1,67 @@
 #pragma once
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/PatternMatch.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Attributes.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/TritonGPUInterfaces.h"
+#include "llvm/Support/Casting.h"
 
 namespace mlir::triton::nvidia_gpu {
 
 constexpr inline int TMA_SIZE_BYTES = 128;
 constexpr inline int TMA_ALIGN = 128;
 
-template <typename BuilderT>
-mlir::LogicalResult createTMADesc(mlir::Value tmaPtr,
-                                  mlir::triton::MakeTensorDescOp op,
-                                  BuilderT &builder) {
-  using namespace mlir;
-  MLIRContext *ctx = op.getContext();
-  auto loc = op.getLoc();
-  auto mkI32Constant = [&](int32_t val) {
-    return builder.template create<arith::ConstantOp>(
-        loc, builder.getI32Type(), builder.getI32IntegerAttr(val));
-  };
-
-  auto elemType = op.getBase().getType().getPointeeType();
-  auto elemSize = elemType.getIntOrFloatBitWidth() / 8;
-
-  int32_t contig_dim_size = op.getTensorShape().back();
-  int32_t contig_dim_size_in_bytes = contig_dim_size * elemSize;
-  if (contig_dim_size_in_bytes > 128) {
-    contig_dim_size = 128 / elemSize;
-  }
-  llvm::SmallVector<Value> boxDim;
-  boxDim.push_back(mkI32Constant(contig_dim_size));
-  for (int k = op.getTensorShape().size() - 2; k >= 0; --k) {
-    boxDim.push_back(mkI32Constant(op.getTensorShape()[k]));
-  }
-
-  int32_t swizzle_mode;
-  if (contig_dim_size_in_bytes >= 128) {
-    swizzle_mode = 3;
-  } else if (contig_dim_size_in_bytes == 64) {
-    swizzle_mode = 2;
-  } else if (contig_dim_size_in_bytes == 32) {
-    swizzle_mode = 1;
-  } else {
-    op->emitError()
-        << "contiguous box dimension must be at least 32 bytes but got "
-        << contig_dim_size_in_bytes;
-    return failure();
-  }
-
-  Value elemSizeVal = builder.template create<arith::ConstantOp>(
-      loc, builder.getI64Type(), builder.getI64IntegerAttr(elemSize));
-
-  SmallVector<Value> globalDim(llvm::reverse(op.getShape()));
-  SmallVector<Value> globalStride;
-  for (int k = op.getStrides().size() - 2; k >= 0; --k) {
-    globalStride.push_back(op.getStrides()[k]);
-  }
-
-  SmallVector<Value> elementStride(globalDim.size(), mkI32Constant(1));
-
-  for (int i = 0; i < globalStride.size(); ++i)
-    globalStride[i] = builder.template create<arith::MulIOp>(
-        loc, globalStride[i], elemSizeVal);
-
-  int elemTypeEnum;
-  switch (elemSize) {
-  case 1: {
-    elemTypeEnum = 0;
-    break;
-  }
-  case 2: {
-    elemTypeEnum = 1;
-    break;
-  }
-  case 4: {
-    elemTypeEnum = 2;
-    break;
-  }
-  default: {
-    op->emitError()
-        << "Tensor descriptor element type must have size 1, 2, or 4 but got "
-        << elemSize;
-    return failure();
-  }
-  }
-
-  builder.template create<triton::ExperimentalTensormapCreateOp>(
-      loc,
-      /*desc_ptr=*/tmaPtr,
-      /*global_address=*/op.getBase(),
-      /*box_dim=*/boxDim,
-      /*global_dim=*/globalDim,
-      /*global_stride=*/globalStride,
-      /*element_strides=*/elementStride,
-      /*elem_type*/ builder.getI32IntegerAttr(elemTypeEnum),
-      /*interleave_layout*/ builder.getI32IntegerAttr(0),
-      /*swizzle_mode=*/builder.getI32IntegerAttr(swizzle_mode),
-      /*fill_mode=*/builder.getI32IntegerAttr(0));
-  return success();
+inline bool isFp4Padded(Attribute encoding) {
+  auto mmaEnc = dyn_cast<gpu::NVMMASharedEncodingAttr>(encoding);
+  return mmaEnc && mmaEnc.getFp4Padded();
 }
+
+SmallVector<Value> translateTMAIndices(OpBuilder &builder, Location loc,
+                                       Attribute encoding,
+                                       SmallVector<Value> indices);
+
+gpu::CTALayoutAttr updateCTALayoutForShape(gpu::CTALayoutAttr ctaLayout,
+                                           ArrayRef<int64_t> shape);
+
+gpu::SharedEncodingTrait
+updateEncodingForShape(Operation *op, gpu::SharedEncodingTrait encoding,
+                       RankedTensorType tensorType);
+
+triton::gpu::SharedEncodingTrait
+getEncodingFromDescriptor(Operation *op, RankedTensorType tensorType,
+                          Value desc);
+
+SmallVector<int64_t> getTMABlockShape(ArrayRef<int64_t> shapePerCTA,
+                                      int elementBitWidth, int swizzleBytes,
+                                      bool fp4Padded, bool transposed,
+                                      bool packedSize);
+
+inline SmallVector<int64_t> getTMABlockShape(Attribute encoding,
+                                             ArrayRef<int64_t> shapePerCTA,
+                                             bool packedSize) {
+  auto mmaEnc = cast<gpu::NVMMASharedEncodingAttr>(encoding);
+  return getTMABlockShape(shapePerCTA, mmaEnc.getElementBitWidth(),
+                          mmaEnc.getSwizzlingByteWidth(), mmaEnc.getFp4Padded(),
+                          mmaEnc.getTransposed(), packedSize);
+}
+
+inline SmallVector<int64_t> getTMABlockShape(RankedTensorType ty,
+                                             bool packedSize) {
+  auto shapePerCTA = gpu::getShapePerCTA(ty);
+  return getTMABlockShape(ty.getEncoding(), shapePerCTA, packedSize);
+}
+
+inline SmallVector<int64_t> getTMABlockShape(triton::gpu::MemDescType ty,
+                                             bool packedSize) {
+  auto shapePerCTA = gpu::getShapePerCTA(ty);
+  return getTMABlockShape(ty.getEncoding(), shapePerCTA, packedSize);
+}
+
+std::optional<int> getTMASwizzleMode(Operation *op, TensorDescType ty);
+
+std::optional<int> getTMAElementType(Operation *op, TensorDescType ty);
+
+LogicalResult createTMADesc(Value tmaPtr, MakeTensorDescOp op,
+                            OpBuilder &builder);
 
 } // namespace mlir::triton::nvidia_gpu

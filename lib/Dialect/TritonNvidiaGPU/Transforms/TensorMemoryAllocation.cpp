@@ -9,13 +9,14 @@
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/MapVector.h"
 
-#define GEN_PASS_CLASSES
-#include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h.inc"
+namespace mlir {
+namespace triton {
+namespace nvidia_gpu {
 
-using namespace mlir;
-using namespace triton;
-using namespace triton::gpu;
-using namespace triton::nvidia_gpu;
+namespace ttg = triton::gpu;
+
+#define GEN_PASS_DEF_TRITONTENSORMEMORYALLOCATIONPASS
+#include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h.inc"
 
 namespace {
 
@@ -54,12 +55,17 @@ struct MemoryBitMap {
   }
 
   TMemChunk findFirstFit(TMemAllocation allocSize,
-                         std::optional<int> rowIdConstraint) const {
+                         std::optional<int> rowIdConstraint,
+                         int columnAlignment) const {
     int numRows = allocSize.numRows / allocGranularity;
     assert(kNumRows - numRows >= 0);
     assert(allocSize.numRows % allocGranularity == 0);
     int startCol = 0;
     while (1) {
+      // Skip to the next aligned address.
+      if (startCol % columnAlignment != 0) {
+        startCol = (startCol / columnAlignment + 1) * columnAlignment;
+      }
       // Iterate over possible starting rows
       for (int startRow = 0; startRow <= kNumRows - numRows; ++startRow) {
         if (rowIdConstraint && *rowIdConstraint != startRow)
@@ -114,7 +120,7 @@ static Interval<int> getLiveIntervals(Value value, Liveness &liveness,
   SmallVector<Operation *> users(value.getUsers());
   while (!users.empty()) {
     Operation *user = users.pop_back_val();
-    if (!isa<triton::gpu::MemDescSubviewOp>(user))
+    if (!isa<ttg::MemDescSubviewOp, ttg::MemDescReinterpretOp>(user))
       continue;
     auto usersLivness = liveness.resolveLiveness(user->getResult(0));
     liveOperations.insert(liveOperations.end(), usersLivness.begin(),
@@ -137,7 +143,7 @@ static Interval<int> getLiveIntervals(Value value, Liveness &liveness,
 }
 
 static void updateMap(MemoryBitMap &memoryMap, Interval<int> liveInterval,
-                      std::map<int, TMemChunk> &intervalLiverangeEnd) {
+                      std::multimap<int, TMemChunk> &intervalLiverangeEnd) {
   int start = liveInterval.start();
   // Add any dead liverange to the list of free intervals.
   for (auto it = intervalLiverangeEnd.begin();
@@ -152,7 +158,8 @@ static void updateMap(MemoryBitMap &memoryMap, Interval<int> liveInterval,
 static TMemChunk allocFirstFit(MemoryBitMap &memoryMap,
                                TMemAllocation allocSize,
                                std::optional<int> rowIdConstraint,
-                               ArrayRef<TMemChunk> coexistingChunks) {
+                               ArrayRef<TMemChunk> coexistingChunks,
+                               int columnAlignment) {
   // `coexistingChunks` are all the allocations that might need to be live at
   // the same time as the current allocation plus what is known to be currently
   // live. Union those allocations with a copy of the current memory map and use
@@ -160,7 +167,8 @@ static TMemChunk allocFirstFit(MemoryBitMap &memoryMap,
   MemoryBitMap mapForAlloc = memoryMap;
   for (const TMemChunk &chunk : coexistingChunks)
     mapForAlloc.alloc(chunk);
-  TMemChunk chunk = mapForAlloc.findFirstFit(allocSize, rowIdConstraint);
+  TMemChunk chunk =
+      mapForAlloc.findFirstFit(allocSize, rowIdConstraint, columnAlignment);
 
   // Mark this chunk as allocated in the actual memory map.
   memoryMap.alloc(chunk);
@@ -168,12 +176,25 @@ static TMemChunk allocFirstFit(MemoryBitMap &memoryMap,
 }
 
 static Operation *getAlloc(Value value) {
-  Operation *op = value.getDefiningOp();
-  while (isa<triton::gpu::MemDescSubviewOp>(op)) {
-    op = op->getResult(0).getDefiningOp();
+  while (true) {
+    if (auto allocOp = value.getDefiningOp<TMEMAllocOp>())
+      return allocOp;
+    if (auto subviewOp = value.getDefiningOp<ttg::MemDescSubviewOp>()) {
+      value = subviewOp.getSrc();
+      continue;
+    }
+    if (auto reinterpOp = value.getDefiningOp<ttg::MemDescReinterpretOp>()) {
+      value = reinterpOp.getSrc();
+      continue;
+    }
+    auto arg = dyn_cast<BlockArgument>(value);
+    if (!arg || !isa<triton::gpu::WarpSpecializePartitionsOp>(
+                    arg.getOwner()->getParentOp()))
+      llvm::report_fatal_error("expected to find a TMEM alloc op");
+    auto partitions = cast<triton::gpu::WarpSpecializePartitionsOp>(
+        arg.getOwner()->getParentOp());
+    value = partitions.getParentOp().getExplicitCaptures()[arg.getArgNumber()];
   }
-  assert(isa<triton::nvidia_gpu::TMEMAllocOp>(op) && "Expected a TMEMAllocOp");
-  return op;
 }
 
 class RowIdConstraints {
@@ -214,23 +235,22 @@ allocateTMem(Operation *parentOp,
     if (auto alloc = dyn_cast<triton::nvidia_gpu::TMEMAllocOp>(op)) {
       allocs.push_back(alloc);
     }
-    if (auto mmaOp = dyn_cast<triton::nvidia_gpu::TCGen5MMAOp>(op)) {
-      if (isa<triton::nvidia_gpu::TensorMemoryEncodingAttr>(
-              mmaOp.getA().getType().getEncoding())) {
+    if (auto mmaOp = dyn_cast<MMAv5OpInterface>(op)) {
+      if (isa<TensorMemoryEncodingAttr>(mmaOp.getA().getType().getEncoding())) {
         TMemAllocation allocSize = getTmemAllocSizes(mmaOp.getA().getType());
         if (allocSize.numRows == 64) {
           // HW restriction, the A alloc and accumulator needs to be in the same
           // rows.
           rowIdConstraints.joinOps(getAlloc(mmaOp.getA()),
-                                   getAlloc(mmaOp.getD()));
+                                   getAlloc(mmaOp.getAccumulator()));
         } else {
           // TODO: we need to handle cases where the format is blockM and we
           // have multiple blocks.
-          assert((cast<triton::nvidia_gpu::TensorMemoryEncodingAttr>(
+          assert((cast<TensorMemoryEncodingAttr>(
                       mmaOp.getA().getType().getEncoding())
                           .getBlockM() != 64 &&
-                  cast<triton::nvidia_gpu::TensorMemoryEncodingAttr>(
-                      mmaOp.getD().getType().getEncoding())
+                  cast<TensorMemoryEncodingAttr>(
+                      mmaOp.getAccumulator().getType().getEncoding())
                           .getBlockM() != 64) &&
                  "interleaved layout with TMEM operand is not supported yet.");
         }
@@ -240,7 +260,7 @@ allocateTMem(Operation *parentOp,
   int totalMemorySize = 0;
   MemoryBitMap memoryMap;
   Liveness liveness(parentOp);
-  std::map<int, TMemChunk> intervalLiverangeEnd;
+  std::multimap<int, TMemChunk> intervalLiverangeEnd;
   DenseMap<TMEMAllocOp, TMemChunk> allocChunks;
   // Implement a linear scan first fit algorithm. We expect that fragmentation
   // won't be a problem, if it is this should be revisited.
@@ -250,10 +270,11 @@ allocateTMem(Operation *parentOp,
     // Find all allocations in code that may execute at the same time. Only look
     // at processed allocations.
     SmallVector<TMemChunk> coexistingChunks;
-    if (auto ws = alloc->getParentOfType<WarpSpecializeOp>()) {
+    if (auto ws = alloc->getParentOfType<triton::gpu::WarpSpecializeOp>()) {
       for (auto prevIt = allocs.begin(); prevIt != it; ++prevIt) {
         TMEMAllocOp prevAlloc = *prevIt;
-        auto prevWs = prevAlloc->getParentOfType<WarpSpecializeOp>();
+        auto prevWs =
+            prevAlloc->getParentOfType<triton::gpu::WarpSpecializeOp>();
         if (prevWs && prevWs == ws &&
             alloc->getParentRegion() != prevAlloc->getParentRegion())
           coexistingChunks.push_back(allocChunks.at(prevAlloc));
@@ -267,12 +288,16 @@ allocateTMem(Operation *parentOp,
 
     std::optional<int> rowIdConstraint =
         rowIdConstraints.getRowIdConstraint(alloc);
+    // TODO: clarify the alignment requirements for different allocations. For
+    // now enforce an alignment of 4 columns.
+    const int columnAlignment = 4;
     TMemChunk chunkAllocated =
-        allocFirstFit(memoryMap, allocSize, rowIdConstraint, coexistingChunks);
+        allocFirstFit(memoryMap, allocSize, rowIdConstraint, coexistingChunks,
+                      columnAlignment);
     allocChunks.insert({alloc, chunkAllocated});
     // currently naively constraint allocs based on the first one we find.
     rowIdConstraints.addConstraints(alloc, chunkAllocated.startRow);
-    intervalLiverangeEnd[liveInterval.end()] = chunkAllocated;
+    intervalLiverangeEnd.insert({liveInterval.end(), chunkAllocated});
     int colOffset = chunkAllocated.startCol;
     int rowOffset = chunkAllocated.startRow * 16;
 
@@ -289,10 +314,16 @@ allocateTMem(Operation *parentOp,
   return totalMemorySize;
 }
 
-class TritionTensorMemoryAllocationPass
-    : public TritionTensorMemoryAllocationPassBase<
-          TritionTensorMemoryAllocationPass> {
+} // anonymous namespace
+
+class TritonTensorMemoryAllocationPass
+    : public impl::TritonTensorMemoryAllocationPassBase<
+          TritonTensorMemoryAllocationPass> {
 public:
+  IntegerAttr getI32Attr(int32_t value) {
+    return Builder(&getContext()).getI32IntegerAttr(value);
+  }
+
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     MLIRContext *ctx = &getContext();
@@ -302,6 +333,9 @@ public:
     int totalMemorySize = allocateTMem(mod, offsets);
 
     std::array<int, 6> possibleAllocations = {0, 32, 64, 128, 256, 512};
+    // NOTE: if totalMemorySize > 512 we exceeded the maximum amount of tensor
+    // memory, but we let the compilation finish so that we can raise an
+    // exception in python for the auto-tuner.
     if (totalMemorySize <= 512) {
       for (int size : possibleAllocations) {
         if (totalMemorySize <= size) {
@@ -310,23 +344,21 @@ public:
         }
       }
     }
-    // if totalMemorySize > 512 we exceeded the maximum amount of tensor memory,
-    // let the compilation finish so that we can raise an exception in python
-    // for auto-tuner.
     if (totalMemorySize > 0) {
-      assert(mod->getAttr("ttg.shared") != nullptr &&
-             cast<IntegerAttr>(mod->getAttr("ttg.shared")).getInt() != 0 &&
-             "Shared memory is required for allocation of Tensor Core memory.");
+      // We use a small smem allocation to get the tensor memory base address
+      // from tcgen05.alloc, ensure the block has at least 4 bytes of smem
+      int shared = 0;
+      if (auto sharedAttr = mod->getAttr("ttg.shared")) {
+        shared = cast<IntegerAttr>(sharedAttr).getInt();
+      }
+      if (shared < 4) {
+        mod->setAttr("ttg.shared", getI32Attr(4));
+      }
     }
-
-    mod->setAttr("ttg.tensor_memory_size",
-                 mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
-                                        totalMemorySize));
+    mod->setAttr("ttg.tensor_memory_size", getI32Attr(totalMemorySize));
   }
 };
 
-} // namespace
-
-std::unique_ptr<Pass> mlir::createTensorMemoryAllocationPass() {
-  return std::make_unique<TritionTensorMemoryAllocationPass>();
-}
+} // namespace nvidia_gpu
+} // namespace triton
+} // namespace mlir

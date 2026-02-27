@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <assert.h>
 #include <cstdlib>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -27,13 +28,16 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "MLIR_ENABLE_DUMP",
     "MLIR_DUMP_PATH",
     "MLIR_ENABLE_TIMING",
+    "MLIR_DISABLE_MULTITHREADING",
     "TRITON_DEFAULT_FP_FUSION",
     "TRITON_DISABLE_LINE_INFO",
     "TRITON_DISABLE_RESHAPE_ENCODING_INFERENCE",
     "TRITON_ENABLE_LLVM_DEBUG",
     "TRITON_HIP_GLOBAL_PREFETCH",
     "TRITON_HIP_LOCAL_PREFETCH",
+    "TRITON_HIP_USE_ASYNC_COPY",
     "TRITON_HIP_USE_BLOCK_PINGPONG",
+    "TRITON_HIP_USE_IN_THREAD_TRANSPOSE",
     "TRITON_LLVM_DEBUG_ONLY",
     "TRITON_ENABLE_ASAN",
     "TRITON_OVERRIDE_ARCH",
@@ -41,8 +45,8 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "NVPTX_ENABLE_DUMP",
     "STORE_TMEM_TO_GLOBAL_BYPASS_SMEM",
     "ALLOW_LHS_TMEM_LAYOUT_CONVERSION",
-    "ENABLE_LHS_TO_TMEM",
     "TRITON_F32_DEFAULT",
+    "TRITON_PREFER_TMEM_16x256_LAYOUT",
     // clang-format on
 };
 
@@ -65,7 +69,10 @@ inline void assertIsRecognized(const std::string &env) {
   assert((is_invalidating || is_neutral) && errmsg.c_str());
 }
 
+static std::mutex getenv_mutex;
+
 inline std::string getStrEnv(const std::string &env) {
+  std::lock_guard<std::mutex> lock(getenv_mutex);
   assertIsRecognized(env);
   const char *cstr = std::getenv(env.c_str());
   if (!cstr)
@@ -76,6 +83,7 @@ inline std::string getStrEnv(const std::string &env) {
 
 // return value of a cache-invalidating boolean environment variable
 inline bool getBoolEnv(const std::string &env) {
+  std::lock_guard<std::mutex> lock(getenv_mutex);
   assertIsRecognized(env);
   const char *s = std::getenv(env.c_str());
   std::string str(s ? s : "");

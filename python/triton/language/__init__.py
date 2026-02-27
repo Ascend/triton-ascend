@@ -12,6 +12,7 @@ from . import extra
 from .standard import (
     argmax,
     argmin,
+    bitonic_merge,
     # cdiv,
     cumprod,
     cumsum,
@@ -20,6 +21,7 @@ from .standard import (
     max,
     min,
     ravel,
+    reduce_or,
     sigmoid,
     softmax,
     sort,
@@ -33,9 +35,11 @@ from .standard import (
 from .core import (
     PropagateNan,
     TRITON_MAX_TENSOR_NUMEL,
-    make_tensor_descriptor,
     load_tensor_descriptor,
     store_tensor_descriptor,
+    make_tensor_descriptor,
+    tensor_descriptor,
+    tensor_descriptor_type,
     add,
     advance,
     arange,
@@ -58,6 +62,7 @@ from .core import (
     clamp,
     const,
     constexpr,
+    constexpr_function,
     debug_barrier,
     device_assert,
     device_print,
@@ -94,7 +99,6 @@ from .core import (
     permute,
     pi32_t,
     pointer_type,
-    nv_tma_desc_type,
     program_id,
     range,
     reduce,
@@ -135,11 +139,10 @@ from .random import (
 __all__ = [
     "PropagateNan",
     "TRITON_MAX_TENSOR_NUMEL",
-    "_experimental_descriptor_load",
-    "_experimental_descriptor_store",
-    "make_tensor_descriptor",
     "load_tensor_descriptor",
     "store_tensor_descriptor",
+    "make_tensor_descriptor",
+    "tensor_descriptor",
     "abs",
     "add",
     "advance",
@@ -157,6 +160,7 @@ __all__ = [
     "atomic_xchg",
     "atomic_xor",
     "bfloat16",
+    "bitonic_merge",
     "block_type",
     "broadcast",
     "broadcast_to",
@@ -167,6 +171,7 @@ __all__ = [
     "clamp",
     "const",
     "constexpr",
+    "constexpr_function",
     "cos",
     "cumprod",
     "cumsum",
@@ -224,7 +229,6 @@ __all__ = [
     "philox_impl",
     "pi32_t",
     "pointer_type",
-    "nv_tma_desc_type",
     "program_id",
     "rand",
     "rand4x",
@@ -235,6 +239,7 @@ __all__ = [
     "range",
     "ravel",
     "reduce",
+    "reduce_or",
     "reshape",
     "rsqrt",
     "slice",
@@ -286,8 +291,26 @@ def str_to_ty(name):
         ty = str_to_ty(name)
         return pointer_type(element_ty=ty, const=const)
 
-    if name == "nvTmaDesc":
-        return nv_tma_desc_type()
+    if name.startswith("tensordesc"):
+        inner = name.split("<")[1].rstrip(">")
+        dtype, rest = inner.split("[", maxsplit=2)
+        block_shape, rest = rest.split("]", maxsplit=2)
+        block_shape = [int(s.strip()) for s in block_shape.rstrip("]").split(",")]
+        layout = rest.lstrip(",")
+        is_gluon = len(layout)
+        dtype = str_to_ty(dtype)
+        ndim = len(block_shape)
+        shape_type = tuple_type([int32] * ndim)
+        # FIXME: Last dim stride should be constexpr(1)
+        stride_type = tuple_type(([int64] * ndim))
+        block = block_type(dtype, block_shape)
+        if is_gluon:
+            from triton.experimental.gluon.language._layouts import NVMMASharedLayout
+            from triton.experimental.gluon.language.nvidia.hopper.tma import tensor_descriptor_type as gluon_tensor_descriptor_type
+            layout = eval(layout, dict(NVMMASharedLayout=NVMMASharedLayout))
+            assert isinstance(layout, NVMMASharedLayout)
+            return gluon_tensor_descriptor_type(block, shape_type, stride_type, layout)
+        return tensor_descriptor_type(block, shape_type, stride_type)
 
     if name == "constexpr":
         return constexpr

@@ -27,6 +27,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Tools/LayoutUtils.h"
 
 // clang-format off
 #include "Dialect/TritonAMDGPU/IR/Dialect.h"
@@ -241,4 +242,156 @@ UpcastMXFPOp::deduceOutputType(TypedValue<RankedTensorType> inputTensor,
   return RankedTensorType::get(newShape, outputElemType, newVEncoding);
 }
 
+LogicalResult InThreadTransposeOp::verify() {
+  auto srcTy = getSrc().getType();
+  auto dstTy = getResult().getType();
+  if (srcTy.getElementType() != dstTy.getElementType()) {
+    return emitOpError("Expect input and output tensor to have same dtype");
+  }
+
+  auto shape = srcTy.getShape();
+  if (shape != dstTy.getShape()) {
+    return emitOpError("Expect equal input and output shapes");
+  }
+
+  if (shape.size() != 2) {
+    return emitOpError("Expect 2d tensor");
+  }
+
+  auto srcEncoding = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
+  if (!srcEncoding) {
+    return emitOpError("Expect input tensor in Blocked encoding");
+  }
+
+  auto dstEncoding = dstTy.getEncoding();
+  auto expectedLinearLayout = deduceOutputLayout(shape, srcEncoding);
+  auto dstLinearLayout = triton::gpu::toLinearLayout(shape, dstEncoding);
+  if (dstLinearLayout != expectedLinearLayout) {
+    return emitOpError("Expect output layout to be transposed per thread: " +
+                       expectedLinearLayout.toString());
+  }
+  return success();
+}
+
+LinearLayout
+InThreadTransposeOp::deduceOutputLayout(ArrayRef<int64_t> shape,
+                                        gpu::BlockedEncodingAttr srcEncoding) {
+  auto srcLL = srcEncoding.toLinearLayout(shape);
+  SmallVector<unsigned> newRegOrder(srcEncoding.getOrder());
+  int rank = shape.size();
+  assert(rank == 2 && "InThreadTransposeOp do not support non 2d tensors yet");
+  std::swap(newRegOrder[rank - 2], newRegOrder[rank - 1]);
+
+  // Make in-register transposed tile
+  auto ctx = srcEncoding.getContext();
+  auto regDimName = StringAttr::get(ctx, "register");
+  auto inThreadTransposedTile = identityStandardND(
+      regDimName, srcEncoding.getSizePerThread(), newRegOrder);
+  // make sure basis in same order as in srcLayout
+  SmallVector<StringAttr> outDimNames(srcLL.getOutDimNames());
+  inThreadTransposedTile = inThreadTransposedTile.transposeOuts(outDimNames);
+
+  // Copy original bases, and replace register tile with transposed one
+  LinearLayout::BasesT bases = srcLL.getBases();
+  auto &regBase = *bases.find(regDimName);
+  int regsTransposed = inThreadTransposedTile.getInDimSizeLog2(regDimName);
+  for (int i = 0; i < regsTransposed; ++i)
+    regBase.second[i] = inThreadTransposedTile.getBasis(regDimName, i);
+
+  LinearLayout transposedLL(bases, SmallVector<StringAttr>(outDimNames));
+  return transposedLL;
+}
+
+LogicalResult ConcatOp::verify() {
+  auto sources = getSources();
+  auto result = getResult();
+
+  auto srcType = cast<RankedTensorType>(sources.front().getType());
+  auto dstType = cast<RankedTensorType>(result.getType());
+
+  auto srcShape = srcType.getShape();
+  auto dstShape = dstType.getShape();
+  unsigned rank = srcShape.size();
+
+  // 1) Shape related checks.
+  if (rank != dstShape.size())
+    return emitError()
+           << "Source and destination tensors must have the same rank.";
+
+  unsigned numTiles = 1;
+  for (int i = 0; i < rank; ++i) {
+    if (dstShape[i] % srcShape[i] != 0)
+      return emitError() << "Source and destination tensor shapes don't match.";
+    numTiles *= dstShape[i] / srcShape[i];
+  }
+
+  if (numTiles != sources.size())
+    return emitError() << "Number of source tiles (" << sources.size()
+                       << ") doesn't match required count (" << numTiles
+                       << ").";
+
+  // 2) Check that all sources have same type and element type match.
+  for (auto src : sources) {
+    auto curr = dyn_cast<RankedTensorType>(src.getType());
+    if (curr != srcType)
+      return emitError() << "All sources must have identical tensor types.";
+  }
+
+  if (dstType.getElementType() != srcType.getElementType())
+    return emitError()
+           << "Element types of sources and destination must match.";
+
+  // 3) Verify that source and destination layout match on a CTA tile.
+  auto srcLL = triton::gpu::toLinearLayout(srcShape, srcType.getEncoding());
+  auto dstLL = triton::gpu::toLinearLayout(dstShape, dstType.getEncoding());
+
+  auto getBases = [&](StringRef name) {
+    auto key = StringAttr::get(getContext(), name);
+    return std::pair{srcLL.getBases().lookup(key),
+                     dstLL.getBases().lookup(key)};
+  };
+
+  auto [regSrc, regDst] = getBases("register");
+  auto [laneSrc, laneDst] = getBases("lane");
+  auto [warpSrc, warpDst] = getBases("warp");
+
+  auto shapeCTASrc = mlir::triton::gpu::getShapePerCTATile(srcType);
+  auto shapeCTADst = mlir::triton::gpu::getShapePerCTATile(dstType);
+  if (shapeCTASrc != shapeCTADst)
+    return emitError() << "CTA tile shapes must match between source and "
+                          "destination tensors.";
+
+  unsigned numCTAs = 1;
+  for (int d = 0; d < rank; ++d)
+    numCTAs *= srcShape[d] / shapeCTASrc[d];
+  unsigned elemsPerThread =
+      triton::gpu::getTotalElemsPerThread(srcType) / numCTAs;
+  unsigned regCompareLen = std::log2(elemsPerThread);
+
+  auto compareBasis = [&](auto &srcBasis, auto &dstBasis, StringRef message,
+                          int limit = -1) {
+    int n = (limit < 0 ? srcBasis.size()
+                       : std::min<unsigned>(srcBasis.size(), limit));
+    for (size_t i = 0; i < n; ++i) {
+      if (srcBasis[i] != dstBasis[i]) {
+        emitError() << message;
+        return false;
+      }
+    }
+    return true;
+  };
+
+  if (laneSrc != laneDst || warpSrc != warpDst) {
+    return emitError() << "Lane and warp dim basis must match between source "
+                          "and destination layout.";
+  }
+
+  if (!compareBasis(regSrc, regDst,
+                    "Register basis must match on a CTA tile between source "
+                    "and destination.",
+                    regCompareLen))
+    return failure();
+
+  return success();
+}
 } // namespace mlir::triton::amdgpu

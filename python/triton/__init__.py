@@ -1,5 +1,5 @@
 """isort:skip_file"""
-__version__ = '3.2.0'
+__version__ = '3.4.0'
 
 # ---------------------------------------
 # Note: import order is significant here.
@@ -27,6 +27,8 @@ from . import language
 from . import testing
 from . import tools
 
+must_use_result = language.core.must_use_result
+
 __all__ = [
     "AsyncCompileMode",
     "autotune",
@@ -41,6 +43,7 @@ __all__ = [
     "KernelInterface",
     "language",
     "MockTensor",
+    "must_use_result",
     "next_power_of_2",
     "OutOfResources",
     "reinterpret",

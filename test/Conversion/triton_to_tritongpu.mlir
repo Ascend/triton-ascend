@@ -122,13 +122,16 @@ tt.func @gather_op() {
 
 // -----
 
+#shared = #ttg.nvmma_shared<{swizzlingByteWidth = 32, transposed = false, elementBitWidth = 8}>
+#bar_layout = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0], CTAsPerCGA = [1], CTASplitNum = [1], CTAOrder = [0]}>
+
 // CHECK: [[SLICE_PARENT:#.*]] = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [1, 0]}>
 
 // CHECK: @gather4_layout
 tt.func @gather4_layout(%arg0: !tt.tensordesc<tensor<1x128xf32>>, %arg1: i32, %arg2: !tt.ptr<f32>) {
   %cst = arith.constant dense<1> : tensor<32xi32>
   // CHECK: [[IDX:%.*]] = ttg.convert_layout %cst : tensor<32xi32, #{{.*}}> -> tensor<32xi32, #ttg.slice<{dim = 0, parent = [[SLICE_PARENT]]}>>
-  %0 = tt.experimental_descriptor_gather %arg0[%cst, %arg1] : (!tt.tensordesc<tensor<1x128xf32>>, tensor<32xi32>, i32) -> tensor<32x128xf32>
+  %0 = tt.descriptor_gather %arg0[%cst, %arg1] : (!tt.tensordesc<tensor<1x128xf32>>, tensor<32xi32>, i32) -> tensor<32x128xf32>
   %1 = tt.splat %arg2 : !tt.ptr<f32> -> tensor<32x128x!tt.ptr<f32>>
   tt.store %1, %0 : tensor<32x128x!tt.ptr<f32>>
   tt.return
@@ -140,7 +143,7 @@ tt.func @scatter4_layout(%arg0: !tt.tensordesc<tensor<1x128xf32>>, %arg1: i32, %
   %0 = tt.splat %arg2 : !tt.ptr<f32> -> tensor<32x128x!tt.ptr<f32>>
   %1 = tt.load %0 : tensor<32x128x!tt.ptr<f32>>
   // CHECK: [[IDX:%.*]] = ttg.convert_layout %cst : tensor<32xi32, #{{.*}}> -> tensor<32xi32, #ttg.slice<{dim = 0, parent = [[SLICE_PARENT]]}>>
-  tt.experimental_descriptor_scatter %arg0[%cst, %arg1], %1 : !tt.tensordesc<tensor<1x128xf32>>, tensor<32xi32>, i32, tensor<32x128xf32>
+  tt.descriptor_scatter %arg0[%cst, %arg1], %1 : !tt.tensordesc<tensor<1x128xf32>>, tensor<32xi32>, i32, tensor<32x128xf32>
   tt.return
 }
 
@@ -155,22 +158,13 @@ tt.func @ub_poison() {
 
 // -----
 
-#blocked2 = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [2], order = [0]}>
-
-module attributes {"ttg.num-warps" = 4 : i32} {
-
-// CHECK-LABEL: @partition_axis_info
-tt.func @partition_axis_info(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>) {
-  ttg.warp_specialize(%arg0)
-  default {
-    ttg.warp_yield
-  }
-  partition0(%arg2: !tt.ptr<i32>) num_warps(2) {
-    %splatted = tt.splat %arg2 : !tt.ptr<i32> -> tensor<256x!tt.ptr<i32>, #blocked2>
-    %input = tt.load %splatted : tensor<256x!tt.ptr<i32>, #blocked2>
-    ttg.warp_return
-  } : (!tt.ptr<i32>) -> ()
+// CHECK-LABEL: @cf_br
+tt.func @cf_br(%ptr: !tt.ptr<i32>) {
+  %cst = arith.constant dense<1> : tensor<128xi32>
+  // cf.br ^bb1(%{{.+}} : tensor<128xi32, #{{.+}}>)
+  cf.br ^bb1(%cst : tensor<128xi32>)
+^bb1(%arg0: tensor<128xi32>):
+  %ptrs = tt.splat %ptr : !tt.ptr<i32> -> tensor<128x!tt.ptr<i32>>
+  tt.store %ptrs, %arg0 : tensor<128x!tt.ptr<i32>>
   tt.return
-}
-
 }

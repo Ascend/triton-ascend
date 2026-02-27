@@ -10,12 +10,11 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 
-// TODO(jlebar): Move this and all other generatede code into namespace
-// mlir::triton.
+namespace mlir::triton {
+
 #define GEN_PASS_DEF_TRITONREORDERBROADCAST
 #include "triton/Dialect/Triton/Transforms/Passes.h.inc"
 
-namespace mlir::triton {
 namespace {
 
 Operation *cloneWithNewArgsAndResultTypes(PatternRewriter &rewriter,
@@ -43,7 +42,8 @@ struct MoveSplatAfterElementwisePattern
   MoveSplatAfterElementwisePattern(MLIRContext *context)
       : OpTraitRewritePattern(context) {}
 
-  LogicalResult match(Operation *op) const override {
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
     if (!isMemoryEffectFree(op)) {
       return failure();
     }
@@ -57,10 +57,10 @@ struct MoveSplatAfterElementwisePattern
         return failure();
       }
     }
-    return success(op->getNumOperands() > 0);
-  }
 
-  void rewrite(Operation *op, PatternRewriter &rewriter) const override {
+    if (op->getNumOperands() <= 0)
+      return failure();
+
     auto loc = op->getLoc();
     auto operands = op->getOperands();
 
@@ -96,6 +96,7 @@ struct MoveSplatAfterElementwisePattern
                                                 newOp->getResult(iRes));
       rewriter.replaceAllUsesWith(op->getResult(iRes), newResult);
     }
+    return success();
   }
 };
 
@@ -108,7 +109,8 @@ struct MoveBroadcastAfterElementwisePattern
   MoveBroadcastAfterElementwisePattern(MLIRContext *context)
       : OpTraitRewritePattern(context) {}
 
-  LogicalResult match(Operation *op) const override {
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
     if (!isMemoryEffectFree(op)) {
       return failure();
     }
@@ -137,14 +139,12 @@ struct MoveBroadcastAfterElementwisePattern
         return failure();
       }
     }
-    return success(seenBroadcast);
-  }
+    if (!seenBroadcast)
+      return failure();
 
-  void rewrite(Operation *op, PatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
 
     // Find broadcast op
-    auto operands = op->getOperands();
     BroadcastOp broadcastOp;
     for (auto operand : operands) {
       broadcastOp = operand.getDefiningOp<BroadcastOp>();
@@ -154,7 +154,7 @@ struct MoveBroadcastAfterElementwisePattern
     }
 
     auto srcTy = broadcastOp.getSrc().getType();
-    auto srcShape = srcTy.getShape();
+    auto bcSrcShape = srcTy.getShape();
     auto srcEncoding = srcTy.getEncoding();
 
     // Reshape operands to match srcShape
@@ -167,7 +167,7 @@ struct MoveBroadcastAfterElementwisePattern
       }
       auto elemTy =
           dyn_cast<RankedTensorType>(operand.getType()).getElementType();
-      auto newTy = RankedTensorType::get(srcShape, elemTy, srcEncoding);
+      auto newTy = RankedTensorType::get(bcSrcShape, elemTy, srcEncoding);
       if (auto splatOp = llvm::dyn_cast<SplatOp>(definingOp)) {
         auto newSplat = rewriter.create<SplatOp>(loc, newTy, splatOp.getSrc());
         newOperands.push_back(newSplat);
@@ -192,7 +192,7 @@ struct MoveBroadcastAfterElementwisePattern
     for (auto resultTy : resultTypes) {
       auto elemTy = dyn_cast<RankedTensorType>(resultTy).getElementType();
       newResultTypes.push_back(
-          RankedTensorType::get(srcShape, elemTy, srcEncoding));
+          RankedTensorType::get(bcSrcShape, elemTy, srcEncoding));
     }
 
     // Create new op and broadcast results
@@ -203,11 +203,14 @@ struct MoveBroadcastAfterElementwisePattern
                                                     newOp->getResult(iRes));
       rewriter.replaceAllUsesWith(op->getResult(iRes), newResult);
     }
+    return success();
   }
 };
 
+} // namespace
+
 class ReorderBroadcastPass
-    : public ::impl::TritonReorderBroadcastBase<ReorderBroadcastPass> {
+    : public impl::TritonReorderBroadcastBase<ReorderBroadcastPass> {
 public:
   void runOnOperation() override {
     MLIRContext *context = &getContext();
@@ -225,11 +228,5 @@ public:
       signalPassFailure();
   }
 };
-
-} // namespace
-
-std::unique_ptr<mlir::Pass> createReorderBroadcastPass() {
-  return std::make_unique<ReorderBroadcastPass>();
-}
 
 } // namespace mlir::triton
