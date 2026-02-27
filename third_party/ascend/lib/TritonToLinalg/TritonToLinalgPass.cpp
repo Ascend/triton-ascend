@@ -678,11 +678,7 @@ void TritonToLinalgPass::populateTritonToLinalgConversionPatterns(
   patterns.add<FunctionConverter::GetNumProgramsConverter>(
       patterns.getContext());
   patterns.add<LoadStoreConverter::LoadConverter>(patterns.getContext());
-  if (compileOn91095Flag && existDotFlag) {
-    patterns.add<LoadStoreConverter::AtomicRMWNewConverter>(patterns.getContext());
-  } else {
-    patterns.add<LoadStoreConverter::AtomicRMWConverter>(patterns.getContext());
-  }
+  patterns.add<LoadStoreConverter::AtomicRMWConverter>(patterns.getContext());
   patterns.add<LoadStoreConverter::AtomicCASConverter>(patterns.getContext());
   patterns.add<TTOpConverters::MakeRangeConverter>(patterns.getContext());
   patterns.add<TTOpConverters::SplatConverter>(patterns.getContext());

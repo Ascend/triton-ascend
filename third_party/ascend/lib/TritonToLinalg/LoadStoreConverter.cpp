@@ -509,199 +509,6 @@ AtomicRMWConverter::AtomicRMWConverter(MLIRContext *context)
 LogicalResult
 AtomicRMWConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor,
                                     ConversionPatternRewriter &rewriter) const {
-  // If the result of AtomicRMWOp is not used, we don't need to load the old
-  // data stored at the ptr
-  auto ptr = adaptor.getPtr();
-  auto val = op.getVal();
-  auto loc = op.getLoc();
-
-  auto resType = dyn_cast<TensorType>(op.getResult().getType());
-  if (!resType) {
-    return rewriter.notifyMatchFailure(
-        op, "atomicRMWConverter: scalar will be handled by "
-            "ScalarAtomicRMWCanonicalizer");
-  }
-
-  auto rmwOp = op.getAtomicRmwOp();
-
-  // 1. Simple case where no mask is used.
-  auto type = dyn_cast<MemRefType>(ptr.getType());
-  if (!type) {
-    // Seen when implicit broadcasting is done late in a chain of
-    // operations. The workaround is to broadcast the pointers early in the
-    // address calculation. A proper fix is complicated, but at least we can
-    // provide a better error message.
-    return rewriter.notifyMatchFailure(
-        op, "AtomicRMWOp expects a memref, not a memref of pointers");
-  }
-
-  auto dstMemref = ptr;
-  // Well, linalg structure op wouldn't support mixed tensor/buffer semantics
-  // any more in latest LLVM(triton LLVM dependency has involed this), so we
-  // need to convert tensor to buffer early.
-  auto dstOriType = cast<MemRefType>(dstMemref.getType());
-  MemRefType dstType = MemRefType::get(dstOriType.getShape(), dstOriType.getElementType());
-  Value inputMemref =
-      rewriter.create<bufferization::ToMemrefOp>(loc, dstType, val);
-
-  // 2. handle the mask for the atomic op
-  // When the dsl do not pass the mask to this op like
-  // `tl.atomic_add(out_ptr0 + xindex, tmp2)`, it will create a constant mask
-  // for this op by default, which is not supported by maskAnalysis, so we
-  // need to handle this situation
-  //
-  // This logic come from semantic.py:
-  //
-  // if not mask:
-  //     mask_ir = builder.get_int1(True)
-  //     mask_ty = tl.int1
-  //     if ptr.type.is_block():
-  //         mask_ir = \
-  //             builder.create_splat(mask_ir, ptr.type.get_block_shapes())
-  //         mask_ty = tl.block_type(tl.int1, ptr.type.get_block_shapes())
-  //     mask = tl.tensor(mask_ir, mask_ty)
-  //
-  // ...
-  //
-  // return ptr, val, mask
-  //
-  if (auto mask = op.getMask()) {
-    MaskState mstate;
-    auto constantMask = mask.getDefiningOp<arith::ConstantOp>();
-    if (!constantMask) {
-      auto isContMask = mstate.parse(mask, loc, rewriter);
-
-      if (isContMask.failed()) {
-        return rewriter.notifyMatchFailure(
-            op, "Cannot lower continuous masked loads");
-      }
-      dstMemref = mstate.getSubview(ptr, loc, rewriter);
-      inputMemref = mstate.getSubview(inputMemref, loc, rewriter);
-    } else {
-      if (!isConstantMaskTrue(mask)) {
-        rewriter.eraseOp(op);
-        return success();
-      }
-    }
-  }
-
-  // create element-wise map
-  int64_t rank = type.getRank();
-  SmallVector<AffineExpr> inputDims;
-  auto context = rewriter.getContext();
-
-  for (int i = 0; i < rank; i++) {
-    inputDims.push_back(getAffineDimExpr(i, context));
-  }
-
-  SmallVector<AffineMap> indexingMaps;
-  // As mask has been erased for now
-  // the number of input must be 2
-  // the input memref is also the output memref
-  // Thus, there are a total of three inputs and outputs.
-  // so here we have 3 map to create
-  for (int i = 0; i < 3; i++) {
-    indexingMaps.push_back(AffineMap::get(rank, 0, inputDims, context));
-  }
-
-  Value tensorToReplace;
-  if (!op.getResult().use_empty()) {
-    auto tensorType =
-        RankedTensorType::get(type.getShape(), type.getElementType());
-    auto alloc = rewriter.create<memref::AllocOp>(
-        loc, MemRefType::get(type.getShape(), type.getElementType()));
-    // For the return value, don't need to care about mask for now
-    // this op don't support other, so we best not fill it
-    rewriter.create<memref::CopyOp>(loc, ptr, alloc);
-    tensorToReplace = rewriter.create<bufferization::ToTensorOp>(
-        loc, tensorType, alloc, true /* restrict */, true /* writable */);
-  }
-
-
-  auto linalgOp = rewriter.create<linalg::GenericOp>(
-      loc, /* operands */ ValueRange{dstMemref, inputMemref},
-      ValueRange{dstMemref}, indexingMaps,
-      mlir::ConverterUtils::getNParallelLoopsAttrs(rank),
-      [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange blockArgs) {
-        Value opResult = createAtomicBinaryOps(nestedBuilder, nestedLoc, op,
-                                               type.getElementType(),
-                                               blockArgs[0], blockArgs[1]);
-        nestedBuilder.create<linalg::YieldOp>(nestedLoc, opResult);
-      });
-
-  // "library_call"
-  // indicating the actual semantic of this op
-  // TODO: If the hardware support the MemSemantic/MemSyncScope
-  //       We pass them down
-  //       otherwise they need to be deleted
-  const StringRef genericAtomicRMW = "GenericAtomicRMW";
-  const StringRef memSemantic = "MemSemantic";
-  const StringRef memSyncScope = "MemSyncScope";
-  linalgOp->setAttr(genericAtomicRMW,
-                    rewriter.getStringAttr(stringifyEnum(op.getAtomicRmwOp())));
-  linalgOp->setAttr(memSemantic,
-                    rewriter.getStringAttr(stringifyEnum(op.getSem())));
-  linalgOp->setAttr(memSyncScope,
-                    rewriter.getStringAttr(stringifyEnum(op.getScope())));
-
-  // Mark atomic_and/or/xor specially which need software simulation in terms
-  // of backend restriction
-  if (softwareAtomicKinds.contains(op.getAtomicRmwOp()))
-    linalgOp->setAttr("Software", rewriter.getUnitAttr());
-
-
-  // tt.atomicRMW op has two part of feature
-  // 1. load the old data at the ptr
-  // 2. atomically store the data on ub to the ptr
-  //    at the same time it perform the action it has been assigned
-  // So we lower this op to load + atomically store
-  //
-  // The first part is not necessary when the returned value of atomic op
-  // is not used, it will be deleted cause it's meaningless
-  // Here, we preemptively determine whether it will be used
-  // and decide whether it is necessary to create the load process based on
-  // this assessment.
-  //
-  // logic of handling is copied
-  // TODO: decoupling the logic of load, put it in the Utils
-  if (!op.getResult().use_empty()) {
-    rewriter.replaceOp(op, tensorToReplace);
-  } else {
-    rewriter.eraseOp(op);
-  }
-  return success();
-}
-
-AtomicRMWNewConverter::AtomicRMWNewConverter(MLIRContext *context)
-    : OpConversionPattern<triton::AtomicRMWOp>(context) {}
-
-// lowering tt.atomicRMW to linalg.generic
-// If atomic op's return value is used by other op as it's the old value stored
-// at the ptrwe will use tt.load to get it
-//
-// example:
-// input:
-//  %return_value = tt.atomic_rmw fadd, acq_rel, gpu,
-//     %output_memref, %input_tensor, %mask :
-//             (tensor<256x!tt.ptr<f32>>, tensor<256xf32>, tensor<256xi1>)
-//                       -> tensor<256xf32>
-//
-// output:
-//  memref.copy %output_memref, %ub_buf : memref<?xf32> to memref<?xf32>
-//  %17 = bufferization.to_tensor %alloc_3 restrict writable : memref<256xf32>
-//  linalg.generic
-//    {indexing_maps = [#map, #map, #map], iterator_types = ["parallel"]}
-//    ins(%output_memref, %masked_input_memref : memref<?xf32>, memref<?xf32>)
-//    outs(%subview_2 : memref<?xf32>)
-//    attrs = {GenericAtomicRMW = "fadd", MemSemantic = "acq_rel",
-//                                        MemSyncScope = "gpu"} {
-//    ^bb0(%in: f32, %in_9: f32, %out: f32):
-//      %25 = arith.addf %in, %in_9 : f32
-//      linalg.yield %25 : f32
-//    }
-LogicalResult
-AtomicRMWNewConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor,
-                                    ConversionPatternRewriter &rewriter) const {
   auto ptr = adaptor.getPtr();
   auto val = op.getVal();
   auto loc = op.getLoc();
@@ -730,10 +537,22 @@ AtomicRMWNewConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor
       {RMWOp::UMAX, hivm::AtomicKind::UMAX},
       {RMWOp::XCHG, hivm::AtomicKind::XCHG},
   };
-
+  const std::map<RMWOp, hfusion::AtomicKind> hfusionAtomicKindMap = {
+      {RMWOp::ADD, hfusion::AtomicKind::ADD},
+      {RMWOp::FADD, hfusion::AtomicKind::ADD},
+      {RMWOp::OR, hfusion::AtomicKind::OR},
+      {RMWOp::XOR, hfusion::AtomicKind::XOR},
+      {RMWOp::AND, hfusion::AtomicKind::AND},
+      {RMWOp::MIN, hfusion::AtomicKind::MIN},
+      {RMWOp::UMIN, hfusion::AtomicKind::UMIN},
+      {RMWOp::MAX, hfusion::AtomicKind::MAX},
+      {RMWOp::UMAX, hfusion::AtomicKind::UMAX},
+      {RMWOp::XCHG, hfusion::AtomicKind::XCHG},
+  };
   assert(atomicKindMap.find(rmwOp) != atomicKindMap.end());
-  auto atomicKind =
-      hivm::AtomicKindAttr::get(rewriter.getContext(), atomicKindMap.at(rmwOp));
+  auto atomicKind = hivm::AtomicKindAttr::get(rewriter.getContext(), atomicKindMap.at(rmwOp));
+  assert(hfusionAtomicKindMap.find(rmwOp) != hfusionAtomicKindMap.end());
+  auto hfusionAtomicKind = hfusion::AtomicKindAttr::get(rewriter.getContext(), hfusionAtomicKindMap.at(rmwOp));
 
   auto dstMemref = ptr;
   Value inputVal = val;
@@ -741,16 +560,18 @@ AtomicRMWNewConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor
   // Lazily materialize a memref view only when we truly need buffer
   // semantics (e.g., mask subview or XCHG lowering). Otherwise keep tensor
   // inputs to avoid redundant to_memref conversions before hivm.store.
-  Value inputMemref;
   auto getInputMemref = [&]() -> Value {
     if (isa<MemRefType>(inputVal.getType()))
       return inputVal;
-    if (inputMemref)
-      return inputMemref;
-    inputMemref =
-        rewriter.create<bufferization::ToMemrefOp>(loc, ptrType, inputVal);
-    return inputMemref;
+    return rewriter.create<bufferization::ToMemrefOp>(loc, ptrType, inputVal);
   };
+  auto inputMemref = getInputMemref();
+  auto inputMemrefType = cast<MemRefType>(inputMemref.getType());
+  auto elementType = inputMemrefType.getElementType();
+  auto isHardwareSupported =
+      (rmwOp == RMWOp::ADD || rmwOp == RMWOp::FADD || rmwOp == RMWOp::MAX || rmwOp == RMWOp::MIN) &&
+      (elementType.isF16() || elementType.isBF16() || elementType.isF32() || elementType.isInteger(8) ||
+       elementType.isInteger(16) || elementType.isInteger(32));
 
   bool isDiscreteMask = false;
   if (mask) {
@@ -766,14 +587,13 @@ AtomicRMWNewConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor
       // original memref. For inputVal (store input), use tensor.extract_slice
       // to keep tensor semantics.
       dstMemref = mstate.getSubview(ptr, loc, rewriter);
-
-      auto inputMemrefVal = getInputMemref();
-      auto inputMemrefType = cast<MemRefType>(inputMemrefVal.getType());
-      auto inputTensorType = RankedTensorType::get(
-          inputMemrefType.getShape(), inputMemrefType.getElementType());
-      Value inputTensor = rewriter.create<bufferization::ToTensorOp>(
-          loc, inputTensorType, inputMemrefVal, true, true);
-      inputVal = mstate.getExtractSlice(inputTensor, loc, rewriter);
+      if (isHardwareSupported) {
+        auto inputTensorType = RankedTensorType::get(inputMemrefType.getShape(), inputMemrefType.getElementType());
+        Value inputTensor = rewriter.create<bufferization::ToTensorOp>(loc, inputTensorType, inputMemref, true, true);
+        inputVal = mstate.getExtractSlice(inputTensor, loc, rewriter);
+      } else {
+        inputMemref = mstate.getSubview(inputMemref, loc, rewriter);
+      }
     }
   }
 
@@ -799,16 +619,29 @@ AtomicRMWNewConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor
     memrefMask =
         rewriter.create<bufferization::ToMemrefOp>(loc, maskTypeM, mask);
     }
-    rewriter.create<hfusion::AtomicXchgOp>(op.getLoc(), TypeRange(),
-                                           getInputMemref(), dstMemref,
-                                           memrefMask);
+    rewriter.create<hfusion::AtomicXchgOp>(op.getLoc(), TypeRange(), inputMemref, dstMemref, memrefMask);
   } else {
-    if (rmwOp == RMWOp::XCHG)
-      rewriter.create<hfusion::AtomicXchgOp>(op.getLoc(),
-        TypeRange(), getInputMemref(), dstMemref);
-    else
-      rewriter.create<hivm::StoreOp>(op.getLoc(), TypeRange{},
-                                     inputVal, dstMemref, atomicKind);
+    if (isHardwareSupported)
+      rewriter.create<hivm::StoreOp>(op.getLoc(), TypeRange {}, inputVal, dstMemref, atomicKind);
+    else if (rmwOp == RMWOp::XCHG)
+      rewriter.create<hfusion::AtomicXchgOp>(op.getLoc(), TypeRange(), inputMemref, dstMemref);
+    else {
+      if (rmwOp == RMWOp::OR || rmwOp == RMWOp::XOR || rmwOp == RMWOp::AND) {
+        if (!elementType.isSignlessIntOrIndex()) {
+          return op->emitOpError() << "must be signless-integer-like, but got " << elementType;
+        }
+      }
+      // Currently, for atomic kind and element type that is not supported by the hardware, we use software to simulate
+      // the computation. However, decompose now happens in both HFusion and HIVM, and is not consistent for 910B and
+      // 91095. Therefore, we convert to different atomic/store ops for now. This should be unified and refactored
+      // later.
+      if (compileOn91095Flag) {
+        rewriter.create<hfusion::StoreOp>(op.getLoc(), TypeRange {}, ValueRange {inputMemref}, ValueRange {dstMemref},
+                                          hfusionAtomicKind, ArrayRef<NamedAttribute> {});
+      } else {
+        rewriter.create<hfusion::AtomicRMWOp>(op.getLoc(), TypeRange(), inputMemref, dstMemref, hfusionAtomicKind);
+      }
+    }
   }
 
   if (op.getResult().use_empty()) {

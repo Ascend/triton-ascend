@@ -243,32 +243,6 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
-class AtomicRMWNewConverter : public OpConversionPattern<triton::AtomicRMWOp> {
-private:
-  // used when handling scalar
-  // to verify whether we need to handle this scalar
-  bool isConstantMaskTrue(Value mask) const {
-    if (auto denseAttr =
-            mask.getDefiningOp()->getAttrOfType<DenseElementsAttr>("value")) {
-      auto eleType = denseAttr.getType().getElementType();
-      if (isa<IntegerType>(eleType) &&
-          cast<IntegerType>(eleType).getWidth() == 1) {
-        auto values = denseAttr.getValues<bool>();
-        return values[0];
-      }
-    }
-    return false;
-  }
-
-public:
-  explicit AtomicRMWNewConverter(MLIRContext *context);
-  using OpConversionPattern<triton::AtomicRMWOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
-
 class AtomicMaxMinCanonicalizer : public OpRewritePattern<triton::AtomicRMWOp> {
   using OpRewritePattern<triton::AtomicRMWOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(triton::AtomicRMWOp op,
