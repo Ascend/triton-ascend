@@ -39,7 +39,7 @@ IS_MANYLINUX                ?= False
 PYPI_URL                    ?= testpypi
 TRITON_WHEEL_VERSION_SUFFIX ?= rc3
 PYPI_CONFIG                 := ~/.pypirc
-
+DOCKER_DEFAULT_CANN_VERSION	:= 8.5.0
 
 .DEFAULT_GOAL := all
 # =====================
@@ -260,47 +260,11 @@ test-inductor: ## Run inductor tests
 test-gen: ## Run generalization tests
 	cd third_party/ascend/unittest/generalization_cases && $(PYTEST) -s -v -n $(NUM_PROCS) --dist=load
 
-
-# ======================
-# Image Build for build wheel package
-# ======================
-.PHONY: image_build
-image_build: ## Build Docker[Dockerfile_build] if relevant files changed
-	@set -e; \
-	if [ -n "$$HEAD_COMMIT" ]; then \
-		GIT_COMMIT_SHORT=$$(git rev-parse --short $$HEAD_COMMIT); \
-	else \
-		GIT_COMMIT_SHORT=$$(git rev-parse --short HEAD); \
-	fi; \
-	if [ -z "$(BASE_COMMIT)" ]; then \
-		echo "BASE_COMMIT not set. Forcing Docker image build..."; \
-		BUILD_IMAGE=1; \
-	elif [ -n "$$filenames" ] && echo "$$filenames" | grep -Eq '\b(docker/Dockerfile_build|Makefile|requirements(_dev)?\.txt)\b'; then \
-		echo "Relevant files changed. Building Docker image..."; \
-		BUILD_IMAGE=1; \
-	else \
-		echo "No relevant changes since BASE_COMMIT. Skipping Docker image build."; \
-		BUILD_IMAGE=0; \
-	fi; \
-	if [ $$BUILD_IMAGE -eq 1 ]; then \
-		if [ -z "$(QUAY_PASSWD)" ] || [ -z "$(QUAY_USER)" ]; then \
-			echo "Please set QUAY_USER and QUAY_PASSWD before building the image."; \
-			exit 1; \
-		fi; \
-		echo "Logging in to Docker..."; \
-		echo "$(QUAY_PASSWD)" | docker login -u "$(QUAY_USER)" --password-stdin quay.io; \
-		echo "Using commit ID: $$GIT_COMMIT_SHORT"; \
-		docker buildx build --platform linux/$(PLATFORM_NAME) \
-			-f docker/Dockerfile_build --push \
-			-t quay.io/ascend/triton:dev-build-$$GIT_COMMIT_SHORT-$(PLATFORM_NAME) .; \
-	fi
-
-
 # ======================
 # Image Build
 # ======================
 .PHONY: image
-image: ## Build test Docker[Dockerfile] image if relevant files changed
+image: ## Build test Docker[Dockerfile] image if relevant files changed. A2 and A3 CANN will be installed in the image.
 	@set -e; \
 	if [ -n "$$HEAD_COMMIT" ]; then \
 		GIT_COMMIT_SHORT=$$(git rev-parse --short $$HEAD_COMMIT); \
@@ -327,11 +291,18 @@ image: ## Build test Docker[Dockerfile] image if relevant files changed
 		echo "Using commit ID: $$GIT_COMMIT_SHORT"; \
 		docker buildx build --platform linux/$(PLATFORM_NAME) \
 			-f docker/Dockerfile --push \
-			-t quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-$(PLATFORM_NAME) .; \
+			--build-arg CHIP_TYPE=910b \
+			--build-arg CANN_VERSION=$(DOCKER_DEFAULT_CANN_VERSION) \
+			-t quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-910b-$(PLATFORM_NAME) .; \
+		docker buildx build --platform linux/$(PLATFORM_NAME) \
+			-f docker/Dockerfile --push \
+			--build-arg CHIP_TYPE=A3 \
+			--build-arg CANN_VERSION=$(DOCKER_DEFAULT_CANN_VERSION) \
+			-t quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-A3-$(PLATFORM_NAME) .; \
 	fi
 
 .PHONY: create-image
-create-image: ## Create multi-arch manifest image
+create-image: ## Create multi-arch manifest image. Build a separate image for A2 and A3.
 	@set -e; \
 	if [ -z "$$HEAD_COMMIT" ]; then \
 		GIT_COMMIT_SHORT=$$(git rev-parse --short HEAD); \
@@ -340,22 +311,29 @@ create-image: ## Create multi-arch manifest image
 	fi; \
 	echo "Checking for per-arch images with tag dev-$$GIT_COMMIT_SHORT"; \
 	ARCHS="amd64 arm64"; \
+	CHIP_TYPES="910b A3"; \
 	MISSING=0; \
-	for arch in $$ARCHS; do \
-		TAG="dev-$$GIT_COMMIT_SHORT-$$arch"; \
-		if curl -sfI "https://quay.io/v2/ascend/triton/manifests/$$TAG" > /dev/null; then \
-			echo "Found tag: $$TAG"; \
-		else \
-			echo "Missing tag: $$TAG"; \
-			MISSING=1; \
-		fi; \
-	done; \
+	for chip in $$CHIP_TYPES; do \
+		for arch in $$ARCHS; do \
+			TAG="dev-$$GIT_COMMIT_SHORT-$$chip-$$arch"; \
+			if curl -sfI "https://quay.io/v2/ascend/triton/manifests/$$TAG" > /dev/null; then \
+				echo "Found tag: $$TAG"; \
+			else \
+				echo "Missing tag: $$TAG"; \
+				MISSING=1; \
+			fi; \
+		done; \
+	done;\
 	if [ "$$MISSING" -eq 0 ]; then \
 		echo "Creating multi-arch image: dev-$$GIT_COMMIT_SHORT"; \
 		docker buildx imagetools create \
-			--tag quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT \
-			quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-amd64 \
-			quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-arm64; \
+			--tag quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-910b \
+			quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-910b-amd64 \
+			quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-910b-amd64; \
+		docker buildx imagetools create \
+			--tag quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-A3 \
+			quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-A3-arm64 \
+			quay.io/ascend/triton:dev-$$GIT_COMMIT_SHORT-A3-arm64; \
 	else \
 		echo "Skipping manifest creation due to missing images."; \
 	fi
