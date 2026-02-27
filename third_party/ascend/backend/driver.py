@@ -50,7 +50,7 @@ class NPUUtils(object):
         if not hasattr(cls, 'instance'):
             cls.instance = super(NPUUtils, cls).__new__(cls)
         return cls.instance
-    
+
     def __init__(self):
         dirname = os.path.dirname(os.path.realpath(__file__))
         src_path = os.path.join(dirname, "npu_utils.cpp")
@@ -59,11 +59,11 @@ class NPUUtils(object):
         cache = get_cache_manager(key)
         fname = "npu_utils.so"
         cache_path = cache.get_file(fname)
-            
+
         if cache_path is None:
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp_src_path = os.path.join(tmpdir, "npu_utils.cpp")
-                so = _exec_cmd_with_lock(tmp_src_path, "npu_utils", 
+                so = _exec_cmd_with_lock(tmp_src_path, "npu_utils",
                                          lambda: self._write_npu_utils_and_compile(tmp_src_path, src))
                 with open(so, "rb") as f:
                     cache_path = cache.put(f.read(), fname, binary=True)
@@ -74,14 +74,14 @@ class NPUUtils(object):
         self.npu_utils_mod = mod
         # setup for remote run
         env_arch = get_ascend_arch_from_env()
-    
-    
+
+
     def _write_npu_utils_and_compile(self, tmp_src_path, src):
         with open(tmp_src_path, "w") as f:
             f.write(src)
         return _build_npu_ext("npu_utils", None, tmp_src_path, kernel_launcher=None)
-    
-    
+
+
     def load_binary(self, name, kernel, shared, device):
         fnname, mix_mode = name.split()
         return self.npu_utils_mod.load_kernel_binary(fnname, kernel, shared, device, mix_mode)
@@ -248,7 +248,7 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     cache = get_cache_manager(precompile_hash)
     header_path = cache.get_file("precompiled.h")
     gch_path = cache.get_file("precompiled.h.gch")
-    
+
     enable_precompile = not os.getenv("TRITON_DISABLE_PRECOMPILE", 'false').lower() in ('true', '1')
     # if precompile header file and its gch file not exist, do precompile
     if header_path is None and gch_path is None:
@@ -281,17 +281,17 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
         return cache_path
 
     kernel_launcher_type = "torch"
-        
+
     def _write_launcher_and_compile(wrapper_src, name, launcher_path, header_path, kernel_launcher_type, enable_precompile):
         with open(launcher_path, "w") as f:
             f.write(wrapper_src)
         return _build_npu_ext(name, header_path, launcher_path, kernel_launcher=kernel_launcher_type, precompile=enable_precompile)
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         launcher_path = os.path.join(tmpdir, f"{name}.cxx")
-        so_path = _exec_cmd_with_lock(launcher_path, 
-                                      "launcher", 
-                                      lambda: _write_launcher_and_compile(wrapper_src, name, launcher_path, header_path, kernel_launcher_type, enable_precompile), 
+        so_path = _exec_cmd_with_lock(launcher_path,
+                                      "launcher",
+                                      lambda: _write_launcher_and_compile(wrapper_src, name, launcher_path, header_path, kernel_launcher_type, enable_precompile),
                                       debug=debug)
         if debug:
             with open(so_path, "rb") as f:
@@ -568,10 +568,32 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {
     ptr_info.dev_ptr = reinterpret_cast<void *>(PyLong_AsUnsignedLongLong(ret));
     if(!ptr_info.dev_ptr)
       return ptr_info;
-    Py_DECREF(ret);  // Thanks ChatGPT!
+    aclrtPtrAttributes attributes;
+    aclError status = aclrtPointerGetAttributes(ptr_info.dev_ptr, &attributes);
+
+    if (status == ACL_SUCCESS) {
+      if (attributes.location.type != ACL_MEM_LOCATION_TYPE_DEVICE && attributes.location.type != 4) {
+        Py_DECREF(ret);
+        PyErr_Format(PyExc_ValueError,
+                     "Pointer argument (at %d) cannot be accessed from Triton (cpu tensor?)", idx);
+        ptr_info.valid = false;
+        return ptr_info;
+      }
+    } else {
+      Py_DECREF(ret);
+      PyErr_Format(PyExc_RuntimeError,
+                   "Failed to query pointer attributes at argument %d. "
+                   "Error code: %d. This may indicate invalid memory address "
+                   "or NPU device error.",
+                   idx, status);
+      ptr_info.valid = false;
+      return ptr_info;
+      }
+    Py_DECREF(ret);
     return ptr_info;
   }
   PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
+  ptr_info.valid = false;
   return ptr_info;
 }
 """
@@ -773,7 +795,7 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
         printf("WARNING: Grid %u > physical limit {num_physical_blocks}, performance maybe reduced.\\n",blockNum);
         warned = true;
     }}
-    #endif  
+    #endif
     {'blockNum = std::min(blockNum, (uint32_t)' + str(num_physical_blocks) + ');' if enable_auto_map_parallel_blocks else ''}
     // set mixBlockNumRation for nodeBasicBlockDim for msprof report
     uint32_t mixBlockNumRation = {mix_block_dim_ratio};

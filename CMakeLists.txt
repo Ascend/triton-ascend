@@ -97,6 +97,21 @@ function(add_triton_library name)
   set_property(GLOBAL APPEND PROPERTY TRITON_LIBS ${name})
   add_triton_object(${name} ${ARGN})
   llvm_update_compile_flags(${name})
+
+  # To enable coverage, you need to pass the argument TRITON_APPEND_CMAKE_ARGS="-DTRITON_ENABLE_COVERAGE=ON" during compilation.
+  if(TRITON_ENABLE_COVERAGE)
+    if("${CMAKE_CURRENT_SOURCE_DIR}" MATCHES ".*/third_party/ascend/.*" AND NOT "${CMAKE_CURRENT_SOURCE_DIR}" MATCHES ".*/AscendNPU-IR/.*")
+      message(STATUS "Enabling coverage for target ${name} (in Ascend plugin)")
+      target_compile_options(${name} PRIVATE
+        -fprofile-arcs
+        -ftest-coverage
+        -O0
+        -fprofile-update=atomic
+        -g
+      )
+      target_link_options(${name} PUBLIC --coverage)
+    endif()
+  endif()
 endfunction()
 
 set_property(GLOBAL PROPERTY TRITON_PLUGINS "")
