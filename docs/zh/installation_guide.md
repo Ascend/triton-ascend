@@ -16,9 +16,11 @@
 异构计算架构CANN（Compute Architecture for Neural Networks）是昇腾针对AI场景推出的异构计算架构，
 向上支持多种AI框架，包括MindSpore、PyTorch、TensorFlow等，向下服务AI处理器与编程，发挥承上启下的关键作用，是提升昇腾AI处理器计算效率的关键平台。
 
-您可以访问昇腾社区官网，根据其提供的软件安装指引完成 CANN 的安装配置。
+您可以访问昇腾社区官网，根据其提供的[社区软件安装指引](https://www.hiascend.com/cann/download)完成 CANN 的安装与配置。开发者选择CANN版本、产品系列、CPU架构、操作系统和安装方式便可找到对应的安装命令。
 
-在安装过程中，CANN 版本“**{version}**”请选择如下版本之一：
+在安装过程中，CANN 版本“**{version}**”请选择如下版本之一。建议下载安装 8.5.0 版本:
+- 注：如果用户未指定安装路径，则软件会安装到默认路径下，默认安装路径如下。root用户：`/usr/local/Ascend`，非root用户：`${HOME}/Ascend`，`${HOME}`为当前用户目录。
+上述环境变量配置只在当前窗口生效，用户可以按需将```source ${HOME}/Ascend/ascend-toolkit/set_env.sh```命令写入环境变量配置文件（如.bashrc文件）。
 
 **CANN版本：**
 
@@ -38,46 +40,6 @@
 | 3.2.0rc4          | CANN 8.3.RC2         | 2025/11/20         |
 |                   | CANN 8.5.0.alpha001  | 2025/11/12         |
 |                   | CANN 8.3.RC1         | 2025/10/30         |
-
-并根据实际环境指定CPU架构 “**{arch}**”(aarch64/x86_64)、软件版本“**{version}**”对应的软件包。
-
-建议下载安装 8.5.0 版本:
-
-| 软件类型    | 软件包说明       | 软件包名称                       |
-|---------|------------------|----------------------------------|
-| Toolkit | CANN开发套件包   | Ascend-cann-toolkit_**{version}**_linux-**{arch}**.run  |
-| Ops     | CANN二进制算子包 | Ascend-cann-A3-ops_**{version}**_linux-**{arch}**.run |
-
-注意1：A2系列的Ops包命名与A3略有区别，参考格式（ Ascend-cann-910b-ops_**{version}**_linux-**{arch}**.run ）
-
-注意2：8.5.0之前的版本对应的Ops包的包名略有区别，参考格式（ Atlas-A3-cann-kernels_**{version}**_linux-**{arch}**.run ）
-
-[社区下载链接](https://www.hiascend.com/developer/download/community/result?module=cann) 可以找到对应的软件包。
-
-[社区安装指引链接](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/softwareinst/instg/instg_quick.html?Mode=PmIns&InstallType=local&OS=Ubuntu&Software=cannToolKit) 提供了完整的安装流程说明与依赖项配置建议，适用于需要全面部署 CANN 环境的用户。
-
-#### CANN安装脚本
-
-以8.5.0的A3 CANN版本为例，我们提供了脚本式安装供您参考：
-```bash
-
-# 更改run包的执行权限
-chmod +x Ascend-cann-toolkit_8.5.0_linux-aarch64.run
-chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
-
-# 普通安装（默认安装路径：/usr/local/Ascend）
-sudo ./Ascend-cann-toolkit_8.5.0_linux-aarch64.run --install
-# 默认安装路径（与 Toolkit 包一致：/usr/local/Ascend）
-sudo ./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
-# 生效默认路径环境变量
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
-
-# 安装CANN的python依赖
-pip install attrs==24.2.0 numpy==1.26.4 scipy==1.13.1 decorator==5.1.1 psutil==6.0.0 pyyaml
-```
-
-- 注：如果用户未指定安装路径，则软件会安装到默认路径下，默认安装路径如下。root用户：`/usr/local/Ascend`，非root用户：`${HOME}/Ascend`，${HOME}为当前用户目录。
-上述环境变量配置只在当前窗口生效，用户可以按需将```source ${HOME}/Ascend/ascend-toolkit/set_env.sh```命令写入环境变量配置文件（如.bashrc文件）。
 
 
 ### 安装torch_npu
@@ -167,8 +129,8 @@ pip install ninja cmake wheel pybind11 # build-time dependencies
 ### 快速安装
 ```bash
 git clone https://gitcode.com/Ascend/triton-ascend.git
-git checkout main
 cd triton-ascend
+git checkout main
 
 # 可选，若本地有编译好的LLVM，可以直接指定本地LLVM，不会触发下载LLVM预编译包
 LLVM_SYSPATH=/path/to/LLVM \
@@ -329,8 +291,12 @@ docker run -u 0 -dit --shm-size=512g --name=triton-ascend_container --net=host -
 -v /usr/local/Ascend:/usr/local/Ascend \
 -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
 -v /home:/home \
+-v /etc/ascend_install.info:/etc/ascend_install.info \
 triton-ascend-image:latest \
 /bin/bash
+
+# 进入容器
+docker exec -u root -it triton-ascend_container /bin/bash
 ```
 
 ## 运行Triton示例

@@ -19,17 +19,17 @@ Minimum hardware configuration: single-device 32 GB graphics memory (recommended
 ### Software Dependency
 Python (Python 3.9 to Python 3.11), CANN_TOOLKIT, CANN_OPS, [requirements.txt](../../requirements.txt), and [requirements_dev.txt](../../requirements_dev.txt)
 
-For details about the CANN installation and configuration script, see [CANN installation description](https://www.hiascend.com/document/detail/zh/canncommercial/850/softwareinst/instg/instg_0000.html?Mode=PmIns&InstallType=local&OS=Ubuntu). The quick installation commands are as follows:
-```bash
-chmod +x Ascend-cann-toolkit_8.5.0_linux-aarch64.run
-chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
+For details about the CANN installation and configuration script, see [CANN installation description](https://www.hiascend.com/document/detail/zh/canncommercial/850/softwareinst/instg/instg_0000.html?Mode=PmIns&InstallType=local&OS=Ubuntu). Developers can select the CANN version, product series, CPU architecture, operating system, and installation method to find the corresponding installation commands.
 
-sudo ./Ascend-cann-toolkit_8.5.0_linux-aarch64.run --install
-sudo ./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
-```
-
-- Note: [CANN_TOOLKIT and CANN_OPS](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.5.0) are the key tool packages for enabling the Ascend computing card.
 You need to select the required version (8.5.0 is recommended) based on the Ascend card model you use. The CANN installation takes about 5 to 10 minutes. Wait until the installation is complete.
+
+- Note: If the user does not specify an installation path, the software will be installed to the default path as follows.
+For root user: `/usr/local/Ascend`
+For non-root user: `${HOME}/Ascend`, where `${HOME}` is the home directory of the current user.
+
+The environment variable configuration above takes effect only in the current terminal session.
+
+Users can add the command source `${HOME}/Ascend/ascend-toolkit/set_env.sh` to an environment variable configuration file (such as .bashrc) as needed.
 
 You can run the following command to install the requirements:
 ```shell

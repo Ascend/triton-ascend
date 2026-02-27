@@ -19,16 +19,13 @@ Triton-Ascend 是适配华为 Ascend 昇腾芯片的 Triton 优化版本，提�
 ### 软件依赖
 Python(**py3.9-py3.11**)，CANN_TOOLKIT，CANN_OPS，以及[requirements.txt](../../requirements.txt)和[requirements_dev.txt](../../requirements_dev.txt)等。
 
-CANN的安装配置脚本详细参考 [CANN安装说明](https://www.hiascend.com/document/detail/zh/canncommercial/850/softwareinst/instg/instg_0000.html?Mode=PmIns&InstallType=local&OS=Ubuntu)。快捷安装命令参考如下：
-```bash
-chmod +x Ascend-cann-toolkit_8.5.0_linux-aarch64.run
-chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
+您可以访问昇腾社区官网，根据其提供的[社区软件安装指引](https://www.hiascend.com/cann/download)完成 CANN 的安装与配置。开发者选择CANN版本、产品系列、CPU架构、操作系统和安装方式便可找到对应的安装命令。
 
-sudo ./Ascend-cann-toolkit_8.5.0_linux-aarch64.run --install
-sudo ./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
-```
 
-- 注意：[CANN_TOOLKIT，CANN_OPS](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.5.0)是使能昇腾算力卡的关键工具包，
+在安装过程中，CANN 版本“**{version}**”请选择如下版本之一。建议下载安装 8.5.0 版本:
+- 注：如果用户未指定安装路径，则软件会安装到默认路径下，默认安装路径如下。root用户：`/usr/local/Ascend`，非root用户：`${HOME}/Ascend`，`${HOME}`为当前用户目录。
+上述环境变量配置只在当前窗口生效，用户可以按需将```source ${HOME}/Ascend/ascend-toolkit/set_env.sh```命令写入环境变量配置文件（如.bashrc文件）。
+
 需要根据您实际使用的昇腾卡型号选择对应的配套版本(建议8.5.0版本)，并且安装CANN的时间大概在5-10分钟，请耐心等待安装完成。
 
 requirements的安装可以参考如下：
@@ -96,8 +93,12 @@ docker run -u 0 -dit --shm-size=512g --name=triton-ascend_container --net=host -
 -v /usr/local/Ascend:/usr/local/Ascend \
 -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
 -v /home:/home \
+-v /etc/ascend_install.info:/etc/ascend_install.info \
 triton-ascend-image:latest \
 /bin/bash
+
+# 进入容器
+docker exec -u root -it triton-ascend_container /bin/bash
 ```
 
 ## 运行Triton示例

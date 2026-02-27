@@ -11,9 +11,12 @@ Triton-Ascend requires Python 3.9 to 3.11.
 Compute Architecture for Neural Networks (CANN) is a heterogeneous compute architecture developed by Ascend for AI scenarios.
 It plays a pivotal bridging role: providing upward integration with multiple AI frameworks (including MindSpore, PyTorch, and TensorFlow), while offering downward support for AI processors and programming. This establishes it as a key platform for improving the computing efficiency of Ascend AI processors.
 
-You can visit the Ascend community website, and install and configure CANN according to the provided software installation guide.
+You can visit the Ascend community website, and install and configure CANN according to the provided [software installation guide](https://www.hiascend.com/cann/download). Developers can select the CANN version, product series, CPU architecture, operating system, and installation method to find the corresponding installation commands.
 
-During the installation, select one of the following CANN versions in *{version}*:
+During the installation, select one of the following CANN versions in *{version}*. It is advisable to download and install version 8.5.0.
+
+- Note: If the installation path is not specified, software will be installed in the default path. The default installation paths are as follows: For the **root** user, the path is `/usr/local/Ascend`. For non-root users, the path is `${HOME}/Ascend`, where `${HOME}` indicates the current user's directory.
+The preceding environment variable configurations take effect only in the current window. You can add the `source ${HOME}/Ascend/ascend-toolkit/set_env.sh` command to the environment variable configuration file (such as the .bashrc file) as required.
 
 **CANN version:**
 
@@ -33,46 +36,6 @@ During the installation, select one of the following CANN versions in *{version}
 | 3.2.0rc4          | CANN 8.3.RC2         | 2025-11-20        |
 |                   | CANN 8.5.0.alpha001  | 2025-11-12        |
 |                   | CANN 8.3.RC1         | 2025-10-30        |
-
-Specify the actual CPU architecture in *{arch}* (**aarch64** or **x86_64**) and the software package corresponding to the software version (*{version}*).
-
-It is advisable to download and install version 8.5.0.
-
-| Software Type   | Software Package Description      | Software Package Name                      |
-|---------|------------------|----------------------------------|
-| Toolkit | CANN development kit  | **Ascend-cann-toolkit_***{version}***_linux-***{arch}***.run** |
-| Ops     | CANN binary operator package| **Ascend-cann-A3-ops_***{version}***_linux-***{arch}***.run**|
-
-Note 1: The naming of A2 series Ops packages is slightly different from that of the A3 series. Here is a reference naming format: **Ascend-cann-910b-ops_***{version}***_linux-***{arch}***.run**.
-
-Note 2: The naming of Ops packages corresponding to versions earlier than 8.5.0 is slightly different. Here is a reference naming format: **Atlas-A3-cann-kernels_***{version}***_linux-***{arch}***.run**.
-
-You can find the relevant software packages at the [community](https://www.hiascend.com/developer/download/community/result?module=cann).
-
-The [community installation guide](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/softwareinst/instg/instg_quick.html?Mode=PmIns&InstallType=local&OS=Ubuntu&Software=cannToolKit) provides the complete installation process and dependency configuration suggestions, and is therefore applicable to users opting for a comprehensive deployment of the CANN environment.
-
-#### CANN Installation Script
-
-The following uses A3 CANN 8.5.0 as an example and provides a script-based installation process for your reference.
-```bash
-
-# Modify the execute permission on the .run packages.
-chmod +x Ascend-cann-toolkit_8.5.0_linux-aarch64.run
-chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
-
-# Common installation (default installation path: /usr/local/Ascend)
-sudo ./Ascend-cann-toolkit_8.5.0_linux-aarch64.run --install
-# Default installation path (same as the toolkit package: /usr/local/Ascend)
-sudo ./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
-# Put the environment variable defining the default path into effect.
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
-
-# Install the Python dependencies of CANN.
-pip install attrs==24.2.0 numpy==1.26.4 scipy==1.13.1 decorator==5.1.1 psutil==6.0.0 pyyaml
-```
-
-- Note: If the installation path is not specified, software will be installed in the default path. The default installation paths are as follows: For the **root** user, the path is `/usr/local/Ascend`. For non-root users, the path is `${HOME}/Ascend`, where `${HOME}` indicates the current user's directory.
-The preceding environment variable configurations take effect only in the current window. You can add the `source ${HOME}/Ascend/ascend-toolkit/set_env.sh` command to the environment variable configuration file (such as the .bashrc file) as required.
 
 
 ### Installing torch_npu

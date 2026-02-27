@@ -1,12 +1,18 @@
 FROM ubuntu:22.04
 
 SHELL ["/bin/bash", "-c"]
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ="Asia/shanghai"
 ARG CHIP_TYPE=A3
-ENV CHIP_TYPE=${CHIP_TYPE}
 ARG CANN_VERSION=8.5.0
-ENV CANN_VERSION=${CANN_VERSION}
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ="Asia/shanghai" \
+    CHIP_TYPE=${CHIP_TYPE} \
+    CANN_VERSION=${CANN_VERSION}
+
+RUN \
+    echo "===== 镜像构建参数 =====" && \
+    echo "CHIP_TYPE: ${CHIP_TYPE}" && \
+    echo "CANN_VERSION: ${CANN_VERSION}" && \
+    echo "========================"
 
 RUN apt update && \
     apt install --yes --no-install-recommends --no-install-suggests \
@@ -87,7 +93,14 @@ RUN cd build && \
     cd .. && \
     rm -rf build
 
+COPY . triton-ascend/
+RUN cd triton-ascend&& \
+    cd python && \
+    for PY in python3.9 python3.10 python3.11; do \
+      ${PY} setup.py clean --all && \
+      ${PY} -m pip install . && \
+    done && \
+    cd ..
+
 RUN echo "source /usr/local/Ascend/ascend-toolkit/set_env.sh" >> ~/.bashrc && \
-    echo "export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common/:/usr/local/Ascend/driver/lib64/driver/:$LD_LIBRARY_PATH" >> ~/.bashrc
-
-
+    echo "export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common/:/usr/local/Ascend/driver/lib64/driver/:\$LD_LIBRARY_PATH" >> ~/.bashrc
