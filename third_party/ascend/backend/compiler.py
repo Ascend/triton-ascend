@@ -355,6 +355,18 @@ def get_common_bishengir_compile_options(metadata):
     bishengir_target_opt = f"--target={bishengir_target}"
     return [bishengir_target_opt]
 
+
+def get_auto_bind_sub_block_option(metadata):
+    # auto_tile_and_bind_subblock is read from the module.
+    # enable_auto_bind_sub_block is set by the user and has a higher priority.
+    enable_auto_bind_sub_block = metadata["enable_auto_bind_sub_block"]
+    return (
+        metadata["auto_tile_and_bind_subblock"]
+        if enable_auto_bind_sub_block is None
+        else enable_auto_bind_sub_block
+    )
+
+
 def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
     linalg, metadata = _parse_linalg_metadata(linalg, metadata)
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -381,11 +393,10 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
                 f"--enable-ubuf-saving={enable_ubuf_saving}",
             ]
 
-        enable_auto_bind_sub_block = metadata["enable_auto_bind_sub_block"]
-        if enable_auto_bind_sub_block is not None:
-            _compile_option_list += [
-                f"--enable-auto-bind-sub-block={enable_auto_bind_sub_block}",
-            ]
+        _compile_option_list += [
+            f"--enable-auto-bind-sub-block={get_auto_bind_sub_block_option(metadata)}",
+        ]
+
         if force_disable_ffts():
             _compile_option_list += ["--disable-ffts"]
         if _is_ascend_sanitizer_enabled():
@@ -492,12 +503,6 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             + _compile_option_list
             + ["-o", bin_file]
         )
-        # TODO both bishengir-compile and triton-compile use passing attr by module
-        auto_tile_and_bind_subblock = metadata["auto_tile_and_bind_subblock"]
-        if auto_tile_and_bind_subblock is False:
-            cmd_list += [
-                "--enable-auto-bind-sub-block=false"
-            ]
         vf_merge_level = metadata["vf_merge_level"]
         if vf_merge_level:
             cmd_list += [f"--enable-vf-merge-level={vf_merge_level}"]
@@ -554,11 +559,10 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
                 f"--enable-ubuf-saving={enable_ubuf_saving}",
             ]
 
-        enable_auto_bind_sub_block = metadata["enable_auto_bind_sub_block"]
-        if enable_auto_bind_sub_block is not None:
-            _compile_option_list += [
-                f"--enable-auto-bind-sub-block={enable_auto_bind_sub_block}",
-            ]
+        _compile_option_list += [
+            f"--enable-auto-bind-sub-block={get_auto_bind_sub_block_option(metadata)}",
+        ]
+
         if _is_ascend_sanitizer_enabled():
             _compile_option_list += ["--enable-sanitizer=true"]
         if not _is_debug_line_info_disabled():
@@ -646,11 +650,6 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             + _compile_option_list
             + ["-o", bin_file]
         )
-        auto_tile_and_bind_subblock = metadata["auto_tile_and_bind_subblock"]
-        if auto_tile_and_bind_subblock is False:
-            cmd_list += [
-                "--enable-auto-bind-sub-block=false"
-            ]
         ret = subprocess.run(cmd_list, env = env, capture_output = True, check = True)
         match = re.search(r'UB\s+size\s*=\s*(\d+)\s*bits', ret.stdout.decode('utf-8'))
         if match:
@@ -711,7 +710,7 @@ class NPUOptions:
 
     multibuffer: bool = not is_compile_on_910_95
     enable_ubuf_saving: bool = None
-    enable_auto_bind_sub_block: bool = not is_compile_on_910_95
+    enable_auto_bind_sub_block: bool = None
     enable_select_analysis: bool = True
     enable_hivm_auto_cv_balance: bool = None
     sync_solver: bool = None
