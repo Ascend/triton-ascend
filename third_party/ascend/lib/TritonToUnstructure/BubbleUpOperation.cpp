@@ -340,8 +340,16 @@ void BubbleUpExtract<tensor::ExtractOp>::bubbleUpOperation(
     tensor::ExtractOp op, triton::MakeRangeOp parentOp, Location loc,
     PatternRewriter &rewriter) const {
   auto resultType = cast<RankedTensorType>(parentOp.getResult().getType());
-  rewriter.replaceOpWithNewOp<arith::IndexCastOp>(
-      op, resultType.getElementType(), op.getIndices()[0]);
+  int32_t start = parentOp.getStart();
+  Value idx = op.getIndices()[0];
+  Value result = rewriter.create<arith::IndexCastOp>(
+      op.getLoc(), resultType.getElementType(), idx);
+  if (start != 0) {
+    Value startVal = rewriter.create<arith::ConstantOp>(
+        op.getLoc(), rewriter.getIntegerAttr(resultType.getElementType(), start));
+    result = rewriter.create<arith::AddIOp>(op.getLoc(), result, startVal);
+  }
+  rewriter.replaceOp(op, result);
 }
 
 template <>
