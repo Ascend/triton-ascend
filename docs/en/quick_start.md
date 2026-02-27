@@ -44,6 +44,10 @@ You can install the latest stable version package using the CLI.
 ```shell
 pip install triton-ascend
 ```
+
+- Note: Community Triton and Triton-Ascend cannot coexist. When you install other software that depends on Triton, community Triton will be automatically installed, which will overwrite the installed Triton-Ascend directory.
+In this case, you need to uninstall community Triton first and then install Triton-Ascend.
+
 You can also download the nightly package from the [download link](https://test.pypi.org/project/triton-ascend/#history) and install it locally.
 
 - Note 1: If you download the nightly package for installation, select the Python version and architecture (AArch64/x86_64) of your server when selecting the Triton-Ascend package.

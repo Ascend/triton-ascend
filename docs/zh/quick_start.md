@@ -44,6 +44,10 @@ pip install -r requirements.txt -r requirements_dev.txt
 ```shell
 pip install triton-ascend
 ```
+
+- 注意：社区 Triton 和 Triton-Ascend 不能同时存在。在安装依赖Triton的其他软件时，会自动安装社区 Triton，将覆盖掉已安装的 Triton-Ascend 目录。
+此时也需要先卸载社区 Triton，再安装 Triton-Ascend。
+
 也可以在 [下载地址](https://test.pypi.org/project/triton-ascend/#history) 中自行选择nightly包进行下载然后本地安装。
 
 - 注意1：如果您选择自行下载nightly包安装，请在选择Triton-Ascend包时选择对应您服务器的python版本以及架构(aarch64/x86_64)。

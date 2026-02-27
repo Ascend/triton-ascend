@@ -97,7 +97,8 @@ You can install the latest stable version of Triton-Ascend using pip.
 pip install triton-ascend
 ```
 
-- Note: If the community edition of Triton has been installed, uninstall it first. Then install Triton-Ascend. Doing so helps prevent conflicts.
+- Note: Community Triton and Triton-Ascend cannot coexist. When you install other software that depends on Triton, community Triton will be automatically installed, which will overwrite the installed Triton-Ascend directory.
+In this case, you need to uninstall community Triton first and then install Triton-Ascend.
 ```shell
 pip uninstall triton
 pip install triton-ascend

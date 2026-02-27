@@ -8,6 +8,18 @@ A: You can directly use pip to install it.
 ```Python
 pip install triton-ascend
 ```
+
+**Q: Can community Triton and Triton-Ascend coexist?**
+
+A: No. You need to uninstall the community Triton first before installing Triton-Ascend.
+- Note: When installing other software that depends on Triton, the community Triton will be automatically installed, which will overwrite the already installed Triton-Ascend directory.
+In this case, you also need to uninstall the community Triton first before installing Triton-Ascend.
+
+```Python
+pip uninstall triton
+pip install triton-ascend
+```
+
 **Q: Can Triton-Ascend be used on non-Ascend hardware (such as CUDA AMD)?**
 
 A: No. Triton-Ascend can be used only in the Ascend NPU hardware environment.

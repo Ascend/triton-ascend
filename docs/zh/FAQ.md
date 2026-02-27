@@ -8,6 +8,18 @@ A: 可以直接使用pip 安装
 ```Python
 pip install triton-ascend
 ```
+
+**Q: 社区 Triton 和 Triton-Ascend 能否同时存在？**
+
+A: 不可以。需要先卸载社区 Triton，再安装 Triton-Ascend。
+- 注：在安装依赖Triton的其他软件时，会自动安装社区 Triton，将覆盖掉已安装的 Triton-Ascend 目录。
+此时也需要先卸载社区 Triton，再安装 Triton-Ascend。
+
+```Python
+pip uninstall triton
+pip install triton-ascend
+```
+
 **Q: 能否在非 Ascend 硬件（如 CUDA AMD）上使用 Triton-Ascend？**
 
 A: 不可以，只能在 Ascend NPU 硬件环境使用 Triton-Ascend
