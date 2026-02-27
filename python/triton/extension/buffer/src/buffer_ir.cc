@@ -72,7 +72,7 @@ void init_buffer_ir(py::module &&m)
                auto memrefType =
                    MemRefType::get(tensorType.getShape(), tensorType.getElementType(), MemRefLayoutAttrInterface {});
                // TODO: We need to add a pass before OneShotBufferize to generate MemorySpaceCastOp
-               Operation *memref = self.create<bufferization::ToMemrefOp>(memrefType, src);
+               Operation *memref = self.create<bufferization::ToBufferOp>(memrefType, src);
                if (addressSpace) {
                    memref = self.create<memref::MemorySpaceCastOp>(
                        MemRefType::get(memrefType.getShape(), memrefType.getElementType(), memrefType.getLayout(),

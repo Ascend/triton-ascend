@@ -542,7 +542,7 @@ AtomicRMWConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor,
   auto dstOriType = cast<MemRefType>(dstMemref.getType());
   MemRefType dstType = MemRefType::get(dstOriType.getShape(), dstOriType.getElementType());
   Value inputMemref =
-      rewriter.create<bufferization::ToMemrefOp>(loc, dstType, val);
+      rewriter.create<bufferization::ToBufferOp>(loc, dstType, val);
 
   // 2. handle the mask for the atomic op
   // When the dsl do not pass the mask to this op like
@@ -748,7 +748,7 @@ AtomicRMWNewConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor
     if (inputMemref)
       return inputMemref;
     inputMemref =
-        rewriter.create<bufferization::ToMemrefOp>(loc, ptrType, inputVal);
+        rewriter.create<bufferization::ToBufferOp>(loc, ptrType, inputVal);
     return inputMemref;
   };
 
@@ -797,7 +797,7 @@ AtomicRMWNewConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor
     if (auto maskTypeT = dyn_cast<TensorType>(mask.getType())) {
     MemRefType maskTypeM = MemRefType::get(maskTypeT.getShape(), maskTypeT.getElementType());
     memrefMask =
-        rewriter.create<bufferization::ToMemrefOp>(loc, maskTypeM, mask);
+        rewriter.create<bufferization::ToBufferOp>(loc, maskTypeM, mask);
     }
     rewriter.create<hfusion::AtomicXchgOp>(op.getLoc(), TypeRange(),
                                            getInputMemref(), dstMemref,
@@ -852,10 +852,10 @@ AtomicCASConverter::matchAndRewrite(triton::AtomicCASOp op, OpAdaptor adaptor,
   auto dstOriType = cast<MemRefType>(dstMemref.getType());
   MemRefType dstType = MemRefType::get(dstOriType.getShape(), dstOriType.getElementType());
   Value inputMemref =
-      rewriter.create<bufferization::ToMemrefOp>(loc, dstType, val);
+      rewriter.create<bufferization::ToBufferOp>(loc, dstType, val);
 
   Value cmpMemref =
-      rewriter.create<bufferization::ToMemrefOp>(loc, dstType, cmp);
+      rewriter.create<bufferization::ToBufferOp>(loc, dstType, cmp);
 
   // create element-wise map
   int64_t rank = type.getRank();

@@ -9,7 +9,7 @@ add_triton_library(TritonToLinalg
         MaskAnalysis.cpp
         UseAnalysis.cpp
         ImplicitPermute.cpp
-        DescriptorConverter
+        DescriptorConverter.cpp
 
   DEPENDS
   TritonToLinalgConversionPassIncGen

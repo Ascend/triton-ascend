@@ -1125,7 +1125,7 @@ void TritonToLinalgPass::runOnOperation() {
     MemRefType syncBlockLockArgType =
         MemRefType::get(SmallVector<int64_t>(1, ShapedType::kDynamic),
                         IntegerType::get(context, 8));
-    func.insertArgument(syncBlockLockArgIdx, // argIndex
+    llvm::LogicalResult  syncBlockLockArg = func.insertArgument(syncBlockLockArgIdx, // argIndex
                         syncBlockLockArgType, // argType
                         nullptr, func->getLoc()); // dicAttr
     func->setAttr("SyncBlockLockArgIdx",
@@ -1138,7 +1138,7 @@ void TritonToLinalgPass::runOnOperation() {
     NamedAttribute workspaceArgAttr(StringAttr::get(context, "workspace"),
                                     UnitAttr::get(context));
 
-    func.insertArgument(/*argIndex*/ workspaceArgIdx,
+    llvm::LogicalResult workspaceArg = func.insertArgument(/*argIndex*/ workspaceArgIdx,
                         /*argType*/ workspaceArgType,
                         /*dicAttr*/ nullptr, func->getLoc());
     func->setAttr("WorkspaceArgIdx",

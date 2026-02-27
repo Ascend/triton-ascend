@@ -137,7 +137,8 @@ class ArgMinMaxBaseConverter : public OpConversionPattern<triton::ReduceOp> {
 public:
   ArgMinMaxBaseConverter(MLIRContext *context) : OpConversionPattern(context) {}
 
-  LogicalResult match(triton::ReduceOp op) const override final {
+  LogicalResult matchAndRewrite(triton::ReduceOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override final {
     if (op.getBody()->getNumArguments() != 4) {
       return failure();
     }
@@ -192,136 +193,136 @@ public:
     return success();
   }
 
-  void rewrite(triton::ReduceOp op, OpAdaptor adaptor,
-               ConversionPatternRewriter &rewriter) const override final {
-    auto loc = op.getLoc();
-    auto elemTypes = op.getElementTypes();
+  // void rewrite(triton::ReduceOp op, OpAdaptor adaptor,
+  //              ConversionPatternRewriter &rewriter) const override final {
+  //   auto loc = op.getLoc();
+  //   auto elemTypes = op.getElementTypes();
 
-    auto valueType = elemTypes[0];
-    // tl.argmin reorder
-    auto block = op.getBody();
-    bool isUnsigned = false;
-    if (isa<mlir::FloatType>(valueType)) {
-      arith::CmpFOp cmpFOp;
-      block->walk([&](arith::CmpFOp cmpOp) {
-        auto pred = cmpOp.getPredicate();
-        if (pred == arith::CmpFPredicate::OEQ ||
-            pred == arith::CmpFPredicate::ONE ||
-            pred == arith::CmpFPredicate::UEQ ||
-            pred == arith::CmpFPredicate::UNE) {
-          return WalkResult::advance();
-        } else if (pred == arith::CmpFPredicate::OGT ||
-                   pred == arith::CmpFPredicate::OLT ||
-                   pred == arith::CmpFPredicate::UGT ||
-                   pred == arith::CmpFPredicate::ULT) {
-          cmpFOp = cmpOp;
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
-      cmpFOp->moveBefore(block, block->getOperations().begin());
-    } else if (isa<mlir::IntegerType>(valueType)) {
-      arith::CmpIOp cmpIOp;
-      block->walk([&](arith::CmpIOp cmpOp) {
-        auto pred = cmpOp.getPredicate();
-        if (pred == arith::CmpIPredicate::ugt ||
-            pred == arith::CmpIPredicate::ult) {
-            isUnsigned = true;
-        }
-        if (pred == arith::CmpIPredicate::eq ||
-            pred == arith::CmpIPredicate::ne) {
-          return WalkResult::advance();
-        } else if (pred == arith::CmpIPredicate::sgt ||
-                   pred == arith::CmpIPredicate::slt ||
-                   pred == arith::CmpIPredicate::ugt ||
-                   pred == arith::CmpIPredicate::ult) {
-          if (cmpOp.getLhs() == block->getArgument(0) &&
-              cmpOp.getRhs() == block->getArgument(2)) {
-            cmpIOp = cmpOp;
-            return WalkResult::interrupt();
-          }
-        }
-        return WalkResult::advance();
-      });
-      cmpIOp->moveBefore(block, block->getOperations().begin());
-    }
+  //   auto valueType = elemTypes[0];
+  //   // tl.argmin reorder
+  //   auto block = op.getBody();
+  //   bool isUnsigned = false;
+  //   if (isa<mlir::FloatType>(valueType)) {
+  //     arith::CmpFOp cmpFOp;
+  //     block->walk([&](arith::CmpFOp cmpOp) {
+  //       auto pred = cmpOp.getPredicate();
+  //       if (pred == arith::CmpFPredicate::OEQ ||
+  //           pred == arith::CmpFPredicate::ONE ||
+  //           pred == arith::CmpFPredicate::UEQ ||
+  //           pred == arith::CmpFPredicate::UNE) {
+  //         return WalkResult::advance();
+  //       } else if (pred == arith::CmpFPredicate::OGT ||
+  //                  pred == arith::CmpFPredicate::OLT ||
+  //                  pred == arith::CmpFPredicate::UGT ||
+  //                  pred == arith::CmpFPredicate::ULT) {
+  //         cmpFOp = cmpOp;
+  //         return WalkResult::interrupt();
+  //       }
+  //       return WalkResult::advance();
+  //     });
+  //     cmpFOp->moveBefore(block, block->getOperations().begin());
+  //   } else if (isa<mlir::IntegerType>(valueType)) {
+  //     arith::CmpIOp cmpIOp;
+  //     block->walk([&](arith::CmpIOp cmpOp) {
+  //       auto pred = cmpOp.getPredicate();
+  //       if (pred == arith::CmpIPredicate::ugt ||
+  //           pred == arith::CmpIPredicate::ult) {
+  //           isUnsigned = true;
+  //       }
+  //       if (pred == arith::CmpIPredicate::eq ||
+  //           pred == arith::CmpIPredicate::ne) {
+  //         return WalkResult::advance();
+  //       } else if (pred == arith::CmpIPredicate::sgt ||
+  //                  pred == arith::CmpIPredicate::slt ||
+  //                  pred == arith::CmpIPredicate::ugt ||
+  //                  pred == arith::CmpIPredicate::ult) {
+  //         if (cmpOp.getLhs() == block->getArgument(0) &&
+  //             cmpOp.getRhs() == block->getArgument(2)) {
+  //           cmpIOp = cmpOp;
+  //           return WalkResult::interrupt();
+  //         }
+  //       }
+  //       return WalkResult::advance();
+  //     });
+  //     cmpIOp->moveBefore(block, block->getOperations().begin());
+  //   }
 
-    TypedAttr valueAttr;
-    if (isa<mlir::FloatType>(valueType)) {
-      valueAttr = rewriter.getFloatAttr(valueType, T::getBaseReductionValue());
-    } else if (isa<mlir::IntegerType>(valueType)) {
-      if (isUnsigned) {
-        valueAttr =
-            rewriter.getIntegerAttr(valueType, T::getBaseReductionUIntValue());
-      } else {
-        valueAttr =
-            rewriter.getIntegerAttr(valueType, T::getBaseReductionIntValue());
-      }
-    }
+  //   TypedAttr valueAttr;
+  //   if (isa<mlir::FloatType>(valueType)) {
+  //     valueAttr = rewriter.getFloatAttr(valueType, T::getBaseReductionValue());
+  //   } else if (isa<mlir::IntegerType>(valueType)) {
+  //     if (isUnsigned) {
+  //       valueAttr =
+  //           rewriter.getIntegerAttr(valueType, T::getBaseReductionUIntValue());
+  //     } else {
+  //       valueAttr =
+  //           rewriter.getIntegerAttr(valueType, T::getBaseReductionIntValue());
+  //     }
+  //   }
 
-    auto reduceWithIndexParams = getReduceWithIndexParams(op);
-    auto valuesAccBaseVal = rewriter.create<arith::ConstantOp>(loc, valueType, valueAttr);
-    int indicesInitValue =
-        (llvm::succeeded(reduceWithIndexParams) &&
-         reduceWithIndexParams->tieBreakType == TieBreakType::RIGHT)
-        ? -1
-        : std::numeric_limits<int32_t>::max();
+  //   auto reduceWithIndexParams = getReduceWithIndexParams(op);
+  //   auto valuesAccBaseVal = rewriter.create<arith::ConstantOp>(loc, valueType, valueAttr);
+  //   int indicesInitValue =
+  //       (llvm::succeeded(reduceWithIndexParams) &&
+  //        reduceWithIndexParams->tieBreakType == TieBreakType::RIGHT)
+  //       ? -1
+  //       : std::numeric_limits<int32_t>::max();
 
-    auto indexType = elemTypes[1];
-    auto indicesAccBaseVal = rewriter.create<arith::ConstantOp>(
-        loc, indexType, rewriter.getIntegerAttr(indexType, indicesInitValue));
+  //   auto indexType = elemTypes[1];
+  //   auto indicesAccBaseVal = rewriter.create<arith::ConstantOp>(
+  //       loc, indexType, rewriter.getIntegerAttr(indexType, indicesInitValue));
 
-    auto valueResultType = dyn_cast<RankedTensorType>(op.getType(0));
-    const auto isScalarReduce = valueResultType == nullptr;
-    SmallVector<int64_t> reductionResultShape{
-        isScalarReduce ? SmallVector<int64_t>{}
-                       : SmallVector<int64_t>(valueResultType.getShape())};
+  //   auto valueResultType = dyn_cast<RankedTensorType>(op.getType(0));
+  //   const auto isScalarReduce = valueResultType == nullptr;
+  //   SmallVector<int64_t> reductionResultShape{
+  //       isScalarReduce ? SmallVector<int64_t>{}
+  //                      : SmallVector<int64_t>(valueResultType.getShape())};
 
-    SmallVector<Value> outputs{
-        getInitTensor(rewriter, reductionResultShape, valuesAccBaseVal, loc),
-        getInitTensor(rewriter, reductionResultShape, indicesAccBaseVal, loc)};
+  //   SmallVector<Value> outputs{
+  //       getInitTensor(rewriter, reductionResultShape, valuesAccBaseVal, loc),
+  //       getInitTensor(rewriter, reductionResultShape, indicesAccBaseVal, loc)};
 
-    auto linalgOp = rewriter.create<linalg::ReduceOp>(
-        loc, adaptor.getOperands(), outputs,
-        SmallVector<int64_t>{adaptor.getAxis()},
-        [&](OpBuilder &b, Location loc, ValueRange inputs) {
-          assert(inputs.size() == 4);
+  //   auto linalgOp = rewriter.create<linalg::ReduceOp>(
+  //       loc, adaptor.getOperands(), outputs,
+  //       SmallVector<int64_t>{adaptor.getAxis()},
+  //       [&](OpBuilder &b, Location loc, ValueRange inputs) {
+  //         assert(inputs.size() == 4);
 
-          auto tritonReduceBlock = op.getBody();
-          IRMapping mapping;
-          mapping.map(tritonReduceBlock->getArguments(), inputs);
+  //         auto tritonReduceBlock = op.getBody();
+  //         IRMapping mapping;
+  //         mapping.map(tritonReduceBlock->getArguments(), inputs);
 
-          for (auto &op : tritonReduceBlock->without_terminator()) {
-            b.clone(op, mapping);
-          }
+  //         for (auto &op : tritonReduceBlock->without_terminator()) {
+  //           b.clone(op, mapping);
+  //         }
 
-          auto tritonYield = tritonReduceBlock->getTerminator();
-          auto results =
-              llvm::map_to_vector(tritonYield->getOperands(), [&](Value val) {
-                return mapping.lookup(val);
-              });
-          b.create<linalg::YieldOp>(loc, results);
-        });
+  //         auto tritonYield = tritonReduceBlock->getTerminator();
+  //         auto results =
+  //             llvm::map_to_vector(tritonYield->getOperands(), [&](Value val) {
+  //               return mapping.lookup(val);
+  //             });
+  //         b.create<linalg::YieldOp>(loc, results);
+  //       });
 
-    // before we rewrite the argmax reduce op, we know it has return value
-    // so addReduceWithIndexAttrIfNeeded won't fail
-    // but ignoring it will lead to compiling failure
-    if (llvm::succeeded(reduceWithIndexParams) &&
-        reduceWithIndexParams->tieBreakType != TieBreakType::None) {
-        addReduceWithIndexAttr(*reduceWithIndexParams, rewriter, linalgOp);
-    }
+  //   // before we rewrite the argmax reduce op, we know it has return value
+  //   // so addReduceWithIndexAttrIfNeeded won't fail
+  //   // but ignoring it will lead to compiling failure
+  //   if (llvm::succeeded(reduceWithIndexParams) &&
+  //       reduceWithIndexParams->tieBreakType != TieBreakType::None) {
+  //       addReduceWithIndexAttr(*reduceWithIndexParams, rewriter, linalgOp);
+  //   }
 
-    if (isScalarReduce) {
-      SmallVector<Value> reduceResults{
-          rewriter.create<tensor::ExtractOp>(
-              loc, valueType, linalgOp.getResults()[0], ValueRange{}),
-          rewriter.create<tensor::ExtractOp>(
-              loc, indexType, linalgOp.getResults()[1], ValueRange{})};
-      rewriter.replaceOp(op, reduceResults);
-    } else {
-      rewriter.replaceOp(op, linalgOp);
-    }
-  }
+  //   if (isScalarReduce) {
+  //     SmallVector<Value> reduceResults{
+  //         rewriter.create<tensor::ExtractOp>(
+  //             loc, valueType, linalgOp.getResults()[0], ValueRange{}),
+  //         rewriter.create<tensor::ExtractOp>(
+  //             loc, indexType, linalgOp.getResults()[1], ValueRange{})};
+  //     rewriter.replaceOp(op, reduceResults);
+  //   } else {
+  //     rewriter.replaceOp(op, linalgOp);
+  //   }
+  // }
 };
 
 class ArgMinConverter : public ArgMinMaxBaseConverter<ArgMinConverter> {

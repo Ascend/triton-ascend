@@ -135,6 +135,7 @@ static SmallVector<SmallVector<Value>> createDestOps(triton::ElementwiseInlineAs
                                        /*constraints=*/op.getConstraints(),
                                        /*has_side_effects=*/!op.getPure(),
                                        /*is_align_stack=*/false,
+                                       /*tail_call_kind=*/LLVM::tailcallkind::TailCallKind::None,
                                        /*asm_dialect=*/
                                        LLVM::AsmDialectAttr::get(rewriter.getContext(), LLVM::AsmDialect::AD_ATT),
                                        /*operand_attrs=*/ArrayAttr())

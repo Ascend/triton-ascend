@@ -952,8 +952,6 @@ OpFoldResult AdvanceOp::fold(FoldAdaptor adaptor) {
   return getPtr();
 }
 
-
-//FIXME TODO: When upgrading to Triton 3.4.0, sync with upstream changes
 //-- MakeTensorDescOp --
 void MakeTensorDescOp::build(OpBuilder &builder, OperationState &state,
                              Value base, ValueRange shape, ValueRange strides,
@@ -969,43 +967,6 @@ void MakeTensorDescOp::build(OpBuilder &builder, OperationState &state,
   auto descTy =
       TensorDescType::get(builder.getContext(), blockTy, isSignedInteger);
   return build(builder, state, descTy, base, shape, strides);
-}
-
-// -- DescriptorLoadOp --
-static LogicalResult verifyDescriptorLoadStoreType(Operation *op,
-                                                   TensorDescType desc,
-                                                   RankedTensorType tensor)
-{
-  RankedTensorType block = desc.getSignlessBlockType();
-  ArrayRef<int64_t> blockShape = block.getShape();
-  ArrayRef<int64_t> tensorShape = tensor.getShape();
-  if (blockShape.size() > tensorShape.size()) {
-    // Allow ranked reduced load if the leading dimensions are all 1s.
-    for (int i = 0; i < blockShape.size() - tensorShape.size(); ++i) {
-      if (blockShape[i] != 1)
-        return op->emitOpError(
-            "ranked reduce load only allowed for unit dimension leading dim.");
-    }
-    blockShape = blockShape.take_back(tensorShape.size());
-  }
-
-  if (blockShape == tensorShape &&
-      block.getElementType() == tensor.getElementType()) {
-        return success();
-      }
-  return op->emitOpError("tensor descriptor block and tensor types must match");
-}
-
-LogicalResult DescriptorLoadOp::verify()
-{
-  return verifyDescriptorLoadStoreType(*this, getDesc().getType(), getType());
-}
-
-// -- DescriptorStoreOp --
-LogicalResult DescriptorStoreOp::verify()
-{
-  return verifyDescriptorLoadStoreType(*this, getDesc().getType(),
-                                       getSrc().getType());
 }
 
 // The following ops, including `call`, `func`, and `return` are copied and

@@ -859,7 +859,7 @@ def get_package_name():
 
 
 is_manylinux = check_env_flag("IS_MANYLINUX", "FALSE")
-readme = os.path.join(triton_dir, "README.md")
+readme = os.path.join(triton_dir, "triton-ascend/README.md")
 if not os.path.exists(readme):
     raise FileNotFoundError("Unable to find 'README.md'")
 with open(readme, encoding="utf-8") as fdesc:
@@ -873,10 +873,6 @@ setup(
     author_email="phil@openai.com",
     description="A language and compiler for custom Deep Learning operations",
     long_description=long_description,
-    install_requires=[
-        "setuptools>=40.8.0",
-        "importlib-metadata; python_version < '3.10'",
-    ],
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
     entry_points=get_entry_points(),

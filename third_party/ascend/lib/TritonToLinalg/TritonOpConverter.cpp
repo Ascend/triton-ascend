@@ -1112,7 +1112,7 @@ LogicalResult ScanConverter::convertToTargetOp(
     OpBuilder::InsertionGuard guard(rewriter);
 
     auto memrefType = MemRefType::get(shape, elementType);
-    Value inputMemRef = rewriter.create<bufferization::ToMemrefOp>(loc, memrefType, scanInput);
+    Value inputMemRef = rewriter.create<bufferization::ToBufferOp>(loc, memrefType, scanInput);
     Value outputMemRef = rewriter.create<memref::AllocOp>(loc, memrefType);
 
     auto processDimension = [&](ArrayRef<Value> baseIdxsArray) {
@@ -1251,7 +1251,7 @@ LogicalResult ScanConverter::convertToTargetOpExtended(
     auto memRefTy = MemRefType::get(tensorTy.getShape(), tensorTy.getElementType());
     memRefTypes.push_back(memRefTy);
     // Convert input tensors to MemRefs
-    inputMemRefs.push_back(rewriter.create<bufferization::ToMemrefOp>(loc, memRefTy, operands[i]));
+    inputMemRefs.push_back(rewriter.create<bufferization::ToBufferOp>(loc, memRefTy, operands[i]));
     // Allocate MemRefs for outputs
     outputMemRefs.push_back(rewriter.create<memref::AllocOp>(loc, memRefTy));
   }
