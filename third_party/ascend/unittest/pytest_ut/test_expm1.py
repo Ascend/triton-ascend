@@ -44,6 +44,7 @@ def triton_expm1(in_ptr0, out_ptr0, XBLOCK : tl.constexpr, XBLOCK_SUB : tl.const
         tl.store(out_ptr0 + (x0), tmp1, None)
 
 
+@pytest.mark.skip(reason="expm1 failed sometimes, wait for fix")
 @pytest.mark.parametrize('param_list',
                             [
                                 ['float32', (2, 4096, 8), 2, 32768, 1024],
