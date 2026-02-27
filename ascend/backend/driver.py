@@ -526,6 +526,7 @@ typedef struct _DevicePtrInfo {
   bool valid;
 } DevicePtrInfo;
 
+
 static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {
   DevicePtrInfo ptr_info;
   ptr_info.dev_ptr = 0;
@@ -552,10 +553,32 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {
     ptr_info.dev_ptr = reinterpret_cast<void *>(PyLong_AsUnsignedLongLong(ret));
     if(!ptr_info.dev_ptr)
       return ptr_info;
-    Py_DECREF(ret);  // Thanks ChatGPT!
+    aclrtPtrAttributes attributes;
+    aclError status = aclrtPointerGetAttributes(ptr_info.dev_ptr, &attributes);
+
+    if (status == ACL_SUCCESS) {
+      if (attributes.location.type != ACL_MEM_LOCATION_TYPE_DEVICE && attributes.location.type != 4) {
+        Py_DECREF(ret);
+        PyErr_Format(PyExc_ValueError,
+                     "Pointer argument (at %d) cannot be accessed from Triton (cpu tensor?)", idx);
+        ptr_info.valid = false;
+        return ptr_info;
+      }
+    } else {
+      Py_DECREF(ret);
+      PyErr_Format(PyExc_RuntimeError,
+                   "Failed to query pointer attributes at argument %d. "
+                   "Error code: %d. This may indicate invalid memory address "
+                   "or NPU device error.",
+                   idx, status);
+      ptr_info.valid = false;
+      return ptr_info;
+      }
+    Py_DECREF(ret);
     return ptr_info;
   }
   PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
+  ptr_info.valid = false;
   return ptr_info;
 }
 """

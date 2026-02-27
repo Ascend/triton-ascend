@@ -156,7 +156,7 @@ def test_case_4d_5d(param_list):
     dtype, shape = param_list
     if check_ub_mem_overflow(dtype, shape):
         return
-    x0 = test_common.generate_tensor(shape, dtype)
+    x0 = test_common.generate_tensor(shape, dtype).npu()
     y_ref = torch.zeros_like(x0, dtype=eval('torch.' + dtype)).npu()
     print(f"y_ref = {torch.flatten(y_ref)[0:4]}")
     y_cal = torch.ones(shape, dtype=eval('torch.' + dtype)).npu()
