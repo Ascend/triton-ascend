@@ -185,6 +185,12 @@ public:
                  const llvm::SmallDenseMap<Value, BlockData> &known);
 
   static void
+  parseLinalgGenericFromMakeRange(linalg::GenericOp op, BlockData &data,
+                                 const Location &loc,
+                                 ConversionPatternRewriter &rewriter,
+                                 const llvm::SmallDenseMap<Value, BlockData> &known);
+
+  static void
   parseExpandDims(triton::ExpandDimsOp op, BlockData &data, const Location &loc,
                   ConversionPatternRewriter &rewriter,
                   const llvm::SmallDenseMap<Value, BlockData> &known);

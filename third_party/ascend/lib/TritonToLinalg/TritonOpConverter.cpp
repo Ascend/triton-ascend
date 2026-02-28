@@ -650,6 +650,12 @@ MakeRangeConverter::matchAndRewrite(triton::MakeRangeOp op, OpAdaptor adaptor,
       loc, op->getResultTypes(), /* operands */ ValueRange{}, ValueRange{init},
       indexingMaps, ConverterUtils::getNParallelLoopsAttrs(1), nestedBody);
 
+  linalgOp->setAttr("tt.from_make_range", mlir::UnitAttr::get(context));
+  linalgOp->setAttr("tt.make_range_offset",
+                    mlir::IntegerAttr::get(mlir::IndexType::get(context), 0));
+  linalgOp->setAttr("tt.make_range_size",
+                    mlir::IntegerAttr::get(mlir::IndexType::get(context), shape[0]));
+
   int32_t startVal = op.getStartAttr().getInt();
   if (startVal == 0) {
     rewriter.replaceOp(op, linalgOp->getResults());

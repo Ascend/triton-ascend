@@ -479,6 +479,13 @@ void BlockDataParser::parse(
     parseFill(fillOp, data, loc, rewriter, known);
   } else if (auto selectOp = operand.getDefiningOp<arith::SelectOp>()){
     parseSelect(selectOp, data, loc, rewriter, known);
+  } else if (auto genericOp = operand.getDefiningOp<linalg::GenericOp>()) {
+    if (genericOp->hasAttr("tt.from_make_range")) {
+      parseLinalgGenericFromMakeRange(genericOp, data, loc, rewriter, known);
+    } else {
+      operand.dump();
+      llvm_unreachable("encountered AddPtrOp produced by unsupported operation");
+    }
   } else {
     operand.dump();
     llvm_unreachable("encountered AddPtrOp produced by unsupported operation");
@@ -551,6 +558,27 @@ void BlockDataParser::parseMakeRange(
   data.getOffsetsRef().push_back(rewriter.getIndexAttr(start));
   data.getSizesRef().push_back(rewriter.getIndexAttr(shape[0]));
   data.getStridesRef().push_back(rewriter.getIndexAttr(stride));
+}
+
+void BlockDataParser::parseLinalgGenericFromMakeRange(
+    linalg::GenericOp op, BlockData &data, const Location &loc,
+    ConversionPatternRewriter &rewriter,
+    const llvm::SmallDenseMap<Value, BlockData> &known) {
+  assert(data.isEmpty());
+  assert(op->hasAttr("tt.from_make_range") &&
+         "expected tt.from_make_range attribute");
+
+  auto offsetAttr = op->getAttr("tt.make_range_offset");
+  auto sizeAttr = op->getAttr("tt.make_range_size");
+  assert(offsetAttr && sizeAttr &&
+         "tt.make_range_offset and tt.make_range_size required");
+
+  int64_t offset = cast<IntegerAttr>(offsetAttr).getInt();
+  int64_t size = cast<IntegerAttr>(sizeAttr).getInt();
+
+  data.getOffsetsRef().push_back(rewriter.getIndexAttr(offset));
+  data.getSizesRef().push_back(rewriter.getIndexAttr(size));
+  data.getStridesRef().push_back(rewriter.getIndexAttr(1));
 }
 
 void BlockDataParser::parseExpandDims(
