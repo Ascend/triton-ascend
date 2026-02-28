@@ -25,4 +25,9 @@ def TritonToLinalg : Pass<"triton-to-linalg", "mlir::ModuleOp"> {
     ];
 }
 
+def MarkTensorKind : Pass<"mark-tensor-kind", "mlir::ModuleOp"> {
+    let summary = "Mark tensor kind (INPUT/OUTPUT/INPUT_OUTPUT) on Triton function arguments";
+    let constructor = "triton::createMarkTensorKindPass()";
+}
+
 #endif // TRITON_TO_LINALG_CONVERSION_PASSES

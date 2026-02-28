@@ -10,6 +10,7 @@ add_triton_library(TritonToLinalg
         UseAnalysis.cpp
         ImplicitPermute.cpp
         DescriptorConverter
+        MarkTensorKindPass.cpp
 
   DEPENDS
   TritonToLinalgConversionPassIncGen

@@ -58,7 +58,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   // mlir::triton::registerConvertTritonGPUToLLVMPass();
   // mlir::triton::registerConvertNVGPUToLLVMPass();
   // mlir::triton::registerDecomposeUnsupportedNVIDIAConversions();
-  mlir::triton::registerTritonToLinalgPass();
+  mlir::triton::registerTritonToLinalgPasses();
   mlir::triton::registerDiscreteMaskAccessConversion();
   mlir::triton::registerTritonToStructuredPasses();
   mlir::triton::registerTritonToAnnotationPasses();

@@ -44,8 +44,6 @@ std::unique_ptr<OperationPass<ModuleOp>> createTritonToLinalgPass();
 std::unique_ptr<OperationPass<ModuleOp>> 
 createTritonToLinalgPass(bool, bool, bool, bool, bool);
 
-enum TensorKind { NONE = -1, INPUT = 0, OUTPUT = 1, INPUT_OUTPUT = 2 };
-
 } // namespace triton
 } // namespace mlir
 
@@ -54,8 +52,6 @@ using namespace triton;
 const std::string globalKernelAttr = "global_kernel";
 const std::string kernelMixModeName = "mix_mode";
 const std::string kernelParallelModeName = "parallel_mode";
-const unsigned INT_BIT_WIDTH = 32;
-const unsigned SET_INIT_SIZE = 16;
 
 class TritonTypeConverter : public mlir::TypeConverter {
 public:
@@ -73,14 +69,6 @@ private:
   // remember 'xxxOp' is usually a Pointer, so that we can change target memory
   // without giving a reference argument
   void addProgramInfo(triton::FuncOp func, bool globalKernel);
-
-  template <typename OpTy>
-  void addTensorKindToArguments(OpTy op, triton::FuncOp func, TensorKind tensorKind);
-
-  template <TensorKind Kind, typename... Ops>
-  void walkAndMarkTensorKind(triton::FuncOp func);
-
-  void annotateTensorKindForModule(ModuleOp moduleOp);
 
   void convertTTFunc(triton::FuncOp func, const bool existDot, const bool existSIMTOp);
 
