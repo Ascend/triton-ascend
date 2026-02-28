@@ -47,6 +47,9 @@ static void fixTaskId(triton::FuncOp &funcOp) {
         auto defTaskIds = getAsyncTaskIds(defOp);
         // Backward propagation: ensure def covers op's task IDs.
         if (!containsAll(defTaskIds, asyncTaskIds)) {
+          // Skip control flow ops.
+          if (isa<scf::YieldOp, scf::ForOp, scf::IfOp>(op))
+            continue;
           // Only propagate backward to arithmetic ops (e.g. constants).
           // Const ops with same value but different task ids can be folded.
           if (defOp->getDialect()->getNamespace() == "arith") {
@@ -276,7 +279,7 @@ static bool getBackwardSliceToPartition(Value v,
         if (!getBackwardSliceToPartition(operand, partitionScheme, currentDim))
           return false;
     } else if (auto dotOp = dyn_cast<nvidia_gpu::WarpGroupDotOp>(op)) {
-      if (!getBackwardSliceToPartition(currentDim == 0 ? dotOp.getA()
+      if (!getBackwardSliceToPartition(currentDim == 0 ? Value(dotOp.getA())
                                                        : dotOp.getB(),
                                        partitionScheme, currentDim))
         return false;
@@ -667,13 +670,11 @@ static void rewriteRematerializedOps(triton::FuncOp &funcOp,
         SmallVector<int64_t> shape = getShape(memdescType);
         int sliceSize = shape[dim] / partitionScheme.numPartitions;
         shape[dim] = sliceSize;
-        Value zero = builder.createWithAsyncTaskIds<arith::ConstantIntOp>(
-            allocOp.getLoc(), 0, 32);
         auto slicedMemdescType = MemDescType::get(
             shape, memdescType.getElementType(), memdescType.getEncoding(),
             memdescType.getMemorySpace(), memdescType.getMutableMemory());
-        SmallVector<Value> offsets(shape.size(), zero);
-        auto viewOp = builder.createWithAsyncTaskIds<MemDescSubviewOp>(
+        SmallVector<int32_t> offsets(shape.size(), 0);
+        auto viewOp = builder.createWithAsyncTaskIds<MemDescSubsliceOp>(
             allocOp.getLoc(), slicedMemdescType, allocOp.getResult(), offsets);
         newOp = viewOp;
       } else if (isa<arith::ConstantOp>(oldOp)) {

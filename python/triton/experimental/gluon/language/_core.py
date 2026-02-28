@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from typing import TypeVar, List, TYPE_CHECKING, Tuple
 from functools import wraps
 
@@ -37,38 +38,17 @@ from triton.language.core import (
     float64,
     _unwrap_if_constexpr,
     _unwrap_shape,
+    static_range,
     tensor,
     tuple,
     tuple_type,
 )
 
-_IMPORT_FROM_TRITON: List[str] = [
-    "expand_dims",
-    "join",
-    "load",
-    "maximum",
-    "minimum",
-    "permute",
-    "program_id",
-    "reduce",
-    "reshape",
-    "split",
-    "static_assert",
-    "static_print",
-    "store",
-    "to_tensor",
-    "where",
-    "inline_asm_elementwise",
-]
-
+# We define __all__ only to appease the python linter, these are not used in
+# this file but we want to import them anyway so they are importable from here.
 __all__ = [
     "constexpr",
-    "base_value",
-    "base_type",
-    "dtype",
-    "block_type",
     "pointer_type",
-    "tuple_type",
     "void",
     "int1",
     "int8",
@@ -83,30 +63,71 @@ __all__ = [
     "float8e5b16",
     "float8e4nv",
     "float8e4b8",
-    "float8e4b8",
     "float8e4b15",
     "float16",
     "bfloat16",
     "float32",
     "float64",
-    "_unwrap_if_constexpr",
-    "tensor",
+    "static_range",
     "tuple",
     "tuple_type",
-    "thread_barrier",
-    "arange",
-    "full",
-    "convert_layout",
-    "allocate_shared_memory",
-    "shared_memory_descriptor",
-    "warp_specialize",
-    *_IMPORT_FROM_TRITON,
 ]
 
 T = TypeVar("T")
 
 # TODO: split these
 GLUON_BUILTIN = "__triton_builtin__"
+
+
+def builtin(fn: T) -> T:
+    """Mark a function as a builtin."""
+    assert callable(fn)
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if "_semantic" not in kwargs or kwargs["_semantic"] is None:
+            raise ValueError("Did you forget to add @triton.gluon.jit ? "
+                             "(`_semantic` argument must be provided outside of JIT functions.)")
+        return fn(*args, **kwargs)
+
+    setattr(wrapper, GLUON_BUILTIN, True)
+
+    return wrapper
+
+
+# Explicitly import forwarded Triton language symbols so mypy sees them.
+associative_scan = builtin(tl_core.associative_scan)
+atomic_add = builtin(tl_core.atomic_add)
+atomic_and = builtin(tl_core.atomic_and)
+atomic_cas = builtin(tl_core.atomic_cas)
+atomic_max = builtin(tl_core.atomic_max)
+atomic_min = builtin(tl_core.atomic_min)
+atomic_or = builtin(tl_core.atomic_or)
+atomic_xchg = builtin(tl_core.atomic_xchg)
+atomic_xor = builtin(tl_core.atomic_xor)
+broadcast = builtin(tl_core.broadcast)
+device_assert = builtin(tl_core.device_assert)
+expand_dims = builtin(tl_core.expand_dims)
+inline_asm_elementwise = builtin(tl_core.inline_asm_elementwise)
+join = builtin(tl_core.join)
+load = builtin(tl_core.load)
+map_elementwise = builtin(tl_core.map_elementwise)
+max_constancy = builtin(tl_core.max_constancy)
+max_contiguous = builtin(tl_core.max_contiguous)
+maximum = builtin(tl_core.maximum)
+minimum = builtin(tl_core.minimum)
+multiple_of = builtin(tl_core.multiple_of)
+num_programs = builtin(tl_core.num_programs)
+permute = builtin(tl_core.permute)
+program_id = builtin(tl_core.program_id)
+reduce = builtin(tl_core.reduce)
+reshape = builtin(tl_core.reshape)
+split = builtin(tl_core.split)
+static_assert = builtin(tl_core.static_assert)
+static_print = builtin(tl_core.static_print)
+store = builtin(tl_core.store)
+to_tensor = builtin(tl_core.to_tensor)
+where = builtin(tl_core.where)
 
 
 class distributed_type(block_type):
@@ -131,21 +152,10 @@ class distributed_type(block_type):
     def with_element_ty(self, scalar_ty: dtype) -> block_type:
         return distributed_type(scalar_ty, self.shape, self.layout)
 
-
-def builtin(fn: T) -> T:
-    """Mark a function as a builtin."""
-    assert callable(fn)
-
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if "_semantic" not in kwargs or kwargs["_semantic"] is None:
-            raise ValueError("Did you forget to add @triton.gluon.jit ? "
-                             "(`_semantic` argument must be provided outside of JIT functions.)")
-        return fn(*args, **kwargs)
-
-    setattr(wrapper, GLUON_BUILTIN, True)
-
-    return wrapper
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, distributed_type):
+            return False
+        return super().__eq__(other) and self.layout == other.layout
 
 
 class shared_memory_descriptor_type(base_type):
@@ -188,6 +198,9 @@ class shared_memory_descriptor_type(base_type):
 
 
 class shared_memory_descriptor(base_value):
+    """
+    Represents a handle to a shared memory allocation in Gluon IR.
+    """
 
     def __init__(self, handle, element_ty, shape, layout, alloc_shape):
         self.handle = handle
@@ -209,6 +222,10 @@ class shared_memory_descriptor(base_value):
         return len(self.shape)
 
     @property
+    def numel(self) -> int:
+        return math.prod(self.shape)
+
+    @property
     def layout(self):
         return self.type.layout
 
@@ -216,16 +233,42 @@ class shared_memory_descriptor(base_value):
         return str(self.type)
 
     @builtin
-    def load(self, layout, _semantic: GluonSemantic) -> tensor:
+    def load(self, layout, _semantic: GluonSemantic = None) -> tensor:
+        """
+        Load a tensor from shared memory.
+
+        Args:
+            layout (DistributedLayout): The destination layout of the tensor.
+
+        Returns:
+            tensor: A Gluon tensor containing the loaded data.
+        """
         layout = _unwrap_if_constexpr(layout)
         return _semantic.shared_load(self, layout)
 
     @builtin
-    def store(self, value, _semantic: GluonSemantic) -> None:
+    def store(self, value, _semantic: GluonSemantic = None) -> None:
+        """
+        Store a tensor into shared memory.
+
+        Args:
+            value (tensor): The tensor whose contents to store.
+        """
         return _semantic.shared_store(self, value)
 
     @builtin
     def slice(self, start, length, dim=0, _semantic: GluonSemantic = None) -> shared_memory_descriptor:
+        """
+        Create a subview of shared memory by slicing along a given dimension.
+
+        Args:
+            start (int): The starting index of the slice.
+            length (int): The length of the slice.
+            dim (int): The dimension to slice (default: 0).
+
+        Returns:
+            shared_memory_descriptor: Descriptor for the sliced subview.
+        """
         start = _unwrap_if_constexpr(start)
         length = _unwrap_if_constexpr(length)
         dim = _unwrap_if_constexpr(dim)
@@ -233,23 +276,60 @@ class shared_memory_descriptor(base_value):
 
     @builtin
     def index(self, index, _semantic: GluonSemantic = None) -> shared_memory_descriptor:
+        """
+        Create a subview of shared memory by indexing along the first dimension.
+
+        Args:
+            index (int): The index at which to take the subview.
+
+        Returns:
+            shared_memory_descriptor: Descriptor for the indexed subview.
+        """
         index = _unwrap_if_constexpr(index)
         return _semantic.memdesc_index(self, index)
 
     @builtin
-    def permute(self, order, _semantic: GluonSemantic) -> shared_memory_descriptor:
+    def permute(self, order, _semantic: GluonSemantic = None) -> shared_memory_descriptor:
+        """
+        Permute the dimensions of the shared memory descriptor.
+
+        Args:
+            order (List[int]): The new ordering of dimensions.
+
+        Returns:
+            shared_memory_descriptor: Descriptor with permuted dimensions.
+        """
         order = [_unwrap_if_constexpr(o) for o in order]
         return _semantic.memdesc_trans(self, order)
 
     @builtin
-    def reshape(self, shape, layout, _semantic: GluonSemantic) -> shared_memory_descriptor:
-        shape = [_unwrap_if_constexpr(s) for s in shape]
-        layout = _unwrap_if_constexpr(layout)
+    def reshape(self, shape, _semantic: GluonSemantic = None) -> shared_memory_descriptor:
+        """
+        Reshape the shared memory descriptor to a new shape and layout.
 
-        return _semantic.memdesc_reshape(self, shape, layout)
+        Args:
+            shape (List[int]): The target shape.
+
+        Returns:
+            shared_memory_descriptor: Descriptor with the new shape and layout.
+        """
+        shape = [_unwrap_if_constexpr(s) for s in shape]
+
+        return _semantic.memdesc_reshape(self, shape)
 
     @builtin
     def _reinterpret(self, dtype, shape, layout, _semantic: GluonSemantic = None) -> shared_memory_descriptor:
+        """
+        Reinterpret the shared memory descriptor as a different dtype, shape, or layout.
+
+        Args:
+            dtype (dtype): The new data type.
+            shape (List[int]): The new shape.
+            layout (SharedLayout): The new layout.
+
+        Returns:
+            shared_memory_descriptor: Descriptor with updated type and layout.
+        """
         dtype = _unwrap_if_constexpr(dtype)
         shape = [_unwrap_if_constexpr(s) for s in shape]
         layout = _unwrap_if_constexpr(layout)
@@ -258,16 +338,25 @@ class shared_memory_descriptor(base_value):
 
     @builtin
     def _keep_alive(self, _semantic: GluonSemantic = None) -> None:
+        """
+        Dummy use to keep the shared memory descriptor alive.
+        """
         return _semantic.shared_dealloc(self)
 
 
-for name in _IMPORT_FROM_TRITON:
-    fn = getattr(tl_core, name)
-    globals()[name] = builtin(fn)
-
-
 @builtin
-def arange(start, end, layout, _semantic=None):
+def arange(start, end, layout=None, _semantic=None):
+    """
+    Generate a sequence tensor with values in [start, end) using a specified layout.
+
+    Args:
+        start (int): Inclusive start of the sequence.
+        end (int): Exclusive end of the sequence.
+        layout (DistributedLayout): The layout of the output tensor. Defaults to AutoLayout.
+
+    Returns:
+        tensor: A 1D tensor containing sequential values.
+    """
     start = _unwrap_if_constexpr(start)
     end = _unwrap_if_constexpr(end)
     layout = _unwrap_if_constexpr(layout)
@@ -275,13 +364,36 @@ def arange(start, end, layout, _semantic=None):
 
 
 @builtin
-def convert_layout(value, layout, _semantic=None):
+def convert_layout(value, layout, assert_trivial=False, _semantic=None):
+    """
+    Convert a tensor to a different distributed layout.
+
+    Args:
+        value (tensor): The input tensor.
+        layout (DistributedLayout): The target layout.
+        assert_trivial (bool): If True, asserts that the conversion is trivial (no data movement).
+
+    Returns:
+        tensor: The tensor with the new layout.
+    """
     layout = _unwrap_if_constexpr(layout)
-    return _semantic.convert_layout(value, layout)
+    return _semantic.convert_layout(value, layout, assert_trivial)
 
 
 @builtin
-def full(shape, value, dtype, layout, _semantic=None):
+def full(shape, value, dtype, layout=None, _semantic=None):
+    """
+    Create a tensor filled with a scalar value, with specified shape, dtype, and layout.
+
+    Args:
+        shape (Sequence[int]): The shape of the tensor.
+        value (int or float): The fill value.
+        dtype (dtype): The data type for the tensor.
+        layout (Optional[DistributedLayout]): The layout of the output tensor, defaults to AutoLayout().
+
+    Returns:
+        tensor: A tensor where every element equals value.
+    """
     shape = _unwrap_shape(shape)
     value = _unwrap_if_constexpr(value)
     dtype = _unwrap_if_constexpr(dtype)
@@ -290,7 +402,40 @@ def full(shape, value, dtype, layout, _semantic=None):
 
 
 @builtin
-def allocate_shared_memory(element_ty, shape, layout, value=None, _semantic=None):
+def histogram(input, num_bins, mask=None, layout=None, _semantic=None, _generator=None):
+    """
+    Compute a histogram of a 1D integer tensor.
+
+    Args:
+        input (tensor): 1D tensor of integer values.
+        num_bins (int): Number of bins. Bins have width 1 and start at 0.
+        mask (Optional[tensor]): Boolean mask to exclude elements when False.
+        layout (DistributedLayout): Destination layout of the output histogram.
+
+    Returns:
+        tensor: 1D int32 tensor of length `num_bins` with the requested layout.
+    """
+    num_bins = _unwrap_if_constexpr(num_bins)
+    layout = _unwrap_if_constexpr(layout)
+    if mask is not None:
+        mask = _semantic.to_tensor(mask)
+    return _semantic.histogram(input, num_bins, mask, layout)
+
+
+@builtin
+def allocate_shared_memory(element_ty, shape, layout, value=None, _semantic=None) -> shared_memory_descriptor:
+    """
+    Allocate shared memory for a tensor with the given element type, shape, and layout.
+
+    Args:
+        element_ty (dtype): The element data type.
+        shape (Sequence[int]): The dimensions of the shared memory.
+        layout (SharedLayout): The shared memory layout.
+        value (tensor, optional): Initial value to copy into shared memory.
+
+    Returns:
+        shared_memory_descriptor: Descriptor for the allocated memory.
+    """
     element_ty = _unwrap_if_constexpr(element_ty)
     shape = _unwrap_if_constexpr(shape)
     shape = [_unwrap_if_constexpr(s) for s in shape]
@@ -299,14 +444,47 @@ def allocate_shared_memory(element_ty, shape, layout, value=None, _semantic=None
 
 
 @builtin
-def warp_specialize(args, default_partition, worker_partitions, worker_num_warps, worker_num_regs,  #
+def set_auto_layout(value, layout, _semantic=None):
+    """
+    Set a a tensor with AutoLayout to a concrete layout
+
+    Args:
+        value (tensor): The input tensor.
+        layout (DistribtedLayout): The target layout.
+
+    Returns:
+        tensor: The tensor with the new layout.
+    """
+    layout = _unwrap_if_constexpr(layout)
+    return _semantic.set_auto_layout(value, layout)
+
+
+@builtin
+def warp_specialize(default_args, default_partition, worker_args, worker_partitions, worker_num_warps, worker_num_regs,
                     _semantic=None, _generator=None):
+    """
+    Create a warp-specialized execution region, partitioning work across warps.
+
+    Args:
+        default_args (List[Any]): Arguments for the default region.
+        default_partition (callable): Function to build the default execution region.
+        worker_args (List[Any]): Arguments for each warp partition.
+        worker_partitions (List[callable]): Functions for each warp partition.
+        worker_num_warps (List[int]): Number of warps per partition.
+        worker_num_regs (List[int]): Number of registers per partition.
+
+    Returns:
+        Tuple[Any, ...]: Results from the default region.
+    """
     worker_num_warps = [_unwrap_if_constexpr(w) for w in worker_num_warps]
     worker_num_regs = [_unwrap_if_constexpr(r) for r in worker_num_regs]
-    return _semantic.warp_specialize(args, default_partition, worker_partitions, worker_num_warps,  #
+    return _semantic.warp_specialize(default_args, default_partition, worker_args, worker_partitions, worker_num_warps,
                                      worker_num_regs, _generator)
 
 
 @builtin
 def thread_barrier(_semantic=None):
+    """
+    Insert a barrier to synchronize threads within a CTA.
+    """
     return _semantic.debug_barrier()

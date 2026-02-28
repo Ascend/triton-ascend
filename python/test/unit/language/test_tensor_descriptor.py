@@ -4,7 +4,7 @@ import numpy as np
 
 import triton
 import triton.language as tl
-from triton._internal_testing import is_interpreter, numpy_random, to_triton, unwrap_tensor, tma_dtypes, to_numpy
+from triton._internal_testing import is_hopper, is_interpreter, numpy_random, to_triton, unwrap_tensor, tma_dtypes, to_numpy
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
 from typing import Optional
 from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3
@@ -383,6 +383,65 @@ def test_tensor_descriptor_store_nd(dtype_str, num_ctas, ndim, INNER_BLOCK, devi
     torch.testing.assert_close(expect, actual)
 
 
+@pytest.mark.interpreter
+def test_tensor_descriptor_padding():
+
+    @triton.jit
+    def device_tma_load(in_ptr, out_ptr, IM, IN, YM, YN, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr,
+                        padding: tl.constexpr):
+        x_desc = tl.make_tensor_descriptor(in_ptr, shape=[IM, IN], strides=[IN, 1], block_shape=[M_BLOCK, N_BLOCK],
+                                           padding_option=padding)
+
+        moffset = tl.program_id(0) * M_BLOCK
+        noffset = tl.program_id(1) * N_BLOCK
+
+        value = x_desc.load([moffset, noffset])
+
+        offs_m = moffset + tl.arange(0, M_BLOCK)
+        offs_n = noffset + tl.arange(0, N_BLOCK)
+        tl.store(out_ptr + offs_m[:, None] * YN + offs_n[None, :], value)
+
+    @triton.jit
+    def host_tma_load(in_desc, out_ptr, YM, YN, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr):
+
+        moffset = tl.program_id(0) * M_BLOCK
+        noffset = tl.program_id(1) * N_BLOCK
+
+        value = in_desc.load([moffset, noffset])
+
+        offs_m = moffset + tl.arange(0, M_BLOCK)
+        offs_n = noffset + tl.arange(0, N_BLOCK)
+        tl.store(out_ptr + offs_m[:, None] * YN + offs_n[None, :], value)
+
+    # TMA descriptors require a global memory allocation
+    def alloc_fn(size: int, alignment: float, stream: float):
+        return torch.ones(size, device="cuda", dtype=torch.float32)
+
+    triton.set_allocator(alloc_fn)
+
+    IM, IN = 48, 48
+    OM, ON = 64, 64
+    M_BLOCK = 32
+    N_BLOCK = 32
+    padding = "nan"
+    input = torch.arange(IM * IN, device="cuda", dtype=torch.float32)
+    input = input.reshape(IM, IN)
+    out_device_tma = torch.zeros((OM, ON), device="cuda", dtype=torch.float32)
+    out_host_tma = torch.zeros((OM, ON), device="cuda", dtype=torch.float32)
+    dummy_block = [M_BLOCK, N_BLOCK]
+    in_desc = TensorDescriptor(input, input.shape, input.stride(), dummy_block, padding=padding)
+    grid = (triton.cdiv(OM, M_BLOCK), triton.cdiv(ON, N_BLOCK))
+    device_tma_load[grid](input, out_device_tma, IM, IN, OM, ON, M_BLOCK, N_BLOCK, padding)
+    host_tma_load[grid](in_desc, out_host_tma, OM, ON, M_BLOCK, N_BLOCK)
+    expected = torch.zeros((OM, ON), device="cuda", dtype=torch.float32)
+    expected[0:IN, 0:IM] = input
+    expected[:, IN:ON] = float('nan')
+    expected[IM:OM, :] = float('nan')
+
+    torch.testing.assert_close(expected, out_device_tma, equal_nan=True)
+    torch.testing.assert_close(expected, out_host_tma, equal_nan=True)
+
+
 @triton.jit(noinline=True)
 def tensor_descriptor_in_function_helper(out_ptr, in_ptr, M, N, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr):
     in_desc = tl.make_tensor_descriptor(
@@ -606,10 +665,11 @@ def test_make_tensor_descriptor_matmul(num_stages, num_ctas, BLOCK_M, BLOCK_N, B
     if torch.cuda.get_device_capability(0)[0] >= 9:
         assert "tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned" in kernel.asm[
             "ptx"]
-    if BLOCK_M >= 64 * num_ctas and BLOCK_N >= 64 and torch.cuda.get_device_capability()[0] == 9:
+    if BLOCK_M >= 64 * num_ctas and BLOCK_N >= 64 and is_hopper():
         # TODO: The use of stmatrix for Blackwell is currently not supported.
         # Only a subset of TMEM and stmatrix layout pairs are compatible, for example 16x256bx2 and m8n8x4.
-        assert "stmatrix.sync.aligned.m8n8.x4.shared.b16" in kernel.asm["ptx"]
+        assert "stmatrix.sync.aligned.m8n8.x4.shared.b16" in kernel.asm[
+            "ptx"] or "stmatrix.sync.aligned.x4.m8n8.shared.b16" in kernel.asm["ptx"]
 
 
 @triton.jit
@@ -1314,8 +1374,7 @@ def torch_gather_rows(input, idx, y, block_y):
 @pytest.mark.parametrize("BLOCK_X, BLOCK_Y", [(32, 32), (64, 128), (16, 128), (512, 16)])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.int8])
 @pytest.mark.parametrize("y", [0, 32, 48])
-@pytest.mark.skipif(is_cuda() and torch.cuda.get_device_capability()[0] == 9,
-                    reason="TMA Gather not supported on Hopper")
+@pytest.mark.skipif(is_hopper(), reason="TMA Scatter is not supported on hopper")
 def test_tma_gather(X, Y, BLOCK_X, BLOCK_Y, dtype, y, device):
     if BLOCK_X > X or y + BLOCK_Y > Y:
         pytest.skip()
@@ -1367,8 +1426,7 @@ def tma_gather_dot_pipeline(  #
 @pytest.mark.interpreter
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(16, 16, 16)])
 @pytest.mark.parametrize("K", [128])
-@pytest.mark.skipif(is_cuda() and torch.cuda.get_device_capability()[0] == 9,
-                    reason="TMA Gather not supported on hopper")
+@pytest.mark.skipif(is_hopper(), reason="TMA Scatter is not supported on hopper")
 def test_tma_gather_dot_pipeline(BLOCK_M, BLOCK_N, BLOCK_K, K, device):
 
     def alloc_fn(size: int, align: int, steam):
@@ -1415,8 +1473,7 @@ def tma_scatter_rows_kernel(out_ptr, in_ptr, idx_ptr, y, X: tl.constexpr, Y: tl.
 @pytest.mark.parametrize("BLOCK_X, BLOCK_Y", [(32, 32), (64, 128), (16, 128), (512, 16)])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.int8])
 @pytest.mark.parametrize("y", [0, 32, 48])
-@pytest.mark.skipif(is_cuda() and torch.cuda.get_device_capability()[0] == 9,
-                    reason="TMA Scatter not supported on hopper")
+@pytest.mark.skipif(is_hopper(), reason="TMA Scatter is not supported on hopper")
 def test_tma_scatter(X, Y, BLOCK_X, BLOCK_Y, dtype, y):
     if BLOCK_X > X or y + BLOCK_Y > Y:
         pytest.skip()
@@ -1668,7 +1725,35 @@ def test_host_tensor_descriptor_matmul(num_stages, num_ctas, BLOCK_M, BLOCK_N, B
     ref_out = torch.matmul(A.to(torch.float32), B.to(torch.float32)).to(torch.float16)
     torch.testing.assert_close(ref_out, C, rtol=1e-3, atol=1e-3)
 
-    if BLOCK_M >= 64 * num_ctas and BLOCK_N >= 64 and is_cuda() and torch.cuda.get_device_capability()[0] == 9:
+    if BLOCK_M >= 64 * num_ctas and BLOCK_N >= 64 and is_cuda() and is_hopper():
         # TODO: The use of stmatrix for Blackwell is currently not supported.
         # Only a subset of TMEM and stmatrix layout pairs are compatible, for example 16x256bx2 and m8n8x4.
-        assert "stmatrix.sync.aligned.m8n8.x4.shared.b16" in kernel.asm["ptx"]
+        assert "stmatrix.sync.aligned.m8n8.x4.shared.b16" in kernel.asm[
+            "ptx"] or "stmatrix.sync.aligned.x4.m8n8.shared.b16" in kernel.asm["ptx"]
+
+
+@pytest.mark.interpreter
+@pytest.mark.parametrize("dtype_str", ["float16", "bfloat16"])
+def test_tensor_descriptor_store_downcast(dtype_str, device):
+
+    @triton.jit
+    def kernel(desc, M, N, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr):
+        moffset = tl.program_id(axis=0) * M_BLOCK
+        noffset = tl.program_id(axis=1) * N_BLOCK
+        midx = moffset + tl.arange(0, M_BLOCK)[:, None]
+        nidx = noffset + tl.arange(0, N_BLOCK)[None, :]
+        val_f32 = (midx * N + nidx).to(tl.float32)
+        # implicit downcast in the store.
+        desc.store([moffset, noffset], val_f32)
+
+    M, N = 32, 128
+    torch_dtype = getattr(torch, dtype_str)
+    M_BLOCK = 8
+    N_BLOCK = 32
+    grid_m = M // M_BLOCK
+    grid_n = N // N_BLOCK
+    out = torch.empty((M, N), dtype=torch_dtype, device=device)
+    desc = TensorDescriptor(out, out.shape, out.stride(), [M_BLOCK, N_BLOCK])
+    kernel[(grid_m, grid_n)](desc, M, N, M_BLOCK=M_BLOCK, N_BLOCK=N_BLOCK)
+    ref = torch.arange(M * N, dtype=torch.float32, device=device).reshape(M, N).to(torch_dtype)
+    torch.testing.assert_close(out, ref)

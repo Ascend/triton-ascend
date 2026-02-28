@@ -47,8 +47,12 @@ def supports_tma():
     return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
 
 
+def is_hopper():
+    return torch.cuda.get_device_capability()[0] == 9
+
+
 def supports_ws():
-    return is_cuda() and torch.cuda.get_device_capability()[0] >= 10
+    return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
 
 
 def _matmul_launch_metadata(grid, kernel, args):
@@ -72,12 +76,13 @@ HAS_WARP_SPECIALIZE = supports_ws() and HAS_TENSOR_DESC
 
 def matmul_get_configs(pre_hook=None):
     return [
-        triton.Config({'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K" : BK, "GROUP_SIZE_M" : 8}, num_stages=s, num_warps=w, pre_hook=pre_hook) \
-        for BM in [128] \
-        for BN in [128, 256] \
-        for BK in [64,128] \
-        for s in ([3,4]) \
-        for w in [4,8] \
+        triton.Config({'BLOCK_SIZE_M': BM, 'BLOCK_SIZE_N': BN, "BLOCK_SIZE_K": BK, "GROUP_SIZE_M": 8}, num_stages=s,
+                      num_warps=w, pre_hook=pre_hook)
+        for BM in [128]
+        for BN in [128, 256]
+        for BK in [64, 128]
+        for s in ([2, 3, 4])
+        for w in [4, 8]
     ]
 
 
@@ -465,21 +470,31 @@ def matmul_tma_persistent(a, b, warp_specialize: bool):
     return c
 
 
-@triton.autotune(
-    configs=matmul_tma_persistent_get_configs(),
-    key=["M", "N", "K", "WARP_SPECIALIZE"],
-)
+def prune_invalid_configs(configs, named_args, **kwargs):
+    FLATTEN = kwargs["FLATTEN"]
+    # Filter out configs where EPILOGUE_SUBTILE is true and HOPPER is true
+    return [conf for conf in configs if not (conf.kwargs.get("EPILOGUE_SUBTILE", True) and FLATTEN is False)]
+
+
+@triton.autotune(configs=matmul_tma_persistent_get_configs(), key=["M", "N", "K", "WARP_SPECIALIZE", "FLATTEN"],
+                 prune_configs_by={'early_config_prune': prune_invalid_configs})
 @triton.jit(launch_metadata=_matmul_launch_metadata)
-def matmul_kernel_descriptor_persistent(a_ptr, b_ptr, c_ptr,  #
-                                        M, N, K,  #
-                                        BLOCK_SIZE_M: tl.constexpr,  #
-                                        BLOCK_SIZE_N: tl.constexpr,  #
-                                        BLOCK_SIZE_K: tl.constexpr,  #
-                                        GROUP_SIZE_M: tl.constexpr,  #
-                                        EPILOGUE_SUBTILE: tl.constexpr,  #
-                                        NUM_SMS: tl.constexpr,  #
-                                        WARP_SPECIALIZE: tl.constexpr,  #
-                                        ):
+def matmul_kernel_descriptor_persistent(
+    a_ptr,
+    b_ptr,
+    c_ptr,  #
+    M,
+    N,
+    K,  #
+    BLOCK_SIZE_M: tl.constexpr,  #
+    BLOCK_SIZE_N: tl.constexpr,  #
+    BLOCK_SIZE_K: tl.constexpr,  #
+    GROUP_SIZE_M: tl.constexpr,  #
+    EPILOGUE_SUBTILE: tl.constexpr,  #
+    NUM_SMS: tl.constexpr,  #
+    WARP_SPECIALIZE: tl.constexpr,  #
+    FLATTEN: tl.constexpr,
+):
     # Matmul using TMA and device-side descriptor creation
     dtype = c_ptr.dtype.element_ty
     start_pid = tl.program_id(axis=0)
@@ -512,7 +527,7 @@ def matmul_kernel_descriptor_persistent(a_ptr, b_ptr, c_ptr,  #
     tile_id_c = start_pid - NUM_SMS
     num_pid_in_group = GROUP_SIZE_M * num_pid_n
 
-    for tile_id in tl.range(start_pid, num_tiles, NUM_SMS, flatten=True, warp_specialize=WARP_SPECIALIZE):
+    for tile_id in tl.range(start_pid, num_tiles, NUM_SMS, flatten=FLATTEN, warp_specialize=WARP_SPECIALIZE):
         pid_m, pid_n = _compute_pid(tile_id, num_pid_in_group, num_pid_m, GROUP_SIZE_M, NUM_SMS)
         offs_am = pid_m * BLOCK_SIZE_M
         offs_bn = pid_n * BLOCK_SIZE_N
@@ -560,12 +575,19 @@ def matmul_descriptor_persistent(a, b, warp_specialize: bool):
 
     triton.set_allocator(alloc_fn)
 
+    # Hopper warpspec doesn't work with flatten
+    flatten = False if (warp_specialize and is_hopper()) else True
     grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"])), )
     matmul_kernel_descriptor_persistent[grid](
-        a, b, c,  #
-        M, N, K,  #
+        a,
+        b,
+        c,  #
+        M,
+        N,
+        K,  #
         NUM_SMS=NUM_SMS,  #
         WARP_SPECIALIZE=warp_specialize,  #
+        FLATTEN=flatten,
     )
     return c
 
@@ -632,7 +654,8 @@ def bench(K, dtype, reps=10000, warmup_reps=10000):
     warp_specialize = [False, True] if HAS_WARP_SPECIALIZE else [False]
     for ws in warp_specialize:
         ws_str = "_ws" if ws else ""
-        if HAS_HOST_TENSOR_DESC:
+        # disable on-host warpspec on Hopper
+        if HAS_HOST_TENSOR_DESC and not (is_hopper() and ws):
             bench_fn(f"tma_persistent{ws_str}", reps, warmup_reps, lambda a, b: matmul_tma_persistent(a, b, ws), a, b)
             bench_fn(f"tma{ws_str}", reps, warmup_reps, lambda a, b: matmul_tma(a, b, ws), a, b)
         if HAS_TENSOR_DESC:
@@ -671,7 +694,9 @@ def validate(M, N, K, dtype):
 
     for (kernel, label, enabled), warp_specialize in itertools.product(kernels, warp_specialize):
         label = f"{label} (warp_specialize={warp_specialize})"
-        enabled = enabled and (not warp_specialize or HAS_TENSOR_DESC)
+        # skip if hopper and warp_specialize and not on-device
+        skipped = is_hopper() and warp_specialize and kernel != matmul_descriptor_persistent
+        enabled = enabled and (not warp_specialize or HAS_TENSOR_DESC) and (not skipped)
         run_test(naive_result, lambda a, b: kernel(a, b, warp_specialize), a, b, label, enabled)
     print()
 

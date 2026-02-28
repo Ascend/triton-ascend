@@ -2,7 +2,7 @@ import importlib.util
 import itertools
 import os
 import shutil
-import tempfile
+import pathlib
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 
 import pytest
@@ -125,6 +125,42 @@ def test_combine_fn_change():
 
         assert key not in seen_keys
         seen_keys.add(key)
+
+
+@triton.constexpr_function
+def constexpr_flag_fn():
+    return False
+
+
+@triton.jit
+def constexpr_fn_user(out):
+    a: tl.constexpr = constexpr_flag_fn()
+    tl.store(out, a)
+
+
+def test_constexpr_fn_change():
+    baseline = constexpr_fn_user.cache_key
+
+    orig_src = constexpr_flag_fn.src
+    new_src = orig_src.replace("False", "True")
+    constexpr_flag_fn._unsafe_update_src(new_src)
+    constexpr_fn_user.hash = None
+    updated = constexpr_fn_user.cache_key
+    assert baseline != updated
+
+    constexpr_flag_fn._unsafe_update_src(orig_src)
+    constexpr_fn_user.hash = None
+    assert constexpr_fn_user.cache_key == baseline
+
+
+@triton.constexpr_function
+def invalid_constexpr_fn():
+    return torch.cuda.get_device_capability()
+
+
+def test_invalid_constexpr_fn():
+    with pytest.raises(RuntimeError):
+        invalid_constexpr_fn.cache_key
 
 
 def write_and_load_module(temp_file: pathlib.Path, code, num_extra_lines):
@@ -400,6 +436,25 @@ def test_no_cache_callable():
     assert not kernel.used_global_vals
 
 
+def test_constexpr_cache_invalidation_recreated(device):
+
+    def test_run(val):
+        VAL = tl.constexpr(val)
+
+        @triton.jit
+        def kernel(out):
+            tl.store(out, VAL)
+
+        out = torch.zeros(1, device=device)
+        kernel[(1, )](out)
+        return out.item()
+
+    assert test_run(123) == 123
+    assert test_run(123) == 123
+    assert test_run(1234) == 1234
+    assert test_run(1234) == 1234
+
+
 def test_jit_warmup_cache(device) -> None:
 
     @triton.jit
@@ -528,7 +583,6 @@ def test_preload(device, fresh_triton_cache) -> None:
 
     triton.knobs.runtime.jit_cache_hook = inc_counter
     final_kernel = kernel_add.warmup(torch.float32, torch.float32, torch.float32, 32, tl.float32, grid=(1, ))
-    triton.knobs.runtime.jit_cache_hook = None
     assert counter == 0
     assert len(kernel_add.device_caches[device][0]) == 1
     assert final_kernel.hash == hash

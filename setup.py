@@ -211,7 +211,9 @@ def get_llvm_package_info():
         arch = {"x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}[platform.machine()]
     except KeyError:
         arch = platform.machine()
-    if system == "Darwin":
+    if (env_system_suffix := os.environ.get("TRITON_LLVM_SYSTEM_SUFFIX", None)):
+        system_suffix = env_system_suffix
+    elif system == "Darwin":
         system_suffix = f"macos-{arch}"
     elif system == "Linux":
         if arch == 'arm64' and is_linux_os('almalinux'):
@@ -539,6 +541,7 @@ class CMakeBuild(build_ext):
         env = os.environ.copy()
         cmake_dir = get_cmake_dir()
         subprocess.check_call(["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env)
+        update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
 
@@ -644,6 +647,7 @@ def get_package_dirs():
 
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         yield ("triton.profiler", "third_party/proton/proton")
+        yield ("triton.profiler.hooks", "third_party/proton/proton/hooks")
 
 
 def get_packages():
@@ -820,7 +824,7 @@ TRITON_VERSION = "3.4.0" + get_git_version_suffix() + os.environ.get("TRITON_WHE
 
 # Dynamically define supported Python versions and classifiers
 MIN_PYTHON = (3, 9)
-MAX_PYTHON = (3, 13)
+MAX_PYTHON = (3, 14)
 
 PYTHON_REQUIRES = f">={MIN_PYTHON[0]}.{MIN_PYTHON[1]},<{MAX_PYTHON[0]}.{MAX_PYTHON[1] + 1}"
 BASE_CLASSIFIERS = [

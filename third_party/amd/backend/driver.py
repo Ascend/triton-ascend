@@ -6,6 +6,7 @@ from pathlib import Path
 from triton import knobs
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver
+from triton.runtime import _allocation
 from triton.runtime.build import compile_module_from_src
 from triton.tools.tensor_descriptor import TensorDescriptor
 
@@ -109,8 +110,36 @@ def _get_path_to_hip_runtime_dylib():
                 return f
             paths.append(f)
 
+    # HIP_PATH should point to HIP SDK root if set
+    env_hip_path = os.getenv("HIP_PATH")
+    if env_hip_path:
+        hip_lib_path = os.path.join(env_hip_path, "lib", lib_name)
+        if os.path.exists(hip_lib_path):
+            return hip_lib_path
+        paths.append(hip_lib_path)
+
+    # if available, `hipconfig --path` prints the HIP SDK root
+    try:
+        hip_root = subprocess.check_output(["hipconfig", "--path"]).decode().strip()
+        if hip_root:
+            hip_lib_path = os.path.join(hip_root, "lib", lib_name)
+            if os.path.exists(hip_lib_path):
+                return hip_lib_path
+            paths.append(hip_lib_path)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # hipconfig may not be available
+        pass
+
+    # ROCm lib dir based on env var
+    env_rocm_path = os.getenv("ROCM_PATH")
+    if env_rocm_path:
+        rocm_lib_path = os.path.join(env_rocm_path, "lib", lib_name)
+        if os.path.exists(rocm_lib_path):
+            return rocm_lib_path
+        paths.append(rocm_lib_path)
+
     # Afterwards try to search the loader dynamic library resolution paths.
-    libs = subprocess.check_output(["/sbin/ldconfig", "-p"]).decode()
+    libs = subprocess.check_output(["/sbin/ldconfig", "-p"]).decode(errors="ignore")
     # each line looks like the following:
     # libamdhip64.so.6 (libc6,x86-64) => /opt/rocm-6.0.2/lib/libamdhip64.so.6
     # libamdhip64.so (libc6,x86-64) => /opt/rocm-6.0.2/lib/libamdhip64.so
@@ -153,25 +182,40 @@ def ty_to_cpp(ty):
     if ty[0] == '*':
         return "hipDeviceptr_t"
     return {
-        "i1": "int32_t",
+        "i1": "int8_t",
         "i8": "int8_t",
         "i16": "int16_t",
         "i32": "int32_t",
         "i64": "int64_t",
-        "u1": "uint32_t",
+        "u1": "uint8_t",
         "u8": "uint8_t",
         "u16": "uint16_t",
         "u32": "uint32_t",
         "u64": "uint64_t",
-        "fp16": "float",
-        "bf16": "float",
-        "fp32": "float",
-        "f32": "float",
+        "fp16": "double",
+        "bf16": "double",
+        "fp32": "double",
+        "f32": "double",
         "fp64": "double",
     }[ty]
 
 
-_BASE_ARGS_FORMAT = "piiiKKOOOO"
+FLOAT_STORAGE_TYPE = {
+    "fp16": "uint16_t",
+    "bf16": "uint16_t",
+    "fp32": "uint32_t",
+    "f32": "uint32_t",
+    "fp64": "uint64_t",
+}
+FLOAT_PACK_FUNCTION = {
+    "fp16": "pack_fp16",
+    "bf16": "pack_bf16",
+    "fp32": "pack_fp32",
+    "f32": "pack_fp32",
+    "fp64": "pack_fp64",
+}
+
+_BASE_ARGS_FORMAT = "piiiKKOOOOO"
 
 
 def make_launcher(constants, signature, warp_size):
@@ -188,6 +232,7 @@ def make_launcher(constants, signature, warp_size):
                 output.append("*" + dtype)
                 for _ in range(2 * ndim):
                     output.append("i64")
+                output.append("i1")
                 # Currently the host side tensor descriptors get passed in as a
                 # tensor desc, shape, and strides. We have no way to use these
                 # shape and strides when processing tensor descriptors which is
@@ -226,7 +271,6 @@ def make_launcher(constants, signature, warp_size):
         if ty == "constexpr":
             return "O"
         return {
-            "float": "f",
             "double": "d",
             "long": "l",
             "int8_t": "b",
@@ -249,22 +293,41 @@ def make_launcher(constants, signature, warp_size):
     args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors, such as tensor descriptors for CUDA.
-    arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items() if ty != "constexpr")
+    arg_decl_list = []
+    for i, ty in signature.items():
+        if ty == "constexpr":
+            continue
+        if ty in FLOAT_STORAGE_TYPE:
+            arg_decl_list.append(f"{FLOAT_STORAGE_TYPE[ty]} arg{i}")
+        else:
+            arg_decl_list.append(f"{ty_to_cpp(ty)} arg{i}")
+    arg_decls = ', '.join(arg_decl_list)
     internal_args_list = []
     for i, ty in signature.items():
         if ty[0] == "*":
             internal_args_list.append(f"ptr_info{i}.dev_ptr")
+        elif ty in FLOAT_STORAGE_TYPE:
+            internal_args_list.append(f"_arg{i}_storage")
         elif ty != "constexpr":
             internal_args_list.append(f"_arg{i}")
+
+    float_storage_decls = [
+        f"{FLOAT_STORAGE_TYPE[ty]} _arg{i}_storage = {FLOAT_PACK_FUNCTION[ty]}(_arg{i});"
+        for i, ty in signature.items()
+        if ty in FLOAT_STORAGE_TYPE
+    ]
+
     libhip_path = _get_path_to_hip_runtime_dylib()
 
     # generate glue code
     params = list(range(len(signature)))
     params = [f"&arg{i}" for i, ty in signature.items() if ty != "constexpr"]
     params.append("&global_scratch")
+    params.append("&profile_scratch")
     src = f"""
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
+#include <hip/hip_runtime_api.h>
 #include <Python.h>
 #include <dlfcn.h>
 #include <stdbool.h>
@@ -277,6 +340,7 @@ static const char *hipLibSearchPaths[] = {{"{libhip_path}"}};
 // The list of HIP dynamic library symbols and their signature we are interested
 // in this file.
 #define HIP_SYMBOL_LIST(FOR_EACH_ERR_FN, FOR_EACH_STR_FN)                     \\
+  FOR_EACH_STR_FN(hipGetLastError)                                            \\
   FOR_EACH_STR_FN(hipGetErrorString, hipError_t hipError)                     \\
   FOR_EACH_ERR_FN(hipModuleLaunchKernel, hipFunction_t f,                     \\
                   unsigned int gridDimX, unsigned int gridDimY,               \\
@@ -308,9 +372,6 @@ static struct HIPSymbolTable hipSymbolTable;
 bool initSymbolTable() {{
   // Use the HIP runtime library loaded into the existing process if it exits.
   void *lib = dlopen("libamdhip64.so", RTLD_NOLOAD);
-  if (lib) {{
-    // printf("[triton] chosen loaded libamdhip64.so in the process\\n");
-  }}
 
   // Otherwise, go through the list of search paths to dlopen the first HIP
   // driver library.
@@ -320,7 +381,6 @@ bool initSymbolTable() {{
       void *handle = dlopen(hipLibSearchPaths[i], RTLD_LAZY | RTLD_LOCAL);
       if (handle) {{
         lib = handle;
-        // printf("[triton] chosen %s\\n", hipLibSearchPaths[i]);
       }}
     }}
   }}
@@ -329,17 +389,36 @@ bool initSymbolTable() {{
     return false;
   }}
 
-  // Resolve all symbols we are interested in.
+  typedef hipError_t (*hipGetProcAddress_fn)(
+      const char *symbol, void **pfn, int hipVersion, uint64_t hipFlags,
+      hipDriverProcAddressQueryResult *symbolStatus);
+  hipGetProcAddress_fn hipGetProcAddress;
   dlerror(); // Clear existing errors
   const char *error = NULL;
-#define QUERY_EACH_FN(hipSymbolName, ...)                                     \\
-  *(void **)&hipSymbolTable.hipSymbolName = dlsym(lib, #hipSymbolName);       \\
-  error = dlerror();                                                          \\
-  if (error) {{                                                               \\
-    PyErr_SetString(PyExc_RuntimeError,                                       \\
-                    "cannot query " #hipSymbolName " from libamdhip64.so");   \\
-    dlclose(lib);                                                             \\
-    return false;                                                             \\
+  *(void **)&hipGetProcAddress = dlsym(lib, "hipGetProcAddress");
+  error = dlerror();
+  if (error) {{
+    PyErr_SetString(PyExc_RuntimeError,
+                    "cannot query 'hipGetProcAddress' from libamdhip64.so");
+    dlclose(lib);
+    return false;
+  }}
+
+  // Resolve all symbols we are interested in.
+  int hipVersion = HIP_VERSION;
+  uint64_t hipFlags = 0;
+  hipDriverProcAddressQueryResult symbolStatus;
+  hipError_t status = hipSuccess;
+#define QUERY_EACH_FN(hipSymbolName, ...)                                      \
+  status = hipGetProcAddress(#hipSymbolName,                                   \
+                             (void **)&hipSymbolTable.hipSymbolName,           \
+                             hipVersion, hipFlags, &symbolStatus);             \
+  if (status != hipSuccess) {{                                                 \
+    PyErr_SetString(PyExc_RuntimeError,                                        \
+                    "cannot get address for '" #hipSymbolName                  \
+                    "' from libamdhip64.so");                                  \
+    dlclose(lib);                                                              \
+    return false;                                                              \
   }}
 
   HIP_SYMBOL_LIST(QUERY_EACH_FN, QUERY_EACH_FN)
@@ -361,8 +440,7 @@ static inline void gpuAssert(hipError_t code, const char *file, int line)
 
 #define HIP_CHECK(ans) {{ gpuAssert((ans), __FILE__, __LINE__); }}
 
-static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int launch_cooperative_grid, int clusterDimX, int clusterDimY, int clusterDimZ, int shared_memory, hipStream_t stream, hipFunction_t function{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
-  // printf("_launch hip kernel\\n");
+static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int launch_cooperative_grid, int clusterDimX, int clusterDimY, int clusterDimZ, int shared_memory, hipStream_t stream, hipFunction_t function, hipDeviceptr_t profile_scratch{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
   hipDeviceptr_t global_scratch = 0;
   void *params[] = {{ {', '.join(params)} }};
   if (gridX*gridY*gridZ > 0 && launch_cooperative_grid) {{
@@ -379,8 +457,11 @@ typedef struct _DevicePtrInfo {{
     bool valid;
 }} DevicePtrInfo;
 
+static PyObject* data_ptr_str = NULL;
+
 static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   DevicePtrInfo ptr_info;
+  hipError_t status = hipSuccess;
   ptr_info.dev_ptr = 0;
   ptr_info.valid = true;
   if (PyLong_Check(obj)) {{
@@ -391,52 +472,80 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
     // valid nullptr
     return ptr_info;
   }}
-  PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
-  if(ptr){{
-    PyObject *empty_tuple = PyTuple_New(0);
-    PyObject *ret = PyObject_Call(ptr, empty_tuple, NULL);
-    Py_DECREF(empty_tuple);
-    Py_DECREF(ptr);
-    if (!PyLong_Check(ret)) {{
-      PyErr_SetString(PyExc_TypeError, "data_ptr method of Pointer object must return 64-bit int");
-      ptr_info.valid = false;
-      return ptr_info;
-    }}
-    ptr_info.dev_ptr = (hipDeviceptr_t)PyLong_AsUnsignedLongLong(ret);
-    if(!ptr_info.dev_ptr)
-      return ptr_info;
-    uint64_t dev_ptr;
-    hipError_t status = hipSymbolTable.hipPointerGetAttribute(&dev_ptr, HIP_POINTER_ATTRIBUTE_DEVICE_POINTER, ptr_info.dev_ptr);
-    if (status == hipErrorInvalidValue) {{
-        PyErr_Format(PyExc_ValueError,
-                     "Pointer argument (at %d) cannot be accessed from Triton (cpu tensor?)", idx);
-        ptr_info.valid = false;
-    }}
-    ptr_info.dev_ptr = (hipDeviceptr_t)dev_ptr;
-    Py_DECREF(ret);
-    return ptr_info;
+  PyObject *ret = PyObject_CallMethodNoArgs(obj, data_ptr_str);
+  if (!ret) {{
+    PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
+    ptr_info.valid = false;
+    goto cleanup;
   }}
-  PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
+  if (!PyLong_Check(ret)) {{
+    PyErr_SetString(PyExc_TypeError, "data_ptr method of Pointer object must return 64-bit int");
+    ptr_info.valid = false;
+    goto cleanup;
+  }}
+  ptr_info.dev_ptr = (hipDeviceptr_t)PyLong_AsUnsignedLongLong(ret);
+  if (!ptr_info.dev_ptr)
+    goto cleanup;
+  uint64_t dev_ptr;
+  status = hipSymbolTable.hipPointerGetAttribute(&dev_ptr, HIP_POINTER_ATTRIBUTE_DEVICE_POINTER, ptr_info.dev_ptr);
+  if (status == hipErrorInvalidValue) {{
+      PyErr_Format(PyExc_ValueError,
+                   "Pointer argument (at %d) cannot be accessed from Triton (cpu tensor?)", idx);
+      ptr_info.valid = false;
+      // Clear and ignore HIP error
+      (void)hipSymbolTable.hipGetLastError();
+  }}
+  ptr_info.dev_ptr = (hipDeviceptr_t)dev_ptr;
+cleanup:
+  Py_DECREF(ret);
   return ptr_info;
 }}
 
+static uint16_t pack_fp16(double f) {{
+    uint16_t result;
+    // from https://github.com/python/pythoncapi-compat/blob/5e317108f872c904eb726cb8d560dcadbdf88a72/pythoncapi_compat.h#L482-L492
+#if 0x030600B1 <= PY_VERSION_HEX && PY_VERSION_HEX <= 0x030B00A1 && !defined(PYPY_VERSION)
+    _PyFloat_Pack2(f, (unsigned char*)&result, 1);
+#else
+    PyFloat_Pack2(f, (char*)&result, 1);
+#endif
+    return result;
+}}
+
+static uint16_t pack_bf16(double f) {{
+    float f32 = (float)f;
+    uint32_t u32 = *(uint32_t*)&f32;
+    return (uint16_t)(u32 >> 16);
+}}
+
+static uint32_t pack_fp32(double f) {{
+    float f32 = (float)f;
+    return *(uint32_t*)&f32;
+}}
+
+static uint64_t pack_fp64(double f) {{
+    return *(uint64_t*)&f;
+}}
+
 static PyObject* launch(PyObject* self, PyObject* args) {{
-   // printf("launch\\n");
   int gridX, gridY, gridZ;
   uint64_t _stream;
   uint64_t _function;
   int launch_cooperative_grid;
+  PyObject *profile_scratch_obj = NULL;
   PyObject *launch_enter_hook = NULL;
   PyObject *launch_exit_hook = NULL;
   PyObject *kernel_metadata = NULL;
   PyObject *launch_metadata = NULL;
   {' '.join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
   if(!PyArg_ParseTuple(args, \"{format}\", &launch_cooperative_grid,
-                                           &gridX, &gridY, &gridZ, &_stream, &_function,
+                                           &gridX, &gridY, &gridZ, &_stream, &_function, &profile_scratch_obj,
                                            &kernel_metadata, &launch_metadata,
                                            &launch_enter_hook, &launch_exit_hook {args_list})) {{
     return NULL;
   }}
+
+  {' '.join(float_storage_decls)}
 
   // extract kernel metadata
   int num_warps, num_ctas, shared_memory, clusterDimX, clusterDimY, clusterDimZ;
@@ -445,23 +554,27 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   }}
   // extract launch metadata
   if (launch_enter_hook != Py_None){{
-    PyObject* args = Py_BuildValue("(O)", launch_metadata);
-    PyObject* ret = PyObject_CallObject(launch_enter_hook, args);
-    Py_DECREF(args);
+    PyObject* ret = PyObject_CallOneArg(launch_enter_hook, launch_metadata);
     if (!ret)
       return NULL;
     Py_DECREF(ret);
   }}
 
+  hipDeviceptr_t profile_scratch = 0;
+  if (profile_scratch_obj != Py_None) {{
+    DevicePtrInfo profile_scratch_info = getPointer(profile_scratch_obj, -1);
+    if (!profile_scratch_info.valid) {{
+      return NULL;
+    }}
+    profile_scratch = profile_scratch_info.dev_ptr;
+  }}
 
   // raise exception asap
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-  _launch(gridX, gridY, gridZ, num_warps, num_ctas, launch_cooperative_grid, clusterDimX, clusterDimY, clusterDimZ, shared_memory, (hipStream_t)_stream, (hipFunction_t)_function{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+  _launch(gridX, gridY, gridZ, num_warps, num_ctas, launch_cooperative_grid, clusterDimX, clusterDimY, clusterDimZ, shared_memory, (hipStream_t)_stream, (hipFunction_t)_function, (hipDeviceptr_t)profile_scratch{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
-    PyObject* args = Py_BuildValue("(O)", launch_metadata);
-    PyObject* ret = PyObject_CallObject(launch_exit_hook, args);
-    Py_DECREF(args);
+    PyObject* ret = PyObject_CallOneArg(launch_exit_hook, launch_metadata);
     if (!ret)
       return NULL;
     Py_DECREF(ret);
@@ -470,9 +583,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   if(PyErr_Occurred()) {{
     return NULL;
   }}
-  // return None
-  Py_INCREF(Py_None);
-  return Py_None;
+  Py_RETURN_NONE;
 }}
 
 static PyMethodDef ModuleMethods[] = {{
@@ -494,6 +605,10 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
   }}
   PyObject *m = PyModule_Create(&ModuleDef);
   if(m == NULL) {{
+    return NULL;
+  }}
+  data_ptr_str = PyUnicode_InternFromString("data_ptr");
+  if(data_ptr_str == NULL) {{
     return NULL;
   }}
   PyModule_AddFunctions(m, ModuleMethods);
@@ -520,7 +635,7 @@ def wrap_handle_tensor_descriptor(launcher):
                 # descriptors which is why we provide our own decomposition
                 # above. Sadly this means we have to pass the shape and strides
                 # twice.
-                final_args.extend([arg.base, *arg.shape, *arg.strides, *arg.shape, *arg.strides])
+                final_args.extend([arg.base, *arg.shape, *arg.strides, arg.padding == "nan", *arg.shape, *arg.strides])
             else:
                 final_args.append(arg)
         return launcher(*meta_args, *final_args)
@@ -541,9 +656,23 @@ class HIPLauncher(object):
 
         self.launch = wrap_handle_tensor_descriptor(mod.launch) if has_tensor_desc_arg else mod.launch
         self.launch_cooperative_grid = metadata.launch_cooperative_grid
+        self.profile_scratch_size = metadata.profile_scratch_size
+        self.profile_scratch_align = metadata.profile_scratch_align
 
-    def __call__(self, *args):
-        self.launch(self.launch_cooperative_grid, *args)
+    def __call__(self, gridX, gridY, gridZ, stream, function, *args):
+
+        def allocate_scratch(size, align, allocator):
+            if size > 0:
+                grid_size = gridX * gridY * gridZ
+                alloc_size = grid_size * size
+                alloc_fn = allocator.get()
+                return alloc_fn(alloc_size, align, stream)
+            return None
+
+        profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
+                                           _allocation._profile_allocator)
+
+        self.launch(self.launch_cooperative_grid, gridX, gridY, gridZ, stream, function, profile_scratch, *args)
 
 
 class HIPDriver(GPUDriver):
@@ -564,6 +693,9 @@ class HIPDriver(GPUDriver):
             return torch.cuda.is_available() and (torch.version.hip is not None)
         except ImportError:
             return False
+
+    def map_python_to_cpp_type(self, ty: str) -> str:
+        return ty_to_cpp(ty)
 
     def get_current_target(self):
         device = self.get_current_device()

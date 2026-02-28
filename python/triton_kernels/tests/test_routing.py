@@ -3,10 +3,9 @@ import torch
 from triton_kernels.routing import routing, routing_torch
 from triton_kernels.testing import assert_close
 from triton_kernels.testing import assert_equal
-from triton_kernels.target_info import is_hip
 
 
-def init_data(n_tokens, n_expts_tot, dtype=torch.float32, device="cuda"):
+def init_data(n_tokens, n_expts_tot, dtype=torch.float16, device="cuda"):
     logits = torch.randn((n_tokens, n_expts_tot), dtype=dtype, device=device, requires_grad=True)
     return logits
 
@@ -19,7 +18,6 @@ n_tokens += [(1152, 911)]
 @pytest.mark.parametrize("n_expts_tot, n_expts_act", [(128, 32), (1500, 8)])
 @pytest.mark.parametrize("use_expt_indx", [False, True])
 @pytest.mark.parametrize("sm_first", [True, False])
-@pytest.mark.skipif(is_hip(), reason="Tests are currently broken on AMD")
 def test_op(n_tokens_pad, n_tokens_raw, n_expts_tot, n_expts_act, sm_first, use_expt_indx, device):
     torch.manual_seed(2)
     if n_tokens_raw is None:
@@ -28,7 +26,7 @@ def test_op(n_tokens_pad, n_tokens_raw, n_expts_tot, n_expts_act, sm_first, use_
     else:
         n_routing_rows = torch.tensor([n_tokens_raw], dtype=torch.int32, device=device)
     n_gates_raw = n_tokens_raw * n_expts_act
-    tri_logits = init_data(n_tokens_pad, n_expts_tot, device=device).detach()
+    tri_logits = init_data(n_tokens_pad, n_expts_tot, device=device, dtype=torch.float32).detach()
     tri_logits[n_tokens_raw:, :] = float("inf")  # should not be used
     tri_logits = tri_logits.requires_grad_(True)
     ref_logits = tri_logits.clone().detach().requires_grad_(True)

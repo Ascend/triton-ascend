@@ -2,7 +2,7 @@ from __future__ import annotations
 import ast
 import textwrap
 import inspect
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Callable
 
 import math
 import numpy as np
@@ -95,17 +95,19 @@ class BlockPointerHandle:
 class TensorDescHandle:
 
     def __init__(self, base: TensorHandle, shape: List[TensorHandle], strides: List[TensorHandle],
-                 block_shape: List[int]):
+                 block_shape: List[int], padding):
         self.base = base
         self.ndim = len(shape)
         self.shape = shape
         self.strides = strides
         self.block_shape = block_shape
+        self.padding = padding
 
     def validate(self):
         assert self.base.data.item() % 16 == 0, "base must be 16-byte aligned"
         assert len(self.strides) == self.ndim
         assert len(self.block_shape) == self.ndim
+        assert self.ndim >= 1, "descriptor cannot be 0 dimensional"
 
         for stride in self.strides[:-1]:
             assert stride.data.item() % 16 == 0, "stride must be 16-byte aligned"
@@ -683,7 +685,8 @@ class InterpreterBuilder:
         else:  # scalar
             return TensorHandle(np.full(shape, arg.data, dtype=_get_np_dtype(arg.dtype)), arg.dtype.scalar)
 
-
+    def create_unsplat(self, arg):
+        return TensorHandle(np.full((1, ), arg.data[0], dtype=_get_np_dtype(arg.dtype)), arg.dtype.scalar)
 
     def create_atomic_cas(self, ptr, cmp, val, sem, scope):
         if sem not in self.ir_sem_to_interpreter_sem:
@@ -747,15 +750,9 @@ class InterpreterBuilder:
             ret.offsets[i].data += offsets[i].data
         return ret
 
-    def create_make_tensor_descriptor(
-        self,
-        base: TensorHandle,
-        shape: List[TensorHandle],
-        strides: List[TensorHandle],
-        tensor_shape: List[int],
-        is_signed: bool,
-    ):
-        desc = TensorDescHandle(base, shape, strides, tensor_shape)
+    def create_make_tensor_descriptor(self, base: TensorHandle, shape: List[TensorHandle], strides: List[TensorHandle],
+                                      tensor_shape: List[int], is_signed: bool, padding: str = "zero"):
+        desc = TensorDescHandle(base, shape, strides, tensor_shape, padding)
         desc.validate()
         return desc
 
@@ -763,7 +760,16 @@ class InterpreterBuilder:
                                eviction_policy):
         assert isinstance(desc, TensorDescHandle)
         ptrs, mask = desc.materialize_pointers(indices)
-        return self.create_masked_load(ptrs, mask, other=None, cache_modifier=cache_modifier,
+        dtype_tt = ptrs.get_element_ty()
+        dtype_np = _get_np_dtype(dtype_tt)
+        padding = desc.padding
+        if padding == _ir.PADDING_OPTION.PAD_ZERO:
+            other = TensorHandle(np.zeros_like(ptrs.data, dtype=dtype_np), dtype_tt)
+        elif padding == _ir.PADDING_OPTION.PAD_NAN:
+            other = TensorHandle(np.full_like(ptrs.data, float('nan'), dtype=dtype_np), dtype_tt)
+        else:
+            raise ValueError(f"unsupported padding {padding}")
+        return self.create_masked_load(ptrs, mask, other, cache_modifier=cache_modifier,
                                        eviction_policy=eviction_policy, is_volatile=False)
 
     def create_descriptor_store(self, desc: TensorDescHandle, value: TensorHandle, indices: List[TensorHandle]):
@@ -956,9 +962,9 @@ class ReduceOps(ReduceScanOpInterface):
         elif self.combine_fn == tl.standard._argmax_combine_tie_break_left:
             return self.min_max(input[0], val_reduce_op=np.max, idx_reduce_op=np.argmax)
         elif self.combine_fn == tl.standard._elementwise_max:
-            return self.min_max(input[0], val_reduce_op=np.max, idx_reduce_op=None)
+            return self.min_max(input[0], val_reduce_op=np.nanmax, idx_reduce_op=None)
         elif self.combine_fn == tl.standard._elementwise_min:
-            return self.min_max(input[0], val_reduce_op=np.min, idx_reduce_op=None)
+            return self.min_max(input[0], val_reduce_op=np.nanmin, idx_reduce_op=None)
         elif self.combine_fn == tl.standard._sum_combine:
             return self.sum(input[0])
         else:
@@ -1151,7 +1157,7 @@ def _tuple_create(arg, contents):
 # TODO: wrap everything in triton tensors
 def _implicit_cvt(arg):
     if isinstance(arg, int):
-        ty = tl.str_to_ty(triton.runtime.jit.mangle_type(arg))
+        ty = tl.str_to_ty(triton.runtime.jit.mangle_type(arg), None)
         dtype = np.int32
         if -2**31 <= arg < 2**31:
             dtype = np.int32
@@ -1166,7 +1172,7 @@ def _implicit_cvt(arg):
         handle = TensorHandle(np.array([arg], dtype=dtype), ty)
         return tl.tensor(handle, ty)
     if hasattr(arg, "data_ptr"):
-        ty = tl.str_to_ty(triton.runtime.jit.mangle_type(arg))
+        ty = tl.str_to_ty(triton.runtime.jit.mangle_type(arg), None)
         handle = TensorHandle(np.array([arg.data_ptr()], dtype=np.uint64), ty)
         return tl.tensor(handle, ty)
     elif isinstance(arg, tuple):
@@ -1176,12 +1182,10 @@ def _implicit_cvt(arg):
         assert arg.strides[-1] == 1
         strides[-1] = tl.constexpr(1)
         semantic = TritonSemantic(InterpreterBuilder())
-        return semantic.make_tensor_descriptor(
-            base=_implicit_cvt(arg.base),
-            shape=[_implicit_cvt(s) for s in arg.shape],
-            strides=strides,
-            block_shape=[tl.constexpr(b) for b in arg.block_shape],
-        )
+        return semantic.make_tensor_descriptor(base=_implicit_cvt(arg.base),
+                                               shape=[_implicit_cvt(s) for s in arg.shape], strides=strides,
+                                               block_shape=[tl.constexpr(b)
+                                                            for b in arg.block_shape], padding_option=arg.padding)
     return arg
 
 
@@ -1224,6 +1228,7 @@ class GridExecutor:
                     arg.shape,
                     arg.strides,
                     arg.block_shape,
+                    arg.padding,
                 )
             elif not hasattr(arg, "data_ptr"):
                 return arg
@@ -1401,11 +1406,12 @@ class FunctionRewriter:
 
 class InterpretedFunction:
     # Cache all rewritten functions
-    rewritten_fn = {}
+    rewritten_fn: Dict[Callable, Callable] = {}
 
     def __init__(self, fn, **kwargs) -> None:
         self.fn = fn
         self.rewriter = FunctionRewriter(fn, **kwargs)
+        self.kwargs = kwargs
 
         def run(*args, **kwargs):
             grid = kwargs["grid"]

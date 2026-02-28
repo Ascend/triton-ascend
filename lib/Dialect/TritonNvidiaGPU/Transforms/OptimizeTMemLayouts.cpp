@@ -120,9 +120,8 @@ public:
       Attribute distLayout = getTmemCompatibleLayout(
           mDim, splitNSize, splitOp.getOutLHS().getType(), numWarps);
 
-      RankedTensorType newLoadType = RankedTensorType::get(
-          splitOp.getOutLHS().getType().getShape(),
-          splitOp.getOutLHS().getType().getElementType(), distLayout);
+      RankedTensorType newLoadType =
+          splitOp.getOutLHS().getType().cloneWithEncoding(distLayout);
 
       // Generate the load and convert_layout back to the original layout.
       auto load =
@@ -183,9 +182,7 @@ public:
 
     Attribute distLayout = getTmemCompatibleLayout(
         mDim, splitNSize, joinOp.getLhs().getType(), numWarps);
-    auto newStoreType = RankedTensorType::get(
-        joinOp.getLhs().getType().getShape(),
-        joinOp.getLhs().getType().getElementType(), distLayout);
+    auto newStoreType = joinOp.getLhs().getType().cloneWithEncoding(distLayout);
 
     // First slice.
     auto subSlice0 = b.create<TMEMSubSliceOp>(loc, tmem, 0, splitNSize);
@@ -255,14 +252,80 @@ public:
     if (newLayout == oldType.getEncoding())
       return failure();
 
-    auto newType = RankedTensorType::get(oldType.getShape(),
-                                         oldType.getElementType(), newLayout);
+    auto newType = oldType.cloneWithEncoding(newLayout);
     tmemLoadOp.getResult().setType(newType);
     OpBuilder builder(tmemLoadOp);
     builder.setInsertionPointAfter(tmemLoadOp);
     auto cvt = builder.create<ttg::ConvertLayoutOp>(
         tmemLoadOp.getLoc(), oldType, tmemLoadOp.getResult());
     tmemLoadOp.getResult().replaceAllUsesExcept(cvt.getResult(), cvt);
+    return success();
+  }
+};
+
+// Optimize local_load -> tmem_store when the layout 16x256b allows better
+// code generation for local_load lowering.
+class TMemFromSharedMemPattern : public OpRewritePattern<TMEMStoreOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TMEMStoreOp tmemStoreOp,
+                                PatternRewriter &rewriter) const override {
+    auto tmemEnc = dyn_cast<triton::nvidia_gpu::TensorMemoryEncodingAttr>(
+        tmemStoreOp.getDst().getType().getEncoding());
+    if (!tmemEnc)
+      return failure();
+    int M = tmemEnc.getBlockM();
+    int N = tmemEnc.getBlockN();
+    int numWarps = ttg::lookupNumWarps(tmemStoreOp);
+    // Compute the alternative layout.
+    std::optional<LinearLayout> ll = gpu::getTmemLoadStoreLayout16x256(
+        M, N, tmemStoreOp.getSrc().getType(), numWarps);
+    if (!ll)
+      return failure();
+    Attribute newEncoding =
+        gpu::LinearEncodingAttr::get(tmemStoreOp.getContext(), *ll);
+    auto newType = RankedTensorType::get(
+        tmemStoreOp.getSrc().getType().getShape(),
+        tmemStoreOp.getSrc().getType().getElementType(), newEncoding);
+    if (newType == tmemStoreOp.getSrc().getType())
+      return failure();
+
+    SetVector<Value> slice;
+    DenseMap<Value, Attribute> layoutMap;
+    // Check how it may propagate up the SSA chain.
+    LogicalResult result = getConvertBackwardSlice(
+        tmemStoreOp.getSrcMutable(), slice, newEncoding, layoutMap);
+    if (result.failed())
+      return failure();
+    bool foundImprovedLoad = false;
+    for (Value v : slice) {
+      auto localLoad = v.getDefiningOp<gpu::LocalLoadOp>();
+      if (!localLoad)
+        continue;
+      // 16x256b is optimized for 16bits load.
+      if (localLoad.getType().getElementType().getIntOrFloatBitWidth() != 16)
+        return failure();
+      LinearLayout regLayout = gpu::toLinearLayout(localLoad.getType());
+      LinearLayout smemLayout =
+          gpu::toLinearLayout(localLoad.getSrc().getType());
+      int vecDim =
+          regLayout.invertAndCompose(smemLayout).getNumConsecutiveInOut();
+      // If we find a 16bits load that cannot be vectorized use the alternative
+      // layout.
+      if (vecDim != 1)
+        return failure();
+      foundImprovedLoad = true;
+    }
+    if (!foundImprovedLoad)
+      return failure();
+    // Use the new layout and rely on RemoveLayoutConversions pass to propagate
+    // the convert_layout.
+    auto cvt = rewriter.create<ttg::ConvertLayoutOp>(
+        tmemStoreOp.getLoc(), newType, tmemStoreOp.getSrc());
+    rewriter.modifyOpInPlace(tmemStoreOp, [&]() {
+      tmemStoreOp.getSrcMutable().assign(cvt.getResult());
+    });
     return success();
   }
 };
@@ -282,9 +345,8 @@ public:
     ModuleOp m = getOperation();
 
     mlir::RewritePatternSet patterns(context);
-    patterns
-        .add<TMemSplitLoadPattern, TMemStoreJoinPattern, TMemLoadReducePattern>(
-            context);
+    patterns.add<TMemSplitLoadPattern, TMemStoreJoinPattern,
+                 TMemLoadReducePattern, TMemFromSharedMemPattern>(context);
     if (failed(applyPatternsGreedily(m, std::move(patterns))))
       signalPassFailure();
   }

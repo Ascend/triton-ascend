@@ -16,13 +16,12 @@ from .cache import get_cache_manager
 from .. import knobs
 
 
-def _build(name: str, src: str, srcdir: str, library_dirs: list[str], include_dirs: list[str],
-           libraries: list[str]) -> str:
+def _build(name: str, src: str, srcdir: str, library_dirs: list[str], include_dirs: list[str], libraries: list[str],
+           ccflags: list[str]) -> str:
     if impl := knobs.build.impl:
         return impl(name, src, srcdir, library_dirs, include_dirs, libraries)
     suffix = sysconfig.get_config_var('EXT_SUFFIX')
     so = os.path.join(srcdir, '{name}{suffix}'.format(name=name, suffix=suffix))
-    # try to avoid setuptools if possible
     cc = os.environ.get("CC")
     if cc is None:
         clang = shutil.which("clang")
@@ -48,6 +47,7 @@ def _build(name: str, src: str, srcdir: str, library_dirs: list[str], include_di
     cc_cmd += [f'-l{lib}' for lib in libraries]
     cc_cmd += [f"-L{dir}" for dir in library_dirs]
     cc_cmd += [f"-I{dir}" for dir in include_dirs if dir is not None]
+    cc_cmd.extend(ccflags)
     subprocess.check_call(cc_cmd, stdout=subprocess.DEVNULL)
     return so
 
@@ -68,7 +68,8 @@ def _load_module_from_path(name: str, path: str) -> ModuleType:
 
 
 def compile_module_from_src(src: str, name: str, library_dirs: list[str] | None = None,
-                            include_dirs: list[str] | None = None, libraries: list[str] | None = None) -> ModuleType:
+                            include_dirs: list[str] | None = None, libraries: list[str] | None = None,
+                            ccflags: list[str] | None = None) -> ModuleType:
     key = hashlib.sha256((src + platform_key()).encode("utf-8")).hexdigest()
     cache = get_cache_manager(key)
     suffix = sysconfig.get_config_var("EXT_SUFFIX")
@@ -85,7 +86,7 @@ def compile_module_from_src(src: str, name: str, library_dirs: list[str] | None 
         src_path = os.path.join(tmpdir, name + ".c")
         with open(src_path, "w") as f:
             f.write(src)
-        so = _build(name, src_path, tmpdir, library_dirs or [], include_dirs or [], libraries or [])
+        so = _build(name, src_path, tmpdir, library_dirs or [], include_dirs or [], libraries or [], ccflags or [])
         with open(so, "rb") as f:
             cache_path = cache.put(f.read(), f"{name}{suffix}", binary=True)
 

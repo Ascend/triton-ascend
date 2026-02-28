@@ -54,8 +54,7 @@ bool LoopCSEDriver::areIterArgsEqual(int i, int j) {
     return false;
   if (llvm::is_contained(argStack, std::make_pair(i, j)))
     return true;
-  BlockArgument aArg = loop.getRegionIterArg(i);
-  BlockArgument bArg = loop.getRegionIterArg(j);
+
   // First, assume the arguments are equal. This is how recursion is broken.
   argStack.push_back({i, j});
   bool result =
@@ -93,6 +92,9 @@ bool LoopCSEDriver::areEqualInLoop(Value a, Value b) {
 
   Operation *aDef = a.getDefiningOp();
   Operation *bDef = b.getDefiningOp();
+  if (cast<OpResult>(a).getResultNumber() !=
+      cast<OpResult>(b).getResultNumber())
+    return false;
   // For it to be known that the operation results have the same value, they
   // must be side effect free.
   if (!isMemoryEffectFree(aDef) || !isMemoryEffectFree(bDef))

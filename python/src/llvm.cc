@@ -1,4 +1,4 @@
-﻿#include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
+#include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
@@ -220,6 +220,8 @@ void init_triton_llvm(py::module &&m) {
       .def("set_calling_conv", &llvm::Function::setCallingConv)
       .def("add_fn_attr", [](llvm::Function *fn, std::string &name,
                              std::string &val) { fn->addFnAttr(name, val); })
+      .def("remove_fn_attr", [](llvm::Function *fn,
+                                std::string &name) { fn->removeFnAttr(name); })
       .def("add_fn_asan_attr",
            [](llvm::Function *fn) {
              fn->addFnAttr(llvm::Attribute::SanitizeAddress);
@@ -270,7 +272,7 @@ void init_triton_llvm(py::module &&m) {
         }
         return llvmMod;
       },
-      py::keep_alive<0, 2>());
+      py::keep_alive<0, 2>(), py::call_guard<py::gil_scoped_release>());
 
   m.def("attach_datalayout", [](llvm::Module *mod, const std::string triple,
                                 const std::string proc,
@@ -318,7 +320,7 @@ void init_triton_llvm(py::module &&m) {
         ModuleAnalysisManager mam;
 
         if (arch.empty()) {
-          llvm::TargetLibraryInfoImpl TLII;
+          llvm::TargetLibraryInfoImpl TLII(mod->getTargetTriple());
           TLII.disableAllFunctions();
           fam.registerPass([TLII = std::move(TLII)] {
             return llvm::TargetLibraryAnalysis(TLII);
@@ -416,7 +418,7 @@ void init_triton_llvm(py::module &&m) {
       py::arg("arch") = "", py::arg("features") = "",
       py::arg("flags") = std::vector<std::string>{},
       py::arg("enable_fp_fusion") = false,
- 	    py::call_guard<py::gil_scoped_release>());
+      py::call_guard<py::gil_scoped_release>());
 
   m.def(
       "translate_to_asm",

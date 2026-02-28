@@ -14,8 +14,8 @@ namespace mlir::triton {
 inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     // clang-format off
     "AMDGCN_ENABLE_DUMP",
+    "AMDGCN_USE_BUFFER_ATOMICS",
     "AMDGCN_USE_BUFFER_OPS",
-    "DISABLE_FAST_REDUCTION",
     "DISABLE_LLVM_OPT",
     "DISABLE_MMA_V3",
     "DISABLE_MMA_V5",
@@ -31,7 +31,6 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "MLIR_DISABLE_MULTITHREADING",
     "TRITON_DEFAULT_FP_FUSION",
     "TRITON_DISABLE_LINE_INFO",
-    "TRITON_DISABLE_RESHAPE_ENCODING_INFERENCE",
     "TRITON_ENABLE_LLVM_DEBUG",
     "TRITON_HIP_GLOBAL_PREFETCH",
     "TRITON_HIP_LOCAL_PREFETCH",
@@ -43,7 +42,6 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "TRITON_OVERRIDE_ARCH",
     "USE_IR_LOC",
     "NVPTX_ENABLE_DUMP",
-    "STORE_TMEM_TO_GLOBAL_BYPASS_SMEM",
     "ALLOW_LHS_TMEM_LAYOUT_CONVERSION",
     "TRITON_F32_DEFAULT",
     "TRITON_PREFER_TMEM_16x256_LAYOUT",
@@ -53,7 +51,7 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
 inline const std::set<std::string> CACHE_NEUTRAL_ENV_VARS = {
     // clang-format off
     "TRITON_REPRODUCER_PATH",
-    "TRITON_ENABLE_PYTHON_STACKTRACE"
+    "TRITON_ENABLE_PYTHON_STACKTRACE",
     // clang-format on
 };
 

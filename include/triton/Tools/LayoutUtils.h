@@ -10,14 +10,6 @@ namespace mlir::triton {
 bool squareSublayoutIsIdentity(const LinearLayout &ll,
                                ArrayRef<StringAttr> dimNames);
 
-// Is the sublayout defined from dimNames to dimNames a subpermutation matrix?
-// I.e. the layout matrix is formed by selecting unique columns from the
-// identity matrix and adding zero columns. A zero column in the layout means
-// that changing a bit in the inputs does not change the bits of the outputs
-// (broadcasting).
-bool squareSublayoutIsPermutation(const LinearLayout &ll,
-                                  ArrayRef<StringAttr> dimNames);
-
 // For each output dimension d, ensure that the layout's output size (i.e., its
 // codomain) does not exceed shape[d]. Do this without changing the size of the
 // layout's inputs (i.e., leave its domain unchanged).
@@ -116,14 +108,18 @@ LinearLayout zerosLike(const LinearLayout &layout);
 // For a layout A with A.hasInDim(kReg), find a permutation of registers action
 // such that action.apply(A) may be divisible by B
 // It's not always true that the action returned by this function will
-// allow us to divideLeft, but it is true that if it if there exists one, it is
-// the one returned by this function.
-std::optional<ColumnAction> regPermForDivideLeft(const LinearLayout &A,
-                                                 const LinearLayout &B);
+// allow us to divideLeft (resp. divideRight), but it is true that if it if
+// there exists one, it is the one returned by this function.
+std::optional<ColumnAction> regPermForDivide(const LinearLayout &A,
+                                             const LinearLayout &B, bool left);
 
 // For a layout A with A.hasInDim(kReg), find a permutation of registers action
 // such that action.apply(A) has the broadcasted registers removed
 ColumnAction actionRemoveBroadcastedRegs(const LinearLayout &layout);
+
+std::pair<int64_t, ColumnAction>
+actionAdditiveStrides(const LinearLayout &layout, const LinearLayout addrLayout,
+                      uint64_t maskSpanOffsets);
 
 // For a layout A with A.hasInDim(kReg), repeat the values so that they have
 // the same broadcasting as layout

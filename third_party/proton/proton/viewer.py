@@ -9,7 +9,7 @@ try:
 except ImportError:
     raise ImportError("Failed to import hatchet. `pip install llnl-hatchet` to get the correct version.")
 import numpy as np
-from triton.profiler.hook import COMPUTE_METADATA_SCOPE_NAME, TritonHook
+from triton.profiler.hooks.launch import COMPUTE_METADATA_SCOPE_NAME, LaunchHook
 from triton.profiler import specs
 
 
@@ -80,7 +80,7 @@ def get_min_time_flops(df, device_info):
             arch = device_info[device_type][device_index]["arch"]
             num_sms = device_info[device_type][device_index]["num_sms"]
             clock_rate = device_info[device_type][device_index]["clock_rate"]
-            for width in TritonHook.flops_width:
+            for width in LaunchHook.flops_width:
                 idx = df["device_id"] == device_index
                 device_frames = df[idx]
                 if f"flops{width}" not in device_frames.columns:
@@ -96,9 +96,10 @@ def get_min_time_bytes(df, device_info):
         for device_index in device_info[device_type]:
             idx = df["device_id"] == device_index
             device_frames = df[idx]
-            memory_clock_rate = device_info[device_type][device_index]["memory_clock_rate"]  # in khz
-            bus_width = device_info[device_type][device_index]["bus_width"]  # in bits
-            peak_bandwidth = specs.max_bps(bus_width, memory_clock_rate)
+            device = device_info[device_type][device_index]
+            memory_clock_rate = device["memory_clock_rate"]  # in khz
+            bus_width = device["bus_width"]  # in bits
+            peak_bandwidth = specs.max_bps(device_type, device['arch'], bus_width, memory_clock_rate)
             min_time_bytes.loc[idx, "min_time"] += device_frames["bytes"] / peak_bandwidth
     return min_time_bytes
 
@@ -123,7 +124,7 @@ default_flop_factor_dict = {"flop/s": 1, "gflop/s": 1e9, "tflop/s": 1e12}
 derivable_metrics.update(
     {key: FactorDict("flops", default_flop_factor_dict)
      for key in default_flop_factor_dict.keys()})
-for width in TritonHook.flops_width:
+for width in LaunchHook.flops_width:
     factor_name = f"flops{width}"
     factor_dict = {f"flop{width}/s": 1, f"gflop{width}/s": 1e9, f"tflop{width}/s": 1e12}
     derivable_metrics.update({key: FactorDict(factor_name, factor_dict) for key in factor_dict.keys()})

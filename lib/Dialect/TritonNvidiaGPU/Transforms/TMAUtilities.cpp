@@ -127,7 +127,10 @@ SmallVector<int64_t> getTMABlockShape(ArrayRef<int64_t> shapePerCTA,
   // Last dim must equal the swizzle byte size
   if (swizzleBytes != 0) {
     auto contigDimSize = (8 * swizzleBytes) / elementBitWidth;
-    assert(blockShape[contigDim] >= contigDimSize);
+    if (blockShape[contigDim] < contigDimSize) {
+      llvm::report_fatal_error("Block shape is too small for the swizzle byte "
+                               "size in NVMMA Shared Layout.");
+    }
     blockShape[contigDim] = contigDimSize;
   }
   if (fp4Padded && packedSize) {
@@ -301,6 +304,8 @@ LogicalResult createTMADesc(Value tmaPtr, MakeTensorDescOp op,
     return failure();
   }
 
+  auto fillMode = (op.getPadding() == triton::PaddingOption::PAD_NAN) ? 1 : 0;
+
   builder.create<TensormapCreateOp>(
       loc,
       /*desc_ptr=*/tmaPtr,
@@ -312,7 +317,7 @@ LogicalResult createTMADesc(Value tmaPtr, MakeTensorDescOp op,
       /*elem_type*/ builder.getI32IntegerAttr(*elemTypeEnum),
       /*interleave_layout*/ builder.getI32IntegerAttr(0),
       /*swizzle_mode=*/builder.getI32IntegerAttr(swizzleMode),
-      /*fill_mode=*/builder.getI32IntegerAttr(0));
+      /*fill_mode=*/builder.getI32IntegerAttr(fillMode));
   return success();
 }
 

@@ -190,12 +190,28 @@ tt.func @rem() {
   %4 = arith.constant dense<64> : tensor<128xi32>
   // expected-remark @below {{contiguity = [64], divisibility = [64], constancy = [1], constant_value = <none>}}
   %5 = arith.remsi %0, %4 : tensor<128xi32>
-  // expected-remark @below {{contiguity = [1], divisibility = [64], constancy = [1], constant_value = <none>}}
+  // expected-remark @below {{contiguity = [1], divisibility = [1], constancy = [1], constant_value = <none>}}
   %6 = arith.remsi %4, %0 : tensor<128xi32>
   // expected-remark @below {{contiguity = [1], divisibility = [2], constancy = [128], constant_value = 66}}
   %7 = arith.constant dense<66> : tensor<128xi32>
   // expected-remark @below {{contiguity = [2], divisibility = [2], constancy = [1], constant_value = <none>}}
   %8 = arith.remui %0, %7 : tensor<128xi32>
+  // expected-remark @below {{contiguity = [1], divisibility = [64], constancy = [128], constant_value = 192}}
+  %9 = arith.constant dense<192> : tensor<128xi32>
+  // expected-remark @below {{contiguity = [64], divisibility = [64], constancy = [1], constant_value = <none>}}
+  %10 = arith.remsi %0, %9 : tensor<128xi32>
+  // expected-remark @below {{contiguity = [1], divisibility = [1], constancy = [1], constant_value = <none>}}
+  %11 = arith.remsi %9, %0 : tensor<128xi32>
+  // expected-remark @below {{contiguity = [128], divisibility = [32], constancy = [1], constant_value = <none>}}
+  %12 = tt.make_range {end = 160 : i32, start = 32 : i32} : tensor<128xi32>
+  // expected-remark @below {{contiguity = [1], divisibility = [1], constancy = [1], constant_value = <none>}}
+  %13 = arith.remsi %0, %12 : tensor<128xi32>
+  // expected-remark @below {{contiguity = [1], divisibility = [1], constancy = [1], constant_value = <none>}}
+  %14 = arith.remsi %12, %0 : tensor<128xi32>
+  // expected-remark @below {{contiguity = [32], divisibility = [32], constancy = [1], constant_value = <none>}}
+  %15 = arith.remsi %12, %4 : tensor<128xi32>
+  // expected-remark @below {{contiguity = [1], divisibility = [1], constancy = [1], constant_value = <none>}}
+  %16 = arith.remsi %4, %12 : tensor<128xi32>
   tt.return
 }
 
@@ -444,6 +460,22 @@ tt.func @max_min() {
   %5 = arith.constant dense<4> : tensor<128xi32>
   // expected-remark @below {{contiguity = [1], divisibility = [1], constancy = [1], constant_value = 8}}
   %6 = arith.maxsi %4, %5 : tensor<128xi32>
+  tt.return
+}
+
+// -----
+
+// A complicated example with different contiguity and divisibility in lhs and rhs.
+// To simplify construction of the test we just pass attributes from the arguments
+tt.func @contiguity_dependent_divisibility(%arg0: tensor<8xi32> {tt.contiguity = 8 : i32, tt.divisibility = 4 : i32, tt.constancy = 1 : i32}, %arg1: tensor<8xi32> {tt.contiguity = 2 : i32, tt.divisibility = 8 : i32, tt.constancy = 1 : i32}) {
+  // expected-remark @below {{contiguity = [2], divisibility = [2], constancy = [1], constant_value = <none>}}
+  %0 = arith.maxsi %arg0, %arg1 : tensor<8xi32>
+  // expected-remark @below {{contiguity = [2], divisibility = [2], constancy = [1], constant_value = <none>}}
+  %1 = arith.minsi %arg0, %arg1 : tensor<8xi32>
+  // expected-remark @below {{contiguity = [1], divisibility = [4611686018427387904], constancy = [1], constant_value = 0}}
+  %2 = arith.constant 0 : i1
+  // expected-remark @below {{contiguity = [2], divisibility = [2], constancy = [1], constant_value = <none>}}
+  %3 = arith.select %2, %0, %1 : tensor<8xi32>
   tt.return
 }
 
