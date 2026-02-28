@@ -174,6 +174,14 @@ LogicalResult MaskState::addStateScalar(const MaskState &state,
   end = addOpFoldResult(state.end, scalar, loc, builder);
   dims = state.dims;
   offsets = state.offsets;
+
+  bool allDimsOne = llvm::all_of(state.dims, [](OpFoldResult dim) {
+    return getConstantIntValue(dim).value() == std::optional<int64_t>(1);
+  });
+  if (allDimsOne) {
+    this->scalar = this->start;
+  }
+
   return success();
 }
 
