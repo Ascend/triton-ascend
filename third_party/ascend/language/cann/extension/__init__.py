@@ -1,10 +1,4 @@
-try:
-    import acl
-    soc_name = acl.get_soc_name()
-    is_compile_on_910_95 = soc_name.startswith("Ascend910_95") or soc_name.startswith("Ascend950")
-except Exception as e:
-    is_compile_on_910_95 = False
-
+from triton.tools.get_ascend_devices import is_compile_on_910_95
 from .core import (
     ascend_address_space,
     builtin,
@@ -125,3 +119,4 @@ __all__ = [
     "scatter_ub_to_out",
     "index_select_simd",
 ]
+

@@ -21,6 +21,7 @@
 import ctypes
 import functools
 import hashlib
+import glob
 import os
 import re
 import subprocess
@@ -59,13 +60,7 @@ from triton.backends.compiler import (
 )
 from triton.runtime import driver
 from triton.runtime.cache import get_dump_manager
-
-try:
-    import acl
-    soc_name = acl.get_soc_name()
-    is_compile_on_910_95 = soc_name.startswith("Ascend910_95") or soc_name.startswith("Ascend950")
-except Exception as e:
-    is_compile_on_910_95 = False
+from triton.tools.get_ascend_devices import is_compile_on_910_95
 
 # TODO: materialize the concrete min shape
 def min_dot_size(target: GPUTarget):
