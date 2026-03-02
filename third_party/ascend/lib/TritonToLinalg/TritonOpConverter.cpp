@@ -1201,7 +1201,8 @@ LogicalResult ScanConverter::convertToTargetOp(
 
     rewriter.setInsertionPointAfter(op);
 
-    Value outputTensor = rewriter.create<bufferization::ToTensorOp>(loc, outputMemRef, true);
+    mlir::Type resultType = mlir::memref::getTensorTypeFromMemRefType(dyn_cast<mlir::MemRefType>(outputMemRef.getType()));
+    Value outputTensor = rewriter.create<bufferization::ToTensorOp>(loc, resultType, outputMemRef, true);
     rewriter.replaceOp(op, outputTensor);
     return success();
   }
@@ -1386,7 +1387,8 @@ LogicalResult ScanConverter::convertToTargetOpExtended(
   // 7. Convert multiple output MemRefs back to tensors and replace the original tt.scan operation
   llvm::SmallVector<Value> outputTensors;
   for (auto outputMemRef : outputMemRefs) {
-    outputTensors.push_back(rewriter.create<bufferization::ToTensorOp>(loc, outputMemRef, true));
+    mlir::Type resultType = mlir::memref::getTensorTypeFromMemRefType(dyn_cast<mlir::MemRefType>(outputMemRef.getType()));
+    outputTensors.push_back(rewriter.create<bufferization::ToTensorOp>(loc, resultType, outputMemRef, true));
   }
   rewriter.replaceOp(op, outputTensors);
 
