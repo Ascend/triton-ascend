@@ -526,12 +526,8 @@ void parseIndexCast(arith::IndexCastOp op, const Location &loc,
   parse(src, op.getLoc(), rewriter, offsetMap);
   // Set indexCast offset map
   auto dst = op.getOut();
-  auto srcIt = offsetMap.find(src);
-  if (srcIt == offsetMap.end()) {
-    offsetMap[dst] = PtrOffsetInfo();
-  } else {
-    offsetMap.insert({dst, srcIt->second});
-  }
+  auto srcOffsetInfo = offsetMap.at(src);
+  offsetMap[dst] = srcOffsetInfo;
 }
 
 template <typename ConstOpTy>
@@ -560,12 +556,8 @@ void parseExtSI(arith::ExtSIOp op, const Location &loc, RewriterBase &rewriter,
   parse(src, op.getLoc(), rewriter, offsetMap);
   // Set extSI offset map
   auto dst = op.getOut();
-  auto srcIt = offsetMap.find(src);
-  if (srcIt == offsetMap.end()) {
-    offsetMap[dst] = PtrOffsetInfo();
-  } else {
-    offsetMap.insert({dst, srcIt->second});
-  }
+  auto srcOffsetInfo = offsetMap.at(src);
+  offsetMap[dst] = srcOffsetInfo;
 }
 
 void parseBitcast(triton::BitcastOp op, const Location &loc,
@@ -844,7 +836,8 @@ void parseAdvance(triton::AdvanceOp op, const Location &loc,
   auto ptr = op.getPtr();
   parse(ptr, op.getLoc(), rewriter, offsetMap);
   auto dst = op.getResult();
-  offsetMap[dst] = offsetMap.at(ptr);
+  auto ptrOffsetInfo = offsetMap.at(ptr);
+  offsetMap[dst] = ptrOffsetInfo;
   auto dstType = dyn_cast<ShapedType>(
       cast<triton::PointerType>(dst.getType()).getPointeeType());
   if (!dstType)
@@ -972,7 +965,8 @@ void parseLoopOp(LoopLikeOpInterface op, const Location &loc,
     yieldedValue = op.getYieldedValues()[resNum];
   }
   parse(yieldedValue, op.getLoc(), rewriter, offsetMap);
-  offsetMap[dst] = offsetMap.at(yieldedValue);
+  auto yieldOffsetInfo = offsetMap.at(yieldedValue);
+  offsetMap[dst] = yieldOffsetInfo;
 }
 
 void parseExtractSlice(tensor::ExtractSliceOp op, const Location &loc,
@@ -983,12 +977,8 @@ void parseExtractSlice(tensor::ExtractSliceOp op, const Location &loc,
   parse(src, op.getLoc(), rewriter, offsetMap);
   // Set extractSlice offset map
   auto dst = op.getResult();
-  auto srcIt = offsetMap.find(src);
-  if (srcIt == offsetMap.end()) {
-    offsetMap[dst] = PtrOffsetInfo();
-  } else {
-    offsetMap.insert({dst, srcIt->second});
-  }
+  auto srcOffsetInfo = offsetMap.at(src);
+  offsetMap[dst] = srcOffsetInfo;
 }
 
 void parseExtract(tensor::ExtractOp op, const Location &loc,
