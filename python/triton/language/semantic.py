@@ -342,6 +342,9 @@ def mod(input: tl.tensor | numbers.Number, other: tl.tensor | numbers.Number, bu
             raise TypeError("Cannot mod " + scalar_ty.__repr__() + " by " + other_scalar_ty.__repr__() + " "
                             "because they have different signedness;"
                             "this is unlikely to result in a useful answer. Cast them to the same signedness.")
+        if hasattr(input, 'was_bool_to_int8'):
+            false_val = builder.get_int1(False)
+            return tl.tensor(false_val, tl.int1)
         if scalar_ty.is_int_signed():
             return tl.tensor(builder.create_srem(input.handle, other.handle), input.type)
         else:
