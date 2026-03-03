@@ -43,8 +43,8 @@ def alloc(
     shape = tl._unwrap_shape(shape)
     if not isinstance(shape, (tuple, list)):
         raise TypeError("shape must be list/tuple")
-    etype = tl._constexpr_to_value(etype)
-    address_space = tl._constexpr_to_value(address_space)
+    etype = tl._unwrap_if_constexpr(etype)
+    address_space = tl._unwrap_if_constexpr(address_space)
     element_ty_ir = etype.to_ir(builder)
     addr_space_attr = (
         address_space.to_ir(builder) if address_space else builder.get_null_attr()
@@ -74,7 +74,7 @@ def to_buffer(
         return bind_buffer
     if not (bind_buffer is None):
         raise ValueError("bind_buffer must be a buffer or None")
-    address_space = tl._constexpr_to_value(address_space)
+    address_space = tl._unwrap_if_constexpr(address_space)
     addr_space_attr = (
         address_space.to_ir(builder) if address_space else builder.get_null_attr()
     )

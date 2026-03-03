@@ -53,7 +53,7 @@ from triton._C.libtriton.ascend import ir as ascend_ir
 import triton.language.core as tl
 
 import triton.extension.buffer.language as bl
-from triton.language.core import _constexpr_to_value
+from triton.language.core import _unwrap_if_constexpr
 from triton.backends.ascend.driver import NPUUtils
 
 from . import semantic as semantic
@@ -186,8 +186,8 @@ def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _bu
 def create_sync_block(sender, receiver, event_id, is_set: bool,
                       sender_pipe=None, receiver_pipe=None,
                       _builder=None):
-    sender = _constexpr_to_value(sender)
-    receiver = _constexpr_to_value(receiver)
+    sender = _unwrap_if_constexpr(sender)
+    receiver = _unwrap_if_constexpr(receiver)
     assert isinstance(sender, str) and (sender == "cube" or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
     assert isinstance(receiver, str) and (receiver == "cube" or receiver == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
     if isinstance(event_id, int):
@@ -220,8 +220,8 @@ def sync_block_wait(sender, receiver, event_id, sender_pipe=None, receiver_pipe=
 
 @builtin
 def sync_block_all(mode, event_id, _builder=None):
-    mode = _constexpr_to_value(mode)
-    event_id = _constexpr_to_value(event_id)
+    mode = _unwrap_if_constexpr(mode)
+    event_id = _unwrap_if_constexpr(event_id)
     assert isinstance(mode, str), f"mode: {mode} is not string"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
     assert mode in ("all_cube", "all_vector", "all", "all_sub_vector"), f"ERROR: mode = {mode}, only supports all_cube/all_vector/all/all_sub_vector"

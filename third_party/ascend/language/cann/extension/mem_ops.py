@@ -2,7 +2,7 @@ import numbers
 import triton.language as tl
 from triton.language import semantic as real_semantic
 from triton.language.core import (
-    _constexpr_to_value,
+    _unwrap_if_constexpr,
     _tensor_member_fn,
     _unwrap_iterable,
     builtin,
@@ -170,8 +170,8 @@ def index_put(
                                                   index_boundary, end_offset, start_offset, dst_stride), tl.void)
 
 
-    dim = _constexpr_to_value(dim)
-    index_boundary = _constexpr_to_value(index_boundary)
+    dim = _unwrap_if_constexpr(dim)
+    index_boundary = _unwrap_if_constexpr(index_boundary)
 
     return index_put_impl(ptr, index, value, dim, index_boundary,
                           end_offset, start_offset, dst_stride, _builder)
@@ -323,8 +323,8 @@ def gather_out_to_ub(
         ret_shape = [_unwrap_if_constexpr(s) for s in index.shape]
         return wrap_tensor(ret, src.dtype.element_ty, ret_shape)
 
-    dim = _constexpr_to_value(dim)
-    index_boundary = _constexpr_to_value(index_boundary)
+    dim = _unwrap_if_constexpr(dim)
+    index_boundary = _unwrap_if_constexpr(index_boundary)
     return gather_out_to_ub_impl(src, index, index_boundary, dim,
                                  src_stride, end_offset, start_offset, other, _builder)
 
@@ -471,9 +471,9 @@ def scatter_ub_to_out(
     def _is_ranked_tensor(x):
         return isinstance(x, tensor) and x.shape and len(x.shape) > 0
 
-    dim = _constexpr_to_value(dim)
-    index_boundary = _constexpr_to_value(index_boundary)
-    value = _constexpr_to_value(value)
+    dim = _unwrap_if_constexpr(dim)
+    index_boundary = _unwrap_if_constexpr(index_boundary)
+    value = _unwrap_if_constexpr(value)
 
     if not _is_ranked_tensor(value) or isinstance(value, constexpr):
         element_ty = ptr.type.scalar.element_ty
@@ -611,7 +611,7 @@ def index_select_simd(
         out = builder.create_index_select_simd(src.handle, index.handle, dim, newsrc_shape, newsrc_offset, read_shape, return_shape)
         return tl.tensor(out, output_ty)
 
-    dim = _constexpr_to_value(dim)
+    dim = _unwrap_if_constexpr(dim)
 
     # Process shape parameters: convert constexpr to values, keep tensors as-is
     def process_param(val):
@@ -619,7 +619,7 @@ def index_select_simd(
         if isinstance(val, tensor):
             return val
         else:
-            return _constexpr_to_value(val)
+            return _unwrap_if_constexpr(val)
 
     newsrc_shape = [
         real_semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o

@@ -22,7 +22,7 @@
 
 __all__ = ["scope"]
 
-from triton.language.core import _constexpr_to_value
+from triton.language.core import _unwrap_if_constexpr
 
 
 class scope:
@@ -54,7 +54,7 @@ class scope:
         :param kwargs: Additional internal parameters
         """
         # Convert constexpr to value if not being called from code generator
-        self.core_mode = _constexpr_to_value(core_mode) if _builder is None else core_mode
+        self.core_mode = _unwrap_if_constexpr(core_mode) if _builder is None else core_mode
         self._builder = _builder
         self._semantic = _semantic
 

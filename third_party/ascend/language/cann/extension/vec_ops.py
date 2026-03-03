@@ -8,7 +8,7 @@
 import triton.language as tl
 from triton.language import semantic, core, standard
 from triton.language.core import (
-    _constexpr_to_value,
+    _unwrap_if_constexpr,
     _tensor_member_fn,
     _unwrap_iterable,
     builtin,
@@ -296,9 +296,9 @@ class static_range:
 
     def __iter__(self):
         # Extract actual values from constexpr objects for iteration
-        start_val = core._constexpr_to_value(self.start)
-        end_val = core._constexpr_to_value(self.end)
-        step_val = core._constexpr_to_value(self.step)
+        start_val = core._unwrap_if_constexpr(self.start)
+        end_val = core._unwrap_if_constexpr(self.end)
+        step_val = core._unwrap_if_constexpr(self.step)
         # Store as regular Python integers for iteration
         self._current = start_val
         self._end = end_val

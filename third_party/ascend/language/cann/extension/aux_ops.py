@@ -1,7 +1,7 @@
 import triton.language as tl
 from triton.language import semantic, core, standard
 from triton.language.core import (
-    _constexpr_to_value,
+    _unwrap_if_constexpr,
     _tensor_member_fn,
     _unwrap_iterable,
     builtin,
@@ -46,8 +46,8 @@ def sync_block_all(mode, event_id, _builder=None):
         DeprecationWarning,
         stacklevel=1,
     )
-    mode = _constexpr_to_value(mode)
-    event_id = _constexpr_to_value(event_id)
+    mode = _unwrap_if_constexpr(mode)
+    event_id = _unwrap_if_constexpr(event_id)
     assert isinstance(mode, str), f"mode: {mode} is not string"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
     assert mode == "all_cube" or mode == "all_vector" or mode == "all", f"ERROR: mode = {mode}, only supports all_cube/all_vector/all"
@@ -64,9 +64,9 @@ def sync_block_set(sender, receiver, event_id, _builder=None):
         DeprecationWarning,
         stacklevel=1,
     )
-    sender = _constexpr_to_value(sender)
-    receiver = _constexpr_to_value(receiver)
-    event_id = _constexpr_to_value(event_id)
+    sender = _unwrap_if_constexpr(sender)
+    receiver = _unwrap_if_constexpr(receiver)
+    event_id = _unwrap_if_constexpr(event_id)
     assert isinstance(sender, str) and (sender == "cube" or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
     assert isinstance(receiver, str) and (receiver == "cube" or receiver == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
@@ -85,9 +85,9 @@ def sync_block_wait(sender, receiver, event_id, _builder=None):
         DeprecationWarning,
         stacklevel=1,
     )
-    sender = _constexpr_to_value(sender)
-    receiver = _constexpr_to_value(receiver)
-    event_id = _constexpr_to_value(event_id)
+    sender = _unwrap_if_constexpr(sender)
+    receiver = _unwrap_if_constexpr(receiver)
+    event_id = _unwrap_if_constexpr(event_id)
     assert isinstance(sender, str) and (sender == "cube" or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
     assert isinstance(receiver, str) and (receiver == "cube" or receiver == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
@@ -141,7 +141,7 @@ def compile_hint(ptr, hint_name, hint_val=None, _builder=None):
     def _unwrap(val):
         return _unwrap_if_constexpr(val) if val else val
 
-    hint_name = _constexpr_to_value(hint_name)
+    hint_name = _unwrap_if_constexpr(hint_name)
     assert isinstance(hint_name, str), f"hint name: {hint_name} is not string"
     if isinstance(hint_val, list):
         hint_val = [_unwrap(val) for val in hint_val]
@@ -157,6 +157,6 @@ def multibuffer(src: tensor, size, _builder=None):
     :src: tensor set to bufferize multiple time
     :size: number of copies
     """
-    buffer_size = _constexpr_to_value(size)
+    buffer_size = _unwrap_if_constexpr(size)
     assert isinstance(buffer_size, int) and buffer_size == 2, f"only support bufferize equals 2"
     compile_hint_impl(src, "multi_buffer", buffer_size, _builder)
