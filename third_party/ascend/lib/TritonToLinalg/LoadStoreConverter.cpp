@@ -589,8 +589,9 @@ AtomicRMWConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor,
       dstMemref = mstate.getSubview(ptr, loc, rewriter);
       if (isHardwareSupported) {
         auto inputTensorType = RankedTensorType::get(inputMemrefType.getShape(), inputMemrefType.getElementType());
-        Value inputTensor = rewriter.create<bufferization::ToTensorOp>(loc, inputTensorType, inputMemref, true, true);
-        inputVal = mstate.getExtractSlice(inputTensor, loc, rewriter);
+        if (!isa<RankedTensorType>(inputVal.getType()))
+          inputVal = rewriter.create<bufferization::ToTensorOp>(loc, inputTensorType, inputMemref, true, true);
+        inputVal = mstate.getExtractSlice(inputVal, loc, rewriter);
       } else {
         inputMemref = mstate.getSubview(inputMemref, loc, rewriter);
       }
