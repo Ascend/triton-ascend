@@ -20,7 +20,6 @@ from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, canonicalize_dtype
 from .cache import get_cache_key
 from triton._C.libtriton import get_cache_invalidating_env_vars
-from . import _async_compile
 
 TRITON_MODULE = "triton.language"
 GLUON_MODULE = "triton.experimental.gluon.language"
@@ -802,8 +801,6 @@ class JITFunction(JITCallable, KernelInterface[T]):
         return self.run(grid=grid, warmup=True, *map(MockTensor.wrap_dtype, args), **kwargs)
 
     def preload(self, specialization_data):
-        from ..compiler import make_backend
-        from triton.backends.compiler import AttrsDescriptor
         import json
         import triton.language as tl
         device = driver.active.get_current_device()
@@ -826,31 +823,27 @@ class JITFunction(JITCallable, KernelInterface[T]):
             for key, value in deserialized_obj['options'].items()
         }
         key = deserialized_obj['key']
-        target = driver.active.get_current_target()
-        backend = make_backend(target)
-        attrs = AttrsDescriptor.from_dict(deserialized_obj['attrs'])
+        _, _, _, backend, _ = self.device_caches[device]
+        options = backend.parse_options(options)
         return self._do_compile(
             key,
             signature,
             device,
-            backend,
-            target,
             constexprs,
             options,
             attrs,
             warmup=True,
         )
 
-    def _do_compile(self, key, signature, device, backend, target, constants, options, attrs, warmup):
-        kernel_cache = self.cache[device]
+    def _do_compile(self, key, signature, device, constexprs, options, attrs, warmup):
+        kernel_cache, _, target, backend, _ = self.device_caches[device]
 
-        if self._call_hook(key, signature, device, constants, options, [attrs], warmup, before=True):
+        if self._call_hook(knobs.runtime.jit_cache_hook, key, signature, device, constexprs, options, [attrs], warmup):
             return None
-        src = self.ASTSource(self, signature, constants, attrs)
+        src = self.ASTSource(self, signature, constexprs, attrs)
 
         async_mode = _async_compile.active_mode.get()
         if async_mode is not None:
-            from triton.compiler.compiler import get_cache_key
 
             env_vars = get_cache_invalidating_env_vars()
             cache_key = get_cache_key(src, backend, options, env_vars)
@@ -860,13 +853,15 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
             def finalize_compile(kernel):
                 kernel_cache[key] = kernel
-                self._call_hook(key, signature, device, constants, options, [attrs], warmup, before=False)
+                self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options,
+                                [attrs], warmup)
 
             kernel = async_mode.submit(cache_key, async_compile, finalize_compile)
         else:
             kernel = self.compile(src, target=target, options=options.__dict__)
             kernel_cache[key] = kernel
-            self._call_hook(key, signature, device, constants, options, [attrs], warmup, before=False)
+            self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options, [attrs],
+                            warmup)
         return kernel
 
     def __call__(self, *args, **kwargs):
