@@ -878,7 +878,7 @@ class AscendBackend(BaseBackend):
     def load_dialects(self, ctx):
         ascend.load_dialects(ctx)
 
-    def add_stages(self, stages, options):
+    def add_stages(self, stages, options, language):
         if self.target.backend == "npu":
             stages["ttir"] = lambda src, metadata: make_ttir(src, metadata, options)
             if options.force_simt_only:

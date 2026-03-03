@@ -30,12 +30,12 @@ def _apply_ascend_patch():
     if not getattr(ASTSource, "_ascend_patch_applied", False):
         _original_make_ir = ASTSource.make_ir
 
-        def _patched_make_ir(self, options, codegen_fns, module_map, context):
+        def _patched_make_ir(self, target, options, codegen_fns, module_map, context):
             """
             Monkey Patch for Ascend:
             Injects 'hacc.target' attribute into the module after generation.
             """
-            module = _original_make_ir(self, options, codegen_fns, module_map, context)
+            module = _original_make_ir(self, target, options, codegen_fns, module_map, context)
 
             if hasattr(options, "arch") and options.arch:
                 try:

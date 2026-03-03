@@ -17,6 +17,7 @@ import re
 import functools
 import os
 import time
+import copy
 
 # - ^\s*tt\.func\s+ : match the start of the string, any leading whitespace, the keyword func,
 #    and any following whitespace
@@ -130,11 +131,6 @@ class IRSource:
 @functools.lru_cache()
 def max_shared_mem(device):
     return driver.active.utils.get_device_properties(device)["max_shared_mem"]
-
-
-def get_cache_key(src, backend, backend_options, env_vars):
-    key = f"{triton_key()}-{src.hash()}-{backend.hash()}-{backend_options.hash()}-{str(sorted(env_vars.items()))}"
-    return key
 
 
 def parse(full_name, ext, context):
@@ -424,7 +420,7 @@ class AsmDict(dict):
 
 
 def _raise_error(err, *args, **kwargs):
-    raise err
+    raise copy.deepcopy(err)
 
 
 class CompiledKernel:
@@ -465,7 +461,13 @@ class CompiledKernel:
             return
 
         def raise_(err):
-            self._run = functools.partial(_raise_error, err)
+            # clone the exception object so that the one saved in the closure
+            # of the partial function below doesn't get assigned a stack trace
+            # after the subsequent raise. otherwise, the CompiledKernel instance
+            # saved in the (global) kernel cache will keep references to all the
+            # locals in the traceback via the exception instance in the closure.
+            cloned_err = copy.deepcopy(err)
+            self._run = functools.partial(_raise_error, cloned_err)
             raise err
 
         device = driver.active.get_current_device()
