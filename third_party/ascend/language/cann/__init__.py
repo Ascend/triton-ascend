@@ -21,11 +21,11 @@
 from . import libdevice
 from . import extension
 
-extension.parallel = extension.aux_ops.parallel
+# extension.parallel = extension.aux_ops.parallel
 libdevice.atan2 = extension.math_ops.atan2
 libdevice.isfinited = extension.math_ops.isfinited
 libdevice.finitef = extension.math_ops.finitef
-libdevice.flip = extension.flip
+# libdevice.flip = extension.flip
 
 from triton.language import math
 libdevice.umulhi = math.umulhi
