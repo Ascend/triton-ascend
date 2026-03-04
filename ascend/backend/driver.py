@@ -231,19 +231,6 @@ class NPUDriver(DriverBase):
         cache_size = 192 * 1024 * 1024
         return torch.empty(cache_size // 4, dtype=torch.int, device='npu')
 
-   
-# fixed the issue of corrupted gch header files in multi-threaded scenarios.
-def _precompile_npu_ext_with_lock(header_path):
-    import fcntl
-    src_path = os.path.dirname(header_path)
-    lock_path = os.path.join(src_path, "precompiled.lock")
-    with open(lock_path, "a+") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            _precompile_npu_ext(header_path)
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-
 
 def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     """
@@ -253,11 +240,14 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
     cache = get_cache_manager(precompile_hash)
     header_path = cache.get_file("precompiled.h")
     gch_path = cache.get_file("precompiled.h.gch")
+    enable_precompile = not os.getenv("TRITON_DISABLE_PRECOMPILE", 'false').lower() in ('true', '1')
     # if precompile header file and its gch file not exist, do precompile
-    if header_path is None and gch_path is None:
-        header_path = cache.put(header_src, "precompiled.h", binary=False)
-        _precompile_npu_ext_with_lock(header_path)
-
+    if enable_precompile and header_path is None and gch_path is None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            header_path = cache.put(header_src, "precompiled.h", binary=False)
+            gch_path = os.path.join(tmpdir, "precompiled.h.gch")
+            _precompile_npu_ext(header_path, gch_path)
+            cache.put(gch_path, "precompiled.h.gch", binary=True)
     # try to get cached file
     so_cache_key = hashlib.sha256(wrapper_src.encode("utf-8")).hexdigest()
     so_cache_manager = get_cache_manager(so_cache_key)
@@ -286,7 +276,7 @@ def make_npu_launcher_stub(header_src, wrapper_src, debug=False):
         src_path = os.path.join(tmpdir, f"{name}.cxx")
         with open(src_path, "w") as f:
             f.write(wrapper_src)
-        so_path = _build_npu_ext(name, header_path, src_path, kernel_launcher=kernel_launcher_type, precompile=True)
+        so_path = _build_npu_ext(name, header_path, src_path, kernel_launcher=kernel_launcher_type, precompile=enable_precompile)
         if debug:
             with open(so_path, "rb") as f:
                 dump_manager.put(f.read(), so_name, binary=True)
@@ -361,6 +351,7 @@ def extract_device_print_code_from_cann():
         read_header('internal/debug_tunnel/tunnel.h'),
         read_header('internal/debug_tunnel/tunnel_impl.h')
     ])
+
 
 def generate_npu_header_src():
     enable_taskqueue = os.getenv(

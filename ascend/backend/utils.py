@@ -239,8 +239,10 @@ def _is_auto_map_parallel_blocks_enabled() -> bool:
 def _enable_unpublished_feature() -> bool:
     return os.getenv("ENABLE_UNPUBLISHED_FEATURE", "false").lower() in ("true", "1")
 
+
 def _enable_print_ub_bits() -> bool:
     return os.getenv("ENABLE_PRINT_UB_BITS", "false").lower() in ("true", "1")
+
 
 def _get_cxx():
     cxx = os.environ.get("CC")
@@ -251,6 +253,7 @@ def _get_cxx():
         if cxx is None:
             raise RuntimeError("Failed to find C++ compiler")
     return cxx
+
 
 def _get_cxx_precompiled(header_path):
     cc_cmd = []
@@ -268,6 +271,7 @@ def _get_cxx_precompiled(header_path):
         cc_cmd += [cxx]
     return cc_cmd
 
+
 def _precompile_npu_hash(header_src):
     import sys
     import torch
@@ -281,11 +285,9 @@ def _precompile_npu_hash(header_src):
     hash_txt = hashlib.sha256("_".join(version_txt).encode("utf-8")).hexdigest()
     return hash_txt
 
-def _precompile_npu_ext(header_path):
-    src_dir = os.path.dirname(header_path)
-    gch_path = os.path.join(src_dir, "precompiled.h.gch")
-    cxx = _get_cxx()
 
+def _precompile_npu_ext(header_path, gch_path):
+    cxx = _get_cxx()
     cc_cmd = [cxx, "-x", "c++-header", header_path]
     # disable all warnings
     cc_cmd += [f"-w"]
