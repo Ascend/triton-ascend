@@ -545,6 +545,16 @@ class CMakeBuild(build_ext):
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
 
+        # Copy triton-mlir-opt tool to extdir for runtime use
+        # This tool is needed for converting MLIR to Bytecode
+        triton_mlir_opt_src = os.path.join(cmake_dir, "bin", "triton-mlir-opt")
+        if os.path.exists(triton_mlir_opt_src):
+            triton_mlir_opt_dst = os.path.join(extdir, "triton-mlir-opt")
+            shutil.copy2(triton_mlir_opt_src, triton_mlir_opt_dst)
+            # Make it executable (Unix-like systems)
+            if platform.system() != "Windows":
+                os.chmod(triton_mlir_opt_dst, 0o755)
+            print(f"Copied triton-mlir-opt to {triton_mlir_opt_dst}")
 
 def download_and_copy_dependencies():
     nvidia_version_path = os.path.join(get_base_dir(), "cmake", "nvidia-toolchain-version.json")

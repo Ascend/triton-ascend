@@ -443,8 +443,9 @@ class CompiledKernel:
         # stores the text of each level of IR that was generated during compilation
         asm_files = [Path(p) for c, p in metadata_group.items() if not c.endswith(".json")]
         binary_ext = backend.binary_ext
+        binary_extensions = getattr(backend, 'binary_extensions', {binary_ext})
         self.asm = AsmDict({
-            file.suffix[1:]: file.read_bytes() if file.suffix[1:] == binary_ext else file.read_text()
+            file.suffix[1:]: file.read_bytes() if file.suffix[1:] in binary_extensions else file.read_text()
             for file in asm_files
         })
         self.metadata_group = metadata_group

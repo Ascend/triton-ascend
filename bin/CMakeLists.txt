@@ -94,3 +94,40 @@ target_link_libraries(triton-tensor-layout PRIVATE
   MLIRRegisterAllPasses
   MLIRTransforms
   )
+
+# triton-mlir-opt: Triton-Ascend optimizer combining MLIR and BishengIR dialects
+add_llvm_executable(triton-mlir-opt triton-mlir-opt.cpp PARTIAL_SOURCES_INTENDED)
+llvm_update_compile_flags(triton-mlir-opt)
+
+# Include directories for BishengIR
+target_include_directories(triton-mlir-opt PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/ascend/AscendNPU-IR/bishengir/include
+  ${CMAKE_CURRENT_BINARY_DIR}/../third_party/ascend/AscendNPU-IR/bishengir/include
+)
+
+if(BISHENGIR_BUILD_STANDALONE_IR_ONLY)
+  target_compile_definitions(triton-mlir-opt PRIVATE BISHENGIR_BUILD_STANDALONE_IR_ONLY)
+endif()
+
+target_link_libraries(triton-mlir-opt PRIVATE
+  ${dialect_libs}
+  ${conversion_libs}
+  ${triton_libs}
+  # MLIR core
+  MLIROptLib
+  MLIRPass
+  MLIRRegisterAllDialects
+  MLIRRegisterAllPasses
+  MLIRTransforms
+  # Core BishengIR dialect libraries
+  BiShengIRAnnotationDialect
+  BiShengIRHFusionDialect
+  BiShengIRHIVMDialect
+  BiShengIRMathExtDialect
+  BiShengIRScopeDialect
+  BiShengIRSymbolDialect
+  BiShengIRMemRefExtDialect
+  BiShengIRHACCDialect
+)
+
+mlir_check_all_link_libraries(triton-mlir-opt)

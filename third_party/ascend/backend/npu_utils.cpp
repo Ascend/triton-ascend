@@ -88,6 +88,7 @@ static PyObject *loadKernelBinary(PyObject *self, PyObject *args) {
   int shared;              // shared_memory(meaningless now)
   int device;              // device ID
   const char *kernel_mode; // kernel mode
+  int32_t n_max_threads = 0;
 
   if (!PyArg_ParseTuple(args, "ss#iis", &name, &data, &data_size, &shared,
                         &device, &kernel_mode)) {
@@ -103,7 +104,7 @@ static PyObject *loadKernelBinary(PyObject *self, PyObject *args) {
     return NULL;
   }
 
-  return Py_BuildValue("(KKii)", mod, func, 0, 0);
+  return Py_BuildValue("(KKiii)", mod, func, 0, 0, n_max_threads);
 }
 
 static PyObject *getArch(PyObject *self, PyObject *args) {
