@@ -739,6 +739,28 @@ LogicalResult TritonToLinalgPass::processImplicitPermuteOperations(ModuleOp modu
   return runPipeline(pm, getOperation());
 }
 
+LogicalResult TritonToLinalgPass::processLegalStrideOperations(ModuleOp moduleOp)
+{
+  mlir::ConversionTarget target(getContext());
+  target.addLegalOp<arith::ConstantOp>();
+  target.addDynamicallyLegalOp<memref::ReinterpretCastOp>(
+      [](memref::ReinterpretCastOp op) {
+        return !LoadStoreConverter::ReinterpretCastStrideCanonicalizer::hasFixableZeroStride(op);
+      });
+
+  mlir::RewritePatternSet patterns(&getContext());
+  patterns.add<LoadStoreConverter::ReinterpretCastStrideCanonicalizer>(
+      patterns.getContext());
+
+  if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
+    moduleOp->emitError(
+        "failed to legalize reinterpret_cast dynamic stride(0) with size(1)");
+    return failure();
+  }
+
+  return success();
+}
+
 void TritonToLinalgPass::runOnOperation() {
   compileOn91095Flag = this->compileOn91095;
 
@@ -860,6 +882,11 @@ void TritonToLinalgPass::runOnOperation() {
   // 7. Convert ops.
   if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
     moduleOp->emitError("failed to apply Conversion Patterns");
+    signalPassFailure();
+  }
+
+  // Execute legal stride operations conversion
+  if (failed(processLegalStrideOperations(moduleOp))) {
     signalPassFailure();
   }
 

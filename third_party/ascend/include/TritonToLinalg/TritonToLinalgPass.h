@@ -41,8 +41,7 @@ namespace triton {
 
 std::unique_ptr<OperationPass<ModuleOp>> createTritonToLinalgPass();
 
-std::unique_ptr<OperationPass<ModuleOp>> 
-createTritonToLinalgPass(bool, bool, bool, bool, bool);
+std::unique_ptr<OperationPass<ModuleOp>> createTritonToLinalgPass(bool, bool, bool, bool, bool);
 
 } // namespace triton
 } // namespace mlir
@@ -90,13 +89,14 @@ private:
   LogicalResult processDescriptorOperations(ModuleOp moduleOp);
   LogicalResult processPtrBroadcastOperations(ModuleOp moduleOp);
   LogicalResult processImplicitPermuteOperations(ModuleOp moduleOp);
+  LogicalResult processLegalStrideOperations(ModuleOp moduleOp);
 
 public:
   TritonToLinalgPass() = default;
 
   TritonToLinalgPass(bool globalKernel, bool namedOps, bool enableNd2nzOnVector,
                      bool enableSelectAnalysis, bool compileOn91095) {
-    this->globalKernel = globalKernel; 
+    this->globalKernel = globalKernel;
     this->namedOps = namedOps;
     this->enableNd2nzOnVector = enableNd2nzOnVector;
     this->enableSelectAnalysis = enableSelectAnalysis;

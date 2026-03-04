@@ -50,6 +50,7 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Value.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "Utils/Utils.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVectorExtras.h"
@@ -1103,6 +1104,92 @@ StoreConverter::matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
       loc, srcSlice, dstSubview);
   storeOp.setWritable(true);
   rewriter.eraseOp(op);
+  return success();
+}
+
+bool ReinterpretCastStrideCanonicalizer::hasFixableZeroStride(memref::ReinterpretCastOp op)
+{
+  auto staticSizes = op.getStaticSizes();
+  auto staticStrides = op.getStaticStrides();
+  auto dynamicStrides = op.getStrides();
+
+  if (staticSizes.size() != staticStrides.size())
+    return false;
+
+  // now handle: size all static
+  if (llvm::any_of(staticSizes, ShapedType::isDynamic))
+    return false;
+
+  unsigned dynStrideIdx = 0;
+  for (unsigned i = 0; i < staticStrides.size(); ++i) {
+    // now handle: dynamic stride 0 with static size 1
+    if (!ShapedType::isDynamic(staticStrides[i]))
+      continue;
+
+    if (dynStrideIdx >= dynamicStrides.size())
+      return false;
+
+    Value st = dynamicStrides[dynStrideIdx];
+    dynStrideIdx++;
+    if (staticSizes[i] == 1 && mlir::isZero(OpFoldResult(st)))
+      return true;
+  }
+  return false;
+}
+
+LogicalResult ReinterpretCastStrideCanonicalizer::matchAndRewrite(
+    memref::ReinterpretCastOp op, PatternRewriter &rewriter) const
+{
+  if (!hasFixableZeroStride(op))
+    return failure();
+
+  auto staticSizes = op.getStaticSizes();
+  auto staticStrides = op.getStaticStrides();
+  auto dynamicStrides = op.getStrides();
+
+  SmallVector<Value> newDynamicStrides;
+  newDynamicStrides.reserve(dynamicStrides.size());
+
+  unsigned dynStrideIdx = 0;
+  bool changed = false;
+  Value c1 = rewriter.create<arith::ConstantOp>(op.getLoc(), rewriter.getIndexAttr(1));
+
+  for (unsigned i = 0, e = staticStrides.size(); i < e; ++i) {
+    if (!ShapedType::isDynamic(staticStrides[i]))
+      continue;
+
+    if (dynStrideIdx >= dynamicStrides.size())
+      return failure();
+
+    Value oldStride = dynamicStrides[dynStrideIdx];
+    dynStrideIdx++;
+    if (staticSizes[i] == 1 && mlir::isZero(OpFoldResult(oldStride))) {
+      newDynamicStrides.push_back(c1);
+      changed = true;
+    } else {
+      newDynamicStrides.push_back(oldStride);
+    }
+  }
+
+  // all dynStride should be visited, and at least one should be changed
+  if (dynStrideIdx != dynamicStrides.size())
+    return failure();
+  if (!changed)
+    return failure();
+
+  auto newReinterpretCast = rewriter.create<memref::ReinterpretCastOp>(
+      op.getLoc(),
+      cast<MemRefType>(op.getResult().getType()),
+      op.getSource(),
+      op.getOffsets(),
+      op.getSizes(),
+      newDynamicStrides,
+      op.getStaticOffsets(),
+      op.getStaticSizes(),
+      op.getStaticStrides());
+
+  rewriter.replaceOp(op, newReinterpretCast.getResult());
+
   return success();
 }
 

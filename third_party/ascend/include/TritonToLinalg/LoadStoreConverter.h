@@ -249,5 +249,15 @@ class AtomicMaxMinCanonicalizer : public OpRewritePattern<triton::AtomicRMWOp> {
                                 PatternRewriter &rewriter) const override;
 };
 
+class ReinterpretCastStrideCanonicalizer
+    : public OpRewritePattern<memref::ReinterpretCastOp> {
+public:
+  using OpRewritePattern<memref::ReinterpretCastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::ReinterpretCastOp op,
+                                PatternRewriter &rewriter) const override;
+  static bool hasFixableZeroStride(memref::ReinterpretCastOp op);
+};
+
 } // namespace LoadStoreConverter
 #endif
