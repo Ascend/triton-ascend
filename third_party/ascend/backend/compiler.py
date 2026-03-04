@@ -568,8 +568,10 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
 
         sync_solver = metadata["sync_solver"]
         if sync_solver is not None:
-            _compile_option_list += \
-                [f"--enable-hivm-graph-sync-solver={sync_solver}"]
+            _compile_option_list += [
+                f"--enable-hivm-graph-sync-solver={sync_solver}",
+                f"--enable-hivm-cross-core-gss={sync_solver}",
+            ]
 
         unit_flag = metadata["unit_flag"]
         if unit_flag is not None:
