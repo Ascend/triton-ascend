@@ -158,6 +158,8 @@ def _convert_float(input, input_dtype, output_dtype, rounding_mode):
     bias_input = input_dtype.exponent_bias
     bias_output = output_dtype.exponent_bias
     exponent = ((input_bin >> input_dtype.fp_mantissa_width) & ((1 << input_exponent_width) - 1)).astype(np.int32)
+    # mark NAN value
+    input_nan_index = (exponent == (1 << input_exponent_width) - 1) & (significand != 0)
     subnormal_index = exponent == 0
     if np.any(subnormal_index):
         # Credit to Phil: phil@openai.com
@@ -177,8 +179,13 @@ def _convert_float(input, input_dtype, output_dtype, rounding_mode):
         significand[subnormal_index] = (significand[subnormal_index] << bit_pos[subnormal_index]) & (
             (1 << input_dtype.fp_mantissa_width) - 1)
     # Prevent overflow and underflow
-    exponent_output = np.maximum(0, np.minimum((exponent - bias_input + bias_output), (1 << output_exponent_width) - 1))
+    exponent_unclamped = exponent - bias_input + bias_output
+    output_max_exponent = (1 << output_exponent_width) - 1
+    exponent_output = np.maximum(0, np.minimum(exponent_unclamped, output_max_exponent))
     exponent_output = exponent_output.astype(output_unint_dtype)
+    # mark overflow index 
+    overflow_index = exponent_unclamped > output_max_exponent - 1
+    
     sign_output = sign.astype(output_unint_dtype)
     if input_dtype.primitive_bitwidth > output_dtype.primitive_bitwidth:  # Downcast
         significand_output = (significand >> (input_dtype.fp_mantissa_width - output_dtype.fp_mantissa_width)) & (
@@ -206,6 +213,8 @@ def _convert_float(input, input_dtype, output_dtype, rounding_mode):
         shift[subnormal_index] = (1 - bias_output) - (exponent[subnormal_index] - bias_input)
         significand_output[subnormal_index] = (significand_output[subnormal_index] >> shift[subnormal_index]) | (
             1 << (output_dtype.fp_mantissa_width - shift[subnormal_index]))
+    # covert overflow value to inf
+    significand_output[overflow_index & ~input_nan_index] = 0 
     output = (sign_output << (output_dtype.primitive_bitwidth - 1)) | (
         exponent_output << output_dtype.fp_mantissa_width) | significand_output
     return output.reshape(input.shape)

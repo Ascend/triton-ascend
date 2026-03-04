@@ -29,6 +29,7 @@ Author: Triton-Ascend Contributors
 """
 
 import warnings
+import contextlib
 import numpy as np
 import triton.language as tl
 from .interpreter import InterpreterBuilder, TensorHandle, ReduceOps, _get_np_dtype
@@ -114,6 +115,11 @@ class AscendInterpreterBuilder(InterpreterBuilder):
         def _new_reduce(input_param, axis, combine_fn, keep_dims=False, **kwargs):
             return AscendReduceOps(axis, combine_fn, keep_dims).apply(input_param)
 
+        @contextlib.contextmanager
+        def _dummpy_scope(*args, **kwargs):
+            yield
+
+        tl.extra.cann.extension.scope = _dummpy_scope
         tl.extra.cann.extension.parallel = _new_range
         tl.reduce = _new_reduce
         tl.core.reduce = _new_reduce
