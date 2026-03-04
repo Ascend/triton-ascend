@@ -163,7 +163,9 @@ class Autotuner(KernelInterface):
 
         try:
             return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
-        except (OutOfResources, CompileTimeAssertionFailure, MLIRCompilationError):
+        except (OutOfResources, CompileTimeAssertionFailure, MLIRCompilationError) as e:
+            if verbose:
+                print(f"Autotuning failed with {e}")
             return [float("inf"), float("inf"), float("inf")]
 
     def check_disk_cache(self, tuning_key, configs, bench_fn):

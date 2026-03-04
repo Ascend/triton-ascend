@@ -164,7 +164,7 @@ def _argmax_combine_tie_break_fast(value1, index1, value2, index2):
 
 
 @jit
-def _elementwise_max_default(a, b):
+def _elementwise_max(a, b):
     return core.maximum(a, b)
 
 @jit
@@ -194,7 +194,7 @@ def max(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
                 # Therefore, we keep the original narrow integer type and rely on backend support.
                 pass  # Do not promote to int32
         if not propagate_nan:
-            return core.reduce(input, axis, _elementwise_max_default, keep_dims=keep_dims)
+            return core.reduce(input, axis, _elementwise_max, keep_dims=keep_dims)
         else:
             return core.reduce(input, axis, _elementwise_max_propagate_nan, keep_dims=keep_dims)
 

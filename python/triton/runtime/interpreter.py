@@ -1139,7 +1139,7 @@ def _patch_lang(fn):
         _patch_lang_tensor(lang.tensor)
         _patch_lang_core(lang)
     _patch_builtin(tl.core.tensor_descriptor_base, interpreter_builder)
-    
+
     # Patch Ascend extensions if using AscendInterpreterBuilder
     if hasattr(interpreter_builder, 'patch_extensions'):
         interpreter_builder.patch_extensions(fn)
@@ -1203,6 +1203,18 @@ RESERVED_KWS = ["num_warps", "num_stages", "num_ctas", "enable_fp_fusion", "grid
 # Allow Ascend interpreter to extend reserved keywords
 if hasattr(interpreter_builder, 'get_additional_reserved_keywords'):
     RESERVED_KWS.extend(interpreter_builder.get_additional_reserved_keywords())
+
+
+def _unwrap_tensor(t):
+    if isinstance(t, triton.runtime.jit.TensorWrapper):
+        return t.base
+    return t
+
+
+def _rewrap_tensor(t, original_tensor):
+    if isinstance(original_tensor, triton.runtime.jit.TensorWrapper):
+        return triton.runtime.jit.TensorWrapper(t, original_tensor.dtype)
+    return t
 
 
 class GridExecutor:
@@ -1298,7 +1310,6 @@ class GridExecutor:
         assert len(grid) <= 3, "grid must have at most 3 dimensions"
         grid = grid + (1, ) * (3 - len(grid))
         interpreter_builder.set_grid_dim(*grid)
-        
         try:
             # Execute kernels - sub_vec_id simulation handled by AscendInterpreterBuilder
             if hasattr(interpreter_builder, 'execute_with_sub_vec_simulation'):

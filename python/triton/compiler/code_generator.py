@@ -534,43 +534,6 @@ class CodeGenerator(ast.NodeVisitor):
 
         return names, init_handles, init_tys
 
-    def _find_carries(self, node, liveins):
-        # create loop body block
-        block = self.builder.create_block()
-        self.builder.set_insertion_point_to_start(block)
-        # dry visit loop body
-        self.scf_stack.append(node)
-        self.visit_compound_statement(node.body)
-        self.scf_stack.pop()
-        block.erase()
-
-        # If a variable (name) has changed value within the loop, then it's
-        # a loop-carried variable. (The new and old value must be of the
-        # same type)
-        init_tys = []
-        init_handles = []
-        names = []
-
-        for name, live_val in liveins.items():
-            if _is_triton_value(live_val):
-                loop_val = self.lscope[name]
-                self._verify_loop_carried_variable(name, loop_val, live_val)
-
-                live_handles = flatten_values_to_ir([live_val])
-                loop_handles = flatten_values_to_ir([loop_val])
-                if live_handles != loop_handles:
-                    names.append(name)
-                    init_tys.append(live_val.type)
-                    init_handles.extend(live_handles)
-            else:
-                assert name not in self.local_defs, f'Loop carried variable {name} is not a triton value'
-
-        # reset local scope to not pick up local defs from the dry run.
-        self.lscope = liveins.copy()
-        self.local_defs = {}
-
-        return names, init_handles, init_tys
-
     #
     # AST visitor
     #
@@ -1038,6 +1001,26 @@ class CodeGenerator(ast.NodeVisitor):
                 return self.visit(node.orelse)
 
     def visit_With(self, node):
+        """
+        Handle 'with' statements with dispatch pattern for Ascend extensions,
+        falling back to standard context manager protocol for general cases.
+        
+        This implementation:
+        1. First tries dispatch mechanism for Ascend-specific context managers (e.g., scope)
+        2. Falls back to standard Python context manager protocol for general cases
+        """
+        # Try dispatch mechanism for Ascend-specific context managers
+        # Only attempt dispatch for single context manager with Call expression
+        if len(node.items) == 1:
+            context = node.items[0].context_expr
+            if isinstance(context, ast.Call):
+                withitemClass = self.visit(context.func)
+                handler = WITH_DISPATCH.get(withitemClass)
+                if handler:
+                    # Dispatch to registered handler (e.g., handle_scope_with)
+                    return handler(self, node)
+        
+        # Fall back to standard context manager protocol (community logic)
         # Lower `with` statements by constructing context managers and calling their enter/exit hooks
         # Instantiate each context manager with builder injection
         cm_list = []
@@ -1061,21 +1044,6 @@ class CodeGenerator(ast.NodeVisitor):
 
     def visit_Pass(self, node):
         pass
-
-    def visit_With(self, node):
-        """Handle 'with' statements using dispatch pattern."""
-        assert len(node.items) == 1
-        context = node.items[0].context_expr
-
-        # Check if context is a Call and dispatch to registered handler
-        if isinstance(context, ast.Call):
-            withitemClass = self.visit(context.func)
-            handler = WITH_DISPATCH.get(withitemClass)
-            if handler:
-                return handler(self, node)
-
-        # Fall back to visiting body for unhandled cases
-        return self.visit_compound_statement(node.body)
 
     def visit_Compare(self, node):
         if not (len(node.comparators) == 1 and len(node.ops) == 1):
@@ -1221,7 +1189,9 @@ class CodeGenerator(ast.NodeVisitor):
         warp_specialize = False
         disable_licm = False
         bind_sub_block = None
-        if IteratorClass in [language.range, extension.parallel]:
+        # TODO: add support for extension.parallel
+        # if IteratorClass in [language.range, extension.parallel]:
+        if IteratorClass is language.range:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1235,8 +1205,9 @@ class CodeGenerator(ast.NodeVisitor):
             flatten = iterator.flatten
             warp_specialize = iterator.warp_specialize
             disable_licm = iterator.disable_licm
-            if (IteratorClass is extension.parallel):
-                bind_sub_block = iterator.bind_sub_block
+            # TODO: add support for extension.parallel
+            # if (IteratorClass is extension.parallel):
+            #     bind_sub_block = iterator.bind_sub_block
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1295,8 +1266,9 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("tt.disable_licm", self.builder.get_unit_attr())
-            if (IteratorClass is extension.parallel):
-                for_op.set_attr("hivm.parallel_loop", self.builder.get_unit_attr())
+            # TODO: add support for extension.parallel
+            # if (IteratorClass is extension.parallel):
+            #     for_op.set_attr("hivm.parallel_loop", self.builder.get_unit_attr())
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)
@@ -1417,7 +1389,8 @@ class CodeGenerator(ast.NodeVisitor):
             # Use ascend_builder if this function is a builtin extension operation.
             _builder = self.ascend_builder if extension.is_builtin(fn) else self.builder
             self._set_insertion_point_and_loc(ip, last_loc, _builder)
-            extra_kwargs = {"_builder": _builder}
+            extra_kwargs = dict()
+
             if isinstance(fn, ConstexprFunction):
                 sig = inspect.signature(fn.__call__)
             else:
