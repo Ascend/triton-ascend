@@ -295,9 +295,6 @@ def _parse_linalg_metadata(linalg: str, metadata: dict):
     # Example: %arg1: memref<?xf32> {tt.divisibility = 16 : i32, tt.tensor_kind = 0 : i32} -> ('1', '0')
     TENSOR_KIND_REGEX = r'%arg(\d+):[^,)]*?\{[^}]*?tt\.tensor_kind\s*=\s*([^:\s}]+)\s*:[^}]*?\}'
 
-    # Example removal:   ', mix_mode = "aiv"' → ''
-    REMOVE_MIX_MODE_REGEX = r', mix_mode\s*=\s*"[^"]*"'
-
     # Note: Compiled Kernel requires to estimate size of shared memory to occupy
     # Currently, NPU backend does not limit on shared memory
     metadata["shared"] = 1
@@ -314,8 +311,6 @@ def _parse_linalg_metadata(linalg: str, metadata: dict):
     metadata["tensor_kinds"] = [int(kind) for _, kind in re.findall(TENSOR_KIND_REGEX, linalg)]
     # init the ub bits of triton kernel for inductor autotune using
     metadata["required_ub_bits"] = 0
-    # remove the mix_mode attribute
-    linalg = re.sub(REMOVE_MIX_MODE_REGEX, "", linalg)
     return linalg, metadata
 
 
