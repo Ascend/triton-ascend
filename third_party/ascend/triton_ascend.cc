@@ -9,6 +9,7 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/Pass/PassManager.h"
 
+#include "ascend/include/AutoBlockify/Passes.h"
 #include "ascend/include/TritonToStructured/Passes.h"
 #include "ascend/include/TritonToAnnotation/Passes.h"
 #include "ascend/include/TritonToLinalg/Passes.h"
@@ -295,6 +296,12 @@ void init_triton_ascend_ir(py::module &&m) {
 }
 
 void init_triton_ascend_passes_ttir(py::module &&m) {
+  m.def("add_auto_blockify", [](mlir::PassManager &pm,
+    int autoBlockifySize) {
+    AutoBlockifyOptions opts;
+    opts.autoBlockifySize = autoBlockifySize;
+    pm.addPass(mlir::triton::createAutoBlockifyPass(opts));});
+
   m.def("add_triton_to_structure", [](mlir::PassManager &pm,
     bool enableMaskFallbackConversion, bool optimizeDynamicOffset) {
     pm.addPass(mlir::triton::createTritonToStructuredPass(

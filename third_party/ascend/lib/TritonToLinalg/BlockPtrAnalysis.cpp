@@ -1539,7 +1539,8 @@ BlockDataParser::rewriteTerminator(
 bool isUsedWithCondition(Value v, std::function<bool(OpOperand *)> cond, int depth = 0) {
   for (auto &use: v.getUses()) {
     auto *user = use.getOwner();
-    if (user->hasAttr(ConverterUtils::discreteAttrName))
+    if (user->hasAttr(ConverterUtils::discreteAttrName) ||
+        isa<tensor::ExtractOp>(user))
       continue;
     if (cond(&use))
       return true;

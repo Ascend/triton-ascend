@@ -167,8 +167,10 @@ template <>
 Value BubbleUpExtract<tensor::ExtractSliceOp>::createExtractOp(
     tensor::ExtractSliceOp op, Value value, Location loc,
     PatternRewriter &rewriter) const {
+  auto extractedType = getExtractSlicedType(
+      op.getMixedSizes(), op.getDroppedDims(), getElementTypeOrSelf(value));
   auto extractedOp = rewriter.create<tensor::ExtractSliceOp>(
-      loc, value, op.getMixedOffsets(), op.getMixedSizes(),
+      loc, extractedType, value, op.getMixedOffsets(), op.getMixedSizes(),
       op.getMixedStrides());
   extractedOp->setAttr(ConverterUtils::discreteAttrName,
                        UnitAttr::get(rewriter.getContext()));
@@ -260,13 +262,15 @@ void BubbleUpExtract<tensor::ExtractSliceOp>::bubbleUpOperation(
     if (getConstantIntValue(newSizes.back()).value_or(-1) != 1)
       isScalarLikeSrc = false;
   }
+  auto extractedType = getExtractSlicedType(newSizes, op.getDroppedDims(),
+                                            getElementTypeOrSelf(src));
   auto extractedOp = rewriter.create<tensor::ExtractSliceOp>(
-      loc, src, newOffsets, newSizes, op.getMixedStrides());
+      loc, extractedType, src, newOffsets, newSizes, op.getMixedStrides());
   extractedOp->setAttr(ConverterUtils::discreteAttrName,
                        UnitAttr::get(rewriter.getContext()));
   if (isScalarLikeSrc) {
     SmallVector<Value> indices(
-        srcShape.size(),
+        extractedType.getRank(),
         rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0)));
     auto extractedValue =
         rewriter.create<tensor::ExtractOp>(loc, extractedOp, indices);
@@ -300,22 +304,38 @@ void BubbleUpExtract<tensor::ExtractSliceOp>::bubbleUpOperation(
     PatternRewriter &rewriter) const {
   auto src = parentOp.getSrc();
   auto srcShape = cast<RankedTensorType>(src.getType()).getShape();
+  auto offsets = op.getMixedOffsets();
+  auto sizes = op.getMixedSizes();
+  auto strides = op.getMixedStrides();
+  auto axis = parentOp.getAxis();
+  int64_t axisOffset = 0;
   SmallVector<OpFoldResult> newOffsets;
   SmallVector<OpFoldResult> newSizes;
   SmallVector<OpFoldResult> newStrides;
+  auto droppedDim = op.getDroppedDims();
+  llvm::SmallBitVector srcDroppedDims;
   for (size_t i = 0; i <= srcShape.size(); i++) {
-    if (i != parentOp.getAxis()) {
-      newOffsets.push_back(op.getMixedOffsets()[i]);
-      newSizes.push_back(op.getMixedSizes()[i]);
-      newStrides.push_back(op.getMixedStrides()[i]);
+    if (i != axis) {
+      newOffsets.push_back(offsets[i]);
+      newSizes.push_back(sizes[i]);
+      newStrides.push_back(strides[i]);
+      srcDroppedDims.push_back(droppedDim[i]);
+      if (i < axis && droppedDim[i])
+        axisOffset++;
     }
   }
-  auto extractedOp = rewriter.create<tensor::ExtractSliceOp>(
-      loc, src, newOffsets, newSizes, newStrides);
-  extractedOp->setAttr(ConverterUtils::discreteAttrName,
-                       UnitAttr::get(rewriter.getContext()));
-  rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(op, extractedOp,
-                                                    parentOp.getAxisAttr());
+  auto extractedType =
+      getExtractSlicedType(newSizes, srcDroppedDims, getElementTypeOrSelf(src));
+  if (extractedType == src.getType()) {
+    rewriter.replaceOp(op, src);
+  } else {
+    auto extractedOp = rewriter.create<tensor::ExtractSliceOp>(
+        loc, extractedType, src, newOffsets, newSizes, newStrides);
+    extractedOp->setAttr(ConverterUtils::discreteAttrName,
+                         UnitAttr::get(rewriter.getContext()));
+    rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(op, extractedOp,
+                                                      axis - axisOffset);
+  }
 }
 
 template <>
@@ -357,14 +377,8 @@ void BubbleUpExtract<tensor::ExtractSliceOp>::bubbleUpOperation(
     tensor::ExtractSliceOp op, triton::MakeRangeOp parentOp, Location loc,
     PatternRewriter &rewriter) const {
   auto resultType = cast<RankedTensorType>(parentOp.getResult().getType());
-  Value idx;
-  if (auto offsetVal = dyn_cast<Value>(op.getMixedOffsets()[0])) {
-    idx = offsetVal;
-  } else {
-    idx = rewriter.create<arith::ConstantOp>(
-        op.getLoc(), rewriter.getIndexAttr(
-                         getConstantIntValue(op.getMixedOffsets()[0]).value()));
-  }
+  auto idxOfr = op.getMixedOffsets()[0];
+  Value idx = getValueOrCreateConstantIndexOp(rewriter, op.getLoc(), idxOfr);
   idx = rewriter.create<arith::IndexCastOp>(op.getLoc(),
                                             resultType.getElementType(), idx);
   rewriter.replaceOpWithNewOp<triton::SplatOp>(op, op.getResult().getType(),
@@ -456,18 +470,26 @@ void BubbleUpExtract<ExtractOpTy>::bubbleUpOperation(
 
 template <>
 void BubbleUpExtract<tensor::ExtractOp>::bubbleUpOperation(
-    tensor::ExtractOp op, tensor::ExtractSliceOp parentOp,
-    Location loc, PatternRewriter &rewriter) const {
+    tensor::ExtractOp op, tensor::ExtractSliceOp parentOp, Location loc,
+    PatternRewriter &rewriter) const {
+  SmallVector<Value> indices;
   SmallVector<Value> newIndices;
-  for (const auto &[offset, index] :
-       llvm::zip_equal(parentOp.getMixedOffsets(), op.getIndices())) {
-    Value offsetVal;
-    if (isa<Value>(offset)) {
-      offsetVal = offset.template get<Value>();
+  auto indiceIter = op.getIndices().begin();
+  auto droppedDims = parentOp.getDroppedDims();
+  for (auto [idx, offset] : llvm::enumerate(parentOp.getMixedOffsets())) {
+    if (droppedDims[idx]) {
+      auto zeroIdx = rewriter.create<arith::ConstantOp>(
+          op.getLoc(), rewriter.getIndexAttr(0));
+      indices.push_back(zeroIdx);
     } else {
-      offsetVal = rewriter.create<arith::ConstantOp>(
-          op.getLoc(), rewriter.getIndexAttr(*getConstantIntValue(offset)));
+      indices.push_back(*indiceIter);
+      ++indiceIter;
     }
+  }
+  for (const auto &[offset, index] :
+       llvm::zip_equal(parentOp.getMixedOffsets(), indices)) {
+    Value offsetVal =
+        getValueOrCreateConstantIndexOp(rewriter, op.getLoc(), offset);
     newIndices.push_back(
         rewriter.create<arith::AddIOp>(op.getLoc(), offsetVal, index));
   }

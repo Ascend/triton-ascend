@@ -106,8 +106,15 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         force_simt_template = metadata["force_simt_template"]
         enable_mask_fallback_conversion = metadata["enable_mask_fallback_conversion"]
         optimize_dynamic_offset = metadata["optimize_dynamic_offset"]
+        auto_blockify_size = metadata["auto_blockify_size"]
+        if not _is_auto_map_parallel_blocks_enabled():
+            auto_blockify_size = 1
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        ascend.passes.ttir.add_auto_blockify(
+            pm,
+            auto_blockify_size
+        )
         ascend.passes.ttir.add_triton_to_structure(
             pm,
             enable_mask_fallback_conversion,
@@ -680,6 +687,7 @@ class NPUOptions:
     reg_dec_producer: int = 0
     reg_inc_consumer: int = 0
 
+    auto_blockify_size: int = 1
     compile_on_910_95: bool = is_compile_on_910_95
     optimize_dynamic_offset: bool = False
     enable_mask_fallback_conversion: bool = False

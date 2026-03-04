@@ -409,6 +409,10 @@ void TritonToLinalgPass::convertTTFunc(triton::FuncOp func,
   }
   funcFunc->setAttr(kernelParallelModeName, builder.getStringAttr(parallelMode));
 
+  auto autoBlockifyAttr = func->getAttr("auto_blockify_size");
+  if (autoBlockifyAttr)
+    funcFunc->setAttr("auto_blockify_size", autoBlockifyAttr);
+
   auto &funcFuncBody = funcFunc.getBody();
   auto &funcBody = func.getBody();
 

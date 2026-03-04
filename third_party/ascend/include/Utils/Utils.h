@@ -191,6 +191,8 @@ scf::ForOp createNestedLoops(
 
 ModuleOp getModuleOpFromOperation(Operation *op);
 
+bool isTensorPtrType(Type type);
+
 } // namespace triton
 
 class OpBuilder;
@@ -250,6 +252,10 @@ bool isZero(const OpFoldResult ofr);
 bool isOne(const OpFoldResult ofr);
 
 Value convertToIndexIfNeeded(Value intValue, const Location &loc, OpBuilder &b);
+
+RankedTensorType getExtractSlicedType(ArrayRef<OpFoldResult> shape,
+                                      const llvm::SmallBitVector &droppedDims,
+                                      Type elemType);
 } // namespace mlir
 
 #endif // TRITONNPU_UTILS_UTILS_H

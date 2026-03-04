@@ -684,6 +684,13 @@ ModuleOp getModuleOpFromOperation(Operation *op) {
   return cast<ModuleOp>(parent); // 如果没找到会抛出异常
 }
 
+bool isTensorPtrType(Type type) {
+  auto ptrType = dyn_cast<triton::PointerType>(type);
+  if (!ptrType)
+    return false;
+  return isa<RankedTensorType>(ptrType.getPointeeType());
+}
+
 } // namespace triton
 
 
@@ -1278,5 +1285,21 @@ Value convertToIndexIfNeeded(Value input, const Location &loc, OpBuilder &b) {
       }
     }
     return input;
+}
+
+RankedTensorType getExtractSlicedType(ArrayRef<OpFoldResult> shape,
+                                      const llvm::SmallBitVector &droppedDims,
+                                      Type elemType) {
+  SmallVector<int64_t> targetShape;
+  for (auto [idx, dimOfr] : llvm::enumerate(shape)) {
+    if (!droppedDims[idx]) {
+      if (auto dim = getConstantIntValue(dimOfr)) {
+        targetShape.push_back(dim.value());
+      } else {
+        targetShape.push_back(ShapedType::kDynamic);
+      }
+    }
+  }
+  return RankedTensorType::get(targetShape, elemType);
 }
 } // namespace mlir
