@@ -178,6 +178,149 @@ LogicalResult SplatCmpConverter::matchAndRewrite(arith::CmpIOp cmpOp, PatternRew
     return success();
 }
 
+// Convert AddPtr when ptr is produced by tt.splat and offset is produced by
+// tt.broadcast of a smaller-shaped value. Transformation:
+//   %ptr_splat = tt.splat %ptr_src : tensor<Large x !tt.ptr<...>>
+//   %offset_b = tt.broadcast %offset_src : tensor<Large x i32>
+//   %res = tt.addptr %ptr_splat, %offset_b
+// =>
+//   %ptr_small_splat = tt.splat %ptr_src : tensor<Small x !tt.ptr<...>>
+//   %add_small = tt.addptr %ptr_small_splat, %offset_src
+//   %res = tt.broadcast %add_small : tensor<Large x !tt.ptr<...>>
+LogicalResult AddPtrSplatConverter::matchAndRewrite(triton::AddPtrOp addPtrOp, PatternRewriter &rewriter) const
+{
+    // Match ptr produced by splat
+    auto ptr = addPtrOp.getPtr();
+    auto ptrSplatOp = ptr.getDefiningOp<triton::SplatOp>();
+    if (!ptrSplatOp) return failure();
+
+    // Match offset produced by broadcast
+    auto offset = addPtrOp.getOffset();
+    auto offsetBroadcastOp = offset.getDefiningOp<triton::BroadcastOp>();
+    if (!offsetBroadcastOp) return failure();
+
+    // Extract sources
+    auto ptrSrc = ptrSplatOp.getSrc();
+    auto offsetSrc = offsetBroadcastOp.getSrc();
+
+    // Types must be ranked to reason about shapes
+    auto resultType = dyn_cast<RankedTensorType>(addPtrOp.getResult().getType());
+    auto offsetSrcType = dyn_cast<RankedTensorType>(offsetSrc.getType());
+    if (!resultType || !offsetSrcType) return failure();
+
+    // If offset source already has same shape as result, nothing to do
+    if (resultType.getShape() == offsetSrcType.getShape()) return failure();
+
+    auto loc = addPtrOp.getLoc();
+
+    // Build pointer tensor type corresponding to offset's (smaller) shape
+    // ptrSrc should be a pointer type (element type)
+    auto ptrElementType = dyn_cast<triton::PointerType>(ptrSrc.getType());
+    auto smallPtrTensorType = RankedTensorType::get(offsetSrcType.getShape(), ptrElementType);
+
+    // Create splat of ptrSrc to the smaller shape
+    auto smallPtrSplat = rewriter.create<triton::SplatOp>(loc, smallPtrTensorType, ptrSrc);
+
+    // Create addptr on the smaller shape
+    auto smallAdd = rewriter.create<triton::AddPtrOp>(loc, smallPtrTensorType, smallPtrSplat.getResult(), offsetSrc);
+
+    // Broadcast the small add result back to the original (larger) shape
+    auto broadcasted = rewriter.create<triton::BroadcastOp>(loc, resultType, smallAdd.getResult());
+
+    rewriter.replaceOp(addPtrOp, broadcasted.getResult());
+    return success();
+}
+
+// Move load before broadcast when possible:
+// If load.ptr is a triton::BroadcastOp and
+//  - load.mask is null; or
+//  - load.mask is a triton::BroadcastOp and the broadcast sources (before broadcast)
+//    of ptr and mask have identical shapes,
+// then replace
+//   %ptr_b = tt.broadcast %ptr_src
+//   %mask_b = tt.broadcast %mask_src?         (optional)
+//   %v = tt.load %ptr_b, %mask_b
+// with
+//   %v_small = tt.load %ptr_src, %mask_src?
+//   %v = tt.broadcast %v_small
+LogicalResult LoadBroadcastConverter::matchAndRewrite(triton::LoadOp loadOp, PatternRewriter &rewriter) const
+{
+    // Match when ptr is defined by BroadcastOp
+    Value ptr = loadOp.getPtr();
+    auto ptrBroadcast = ptr.getDefiningOp<triton::BroadcastOp>();
+    if (!ptrBroadcast) return failure();
+
+    auto ptrSrcType = dyn_cast<RankedTensorType>(ptrBroadcast.getSrc().getType());
+    if (!ptrSrcType) return failure();
+
+    // mask can be null
+    Value mask = loadOp.getMask();
+    Value maskSrc = nullptr;
+    if (mask) {
+        auto maskBroadcast = mask.getDefiningOp<triton::BroadcastOp>();
+        if (!maskBroadcast) return failure();
+        maskSrc = maskBroadcast.getSrc();
+        // shapes of ptrBroadcast.src and maskBroadcast.src must match
+        auto ptrSrcType = dyn_cast<RankedTensorType>(ptrBroadcast.getSrc().getType());
+        auto maskSrcType = dyn_cast<RankedTensorType>(maskSrc.getType());
+        if (!ptrSrcType || !maskSrcType) return failure();
+        if (ptrSrcType.getShape() != maskSrcType.getShape()) return failure();
+    }
+
+    // Prepare the smaller load: load from ptrBroadcast.src with maskSrc (or null)
+    Location loc = loadOp.getLoc();
+    Value smallPtr = ptrBroadcast.getSrc();
+
+    // Preserve other operands of load (like 'other', cache, evict, isVolatile)
+    Value other = loadOp.getOther();
+    auto cache = loadOp.getCache();
+    auto evict = loadOp.getEvict();
+    auto isVolatile = loadOp.getIsVolatile();
+
+    // If 'other' exists, it must be a constant DenseElementsAttr so we can
+    // construct a smaller-shaped constant to feed the small load. If it's
+    // non-constant, abort the transformation.
+    Value newOther = other;
+    if (other) {
+        Attribute otherAttr;
+        if (!matchPattern(other, m_Constant(&otherAttr)))
+            return failure();
+        auto denseOther = dyn_cast<DenseElementsAttr>(otherAttr);
+        if (!denseOther) return failure();
+
+        // Build a small-shaped tensor type that uses the ptr src's shape but the element type of the 'other' constant
+        auto ptrSrcRT = dyn_cast<RankedTensorType>(ptrBroadcast.getSrc().getType());
+        if (!ptrSrcRT) return failure();
+
+        auto elemType = denseOther.getType().getElementType();
+        if (!elemType) return failure();
+
+        auto smallType = RankedTensorType::get(ptrSrcRT.getShape(), elemType);
+
+        DenseElementsAttr newDense;
+        if (denseOther.isSplat()) {
+            // Reuse the splat value; assume element/value types are compatible.
+            newDense = DenseElementsAttr::get(smallType, denseOther.getSplatValue<Attribute>());
+        } else {
+            // Multi-element dense constant cannot be safely reshaped here
+            return failure();
+        }
+
+        auto constOp = rewriter.create<arith::ConstantOp>(loc, newDense);
+        newOther = constOp.getResult();
+    }
+
+    auto newLoad = rewriter.create<triton::LoadOp>(loc, smallPtr, maskSrc, newOther, cache, evict, isVolatile);
+
+    // Broadcast result back to original result type
+    auto resultType = dyn_cast<RankedTensorType>(loadOp.getResult().getType());
+    if (!resultType) return failure();
+    auto broadcasted = rewriter.create<triton::BroadcastOp>(loc, resultType, newLoad.getResult());
+
+    rewriter.replaceOp(loadOp, broadcasted.getResult());
+    return success();
+}
+
 LogicalResult PromotePointerIterArgsPattern::matchAndRewrite(
     scf::ForOp forOp,
     PatternRewriter &rewriter) const

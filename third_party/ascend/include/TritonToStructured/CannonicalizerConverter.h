@@ -60,6 +60,24 @@ public:
                                   PatternRewriter &rewriter) const override;
 };
 
+class AddPtrSplatConverter : public OpRewritePattern<triton::AddPtrOp> {
+public:
+    explicit AddPtrSplatConverter(MLIRContext *context)
+        : OpRewritePattern<triton::AddPtrOp>(context) {}
+
+    LogicalResult matchAndRewrite(triton::AddPtrOp op,
+                                  PatternRewriter &rewriter) const override;
+};
+
+class LoadBroadcastConverter : public OpRewritePattern<triton::LoadOp> {
+public:
+    explicit LoadBroadcastConverter(MLIRContext *context)
+        : OpRewritePattern<triton::LoadOp>(context) {}
+
+    LogicalResult matchAndRewrite(triton::LoadOp op,
+                                  PatternRewriter &rewriter) const override;
+};
+
 class PromotePointerIterArgsPattern : public OpRewritePattern<scf::ForOp> {
 public:
     explicit PromotePointerIterArgsPattern(MLIRContext *context)
