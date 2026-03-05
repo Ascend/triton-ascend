@@ -280,8 +280,8 @@ std::optional<Operation *> getFullShapeOp(Value val,
         return std::nullopt;
       }
 
-      emitError(val.getLoc())
-          << "getFullShapeOp() only support ReinterpretCastOp "
+      emitWarning(val.getLoc())
+          << "getFullShapeOp() only support ReinterpretCastOp, UnrealizedConversionCastOp "
              "and scf.for's block argument, but got : "
           << val << "\n";
       return std::nullopt;
@@ -309,8 +309,8 @@ std::optional<Operation *> getFullShapeOp(Value val,
     continue;
     }
 
-    emitError(val.getLoc())
-        << "getFullShapeOp() only support ReinterpretCastOp "
+    emitWarning(val.getLoc())
+        << "getFullShapeOp() only support ReinterpretCastOp, UnrealizedConversionCastOp "
            "and scf.for's block argument, but got : "
         << val << "\n";
     return std::nullopt;
@@ -326,12 +326,16 @@ getBoundarySizes(llvm::ArrayRef<int32_t> boundaryCheck, Value ptr,
 
   auto shapedType = dyn_cast_if_present<ShapedType>(ptr.getType());
   if (!shapedType) {
-    llvm::dbgs() << "ptr is not a ShapedType.\n";
+    LLVM_DEBUG(
+      llvm::dbgs() << "ptr is not a ShapedType.\n";
+    );
     return {};
   }
 
   if (!shapedType.hasStaticShape()) {
-    llvm::dbgs() << "shapedType does not have a static shape\n";
+    LLVM_DEBUG(
+      llvm::dbgs() << "shapedType does not have a static shape\n";
+    );
     return {};
   }
 
