@@ -1,6 +1,7 @@
 import os
 import glob
 import logging
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +27,29 @@ def get_ascend_devices():
             logger.warning(f"can not fetch device {dev}: {e}")
             continue
     
-    if not devices:
-        print("no device info read in /sys/bus/pci/devices, is_compile_on_910_95 set to False by default") 
     return devices
 
 
+def check_npu_smi_device():
+    try:
+        result = subprocess.run(
+            ["npu-smi", "info"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            shell=False,
+            timeout=100
+        )
+        if result.returncode == 0:
+            output = result.stdout.lower()
+            return "ascend910_95" in output or "ascend950" in output or "910_958b" in output
+        return False
+    except Exception as e:
+        logger.warning(f"can not use command: npu-smi info")
+        return False
+
+
 ascend_devices = get_ascend_devices()
-is_compile_on_910_95 = any("0xd806" in dev for dev in ascend_devices)
+pci_condition = any("0xd806" in dev for dev in ascend_devices)
+npu_smi_condition = check_npu_smi_device()
+is_compile_on_910_95 = pci_condition or npu_smi_condition
