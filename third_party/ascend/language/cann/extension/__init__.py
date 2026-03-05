@@ -45,27 +45,27 @@ from .math_ops import (
     finitef
 )
 
-# from .aux_ops import (
-#     parallel,
-#     compile_hint,
-#     multibuffer,
-# )
+from .aux_ops import (
+    parallel,
+    compile_hint,
+    multibuffer,
+)
 
-# from .vec_ops import (
-#     insert_slice,
-#     extract_slice,
-#     get_element,
-#     sort,
-#     flip,
-#     cast,
-# )
+from .vec_ops import (
+    insert_slice,
+    extract_slice,
+    get_element,
+    sort,
+    flip,
+    cast,
+)
 
-# from .mem_ops import (
-#     index_put,
-#     gather_out_to_ub,
-#     scatter_ub_to_out,
-#     index_select_simd,
-# )
+from .mem_ops import (
+    index_put,
+    gather_out_to_ub,
+    scatter_ub_to_out,
+    index_select_simd,
+)
 
 __all__ = [
     # core
@@ -104,24 +104,24 @@ __all__ = [
     "isfinited",
     "finitef",
 
-    # # aux ops
-    # "sync_block_set",
-    # "sync_block_wait",
-    # "parallel",
-    # "compile_hint",
-    # "multibuffer",
+    # aux ops
+    "sync_block_set",
+    "sync_block_wait",
+    "parallel",
+    "compile_hint",
+    "multibuffer",
 
-    # # vec ops
-    # "insert_slice",
-    # "extract_slice",
-    # "get_element",
-    # "sort",
-    # "flip",
-    # "cast",
+    # vec ops
+    "insert_slice",
+    "extract_slice",
+    "get_element",
+    "sort",
+    "flip",
+    "cast",
 
-    # # mem ops
-    # "index_put",
-    # "gather_out_to_ub",
-    # "scatter_ub_to_out",
-    # "index_select_simd",
+    # mem ops
+    "index_put",
+    "gather_out_to_ub",
+    "scatter_ub_to_out",
+    "index_select_simd",
 ]

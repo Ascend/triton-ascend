@@ -1189,9 +1189,7 @@ class CodeGenerator(ast.NodeVisitor):
         warp_specialize = False
         disable_licm = False
         bind_sub_block = None
-        # TODO: add support for extension.parallel
-        # if IteratorClass in [language.range, extension.parallel]:
-        if IteratorClass is language.range:
+        if IteratorClass in [language.range, extension.parallel]:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1205,9 +1203,8 @@ class CodeGenerator(ast.NodeVisitor):
             flatten = iterator.flatten
             warp_specialize = iterator.warp_specialize
             disable_licm = iterator.disable_licm
-            # TODO: add support for extension.parallel
-            # if (IteratorClass is extension.parallel):
-            #     bind_sub_block = iterator.bind_sub_block
+            if (IteratorClass is extension.parallel):
+                bind_sub_block = iterator.bind_sub_block
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1266,9 +1263,8 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("tt.disable_licm", self.builder.get_unit_attr())
-            # TODO: add support for extension.parallel
-            # if (IteratorClass is extension.parallel):
-            #     for_op.set_attr("hivm.parallel_loop", self.builder.get_unit_attr())
+            if (IteratorClass is extension.parallel):
+                for_op.set_attr("hivm.parallel_loop", self.builder.get_unit_attr())
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)
