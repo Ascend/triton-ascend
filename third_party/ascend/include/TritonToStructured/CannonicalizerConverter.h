@@ -241,6 +241,75 @@ private:
                                                     ArrayRef<PointerArgInfo> pointerArgs,
                                                     PatternRewriter &rewriter) const;
 };
+
+class SimplifyTensorIterArgsPattern : public OpRewritePattern<scf::ForOp> {
+public:
+    explicit SimplifyTensorIterArgsPattern(MLIRContext *context)
+        : OpRewritePattern<scf::ForOp>(context) {}
+
+    LogicalResult matchAndRewrite(scf::ForOp forOp,
+                                  PatternRewriter &rewriter) const override;
+
+private:
+    static constexpr llvm::StringLiteral kSimplifiedAttr = "tts.simplify_tensor_iter_args.done";
+    static constexpr llvm::StringLiteral kFailedAttr = "tts.simplify_tensor_iter_args.failed";
+    static constexpr llvm::StringLiteral kIncompleteAttr = "tts.simplify_tensor_iter_args.incomplete";
+    struct ShapeChainInfo {
+        Value base;
+        SmallVector<Operation *> chain; // from base -> iter shape
+        void dump() const;
+    };
+
+    struct RelayMapM1 {
+        unsigned innerIdx;
+        unsigned outerInitIdx;   // from inner.initArg block-arg mapping
+        unsigned outerYieldIdx;  // from outer.yield operand position of inner result
+    };
+
+    struct CandidateInfo {
+        unsigned idx;
+        ShapeChainInfo shapeInfo;
+        SmallVector<Operation *> arithOps; // in execution order
+        std::optional<RelayMapM1> relayMap;
+        void dump() const;
+    };
+
+    bool isBlockArgumentFromAnotherForLoop(Value v) const;
+    std::optional<RelayMapM1> getRelayMapM1(
+        scf::ForOp innerFor, scf::ForOp outerFor, unsigned innerIdx) const;
+    void splitCandidatesByRelay(
+        SmallVector<CandidateInfo> all, SmallVector<CandidateInfo> &locals,
+        SmallVector<CandidateInfo> &relays) const;
+
+    Value cloneShapeChain(
+        Location loc, Value base, ArrayRef<Operation *> chain, PatternRewriter &rewriter) const;
+    Value normalizeInitArgForShapePeel(Value v) const;
+    std::optional<ShapeChainInfo> peelShapeChain(Value v) const;
+    bool isArithWithConst(Operation *op, Value curVal, Value &nextVal, Value &constVal) const;
+    Value getNewConstLikeOperand(Value cst, Type targetTy, PatternRewriter &rewriter) const;
+    bool canBuildConstLikeOperand(Value cst, Type targetTy) const;
+    LogicalResult collectReverseLinearYieldPath(
+        Value yielded, Value iterArg, SmallVectorImpl<Operation *> &opsInExecOrder) const;
+
+    bool extractBinaryArithOperands(Operation *op, Value &lhs, Value &rhs) const;
+    Value createSameBinaryArithOp(
+        Operation *oldOp, Location loc, Value lhs, Value rhs, PatternRewriter &rewriter) const;
+    bool isSafeToRewriteLanesByResultUses(scf::ForOp forOp, ArrayRef<CandidateInfo> candidates) const;
+    FailureOr<scf::ForOp> rewriteForWithLocalCandidates(
+        scf::ForOp forOp, ArrayRef<CandidateInfo> candidates,
+        const IRMapping *outerCaptureMap, PatternRewriter &rewriter) const;
+    LogicalResult precheckRelayCandidates(
+        scf::ForOp innerFor, ArrayRef<CandidateInfo> relayCandidates, scf::ForOp &outerForOut) const;
+    FailureOr<scf::ForOp> rewriteInnerForWithRelayCandidates(
+        scf::ForOp innerFor, ArrayRef<CandidateInfo> relayCandidates,
+        const IRMapping *outerCaptureMap, PatternRewriter &rewriter) const;
+    FailureOr<scf::ForOp> rewriteOuterForWithRelayCandidates(
+        scf::ForOp innerFor, scf::ForOp oldInnerFor, scf::ForOp outerFor,
+        ArrayRef<CandidateInfo> relayCandidates, PatternRewriter &rewriter) const;
+    LogicalResult rewriteForWithRelayCandidates(
+        scf::ForOp newfor, scf::ForOp oldFor, ArrayRef<CandidateInfo> relayCandidates,
+        PatternRewriter &rewriter) const;
+};
 }  // namespace CannonicalizerConverter
 
 #endif

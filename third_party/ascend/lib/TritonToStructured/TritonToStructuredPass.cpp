@@ -83,6 +83,7 @@ void TritonToStructuredPass::populateTritonToStructuredCanonicalizationPatterns(
     // TODO enable this optimization after fixing the bisheng bug it causes in current version
     // patterns.add<CannonicalizerConverter::CmpConverter>(patterns.getContext());
     patterns.add<CannonicalizerConverter::PromotePointerIterArgsPattern>(patterns.getContext());
+    patterns.add<CannonicalizerConverter::SimplifyTensorIterArgsPattern>(patterns.getContext());
     // Add addptr splat->broadcast hoisting converter
     patterns.add<CannonicalizerConverter::AddPtrSplatConverter>(patterns.getContext());
     // Move loads before broadcasts when safe
