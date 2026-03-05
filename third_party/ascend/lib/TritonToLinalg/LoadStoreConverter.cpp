@@ -341,6 +341,10 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
     if (auto makeTensorPtrOp = op.getPtr().getDefiningOp<triton::MakeTensorPtrOp>()) {
       auto zeroVal = rewriter.createOrFold<arith::ConstantOp>(loc, rewriter.getI32IntegerAttr(0));
       for (auto [idx, offVal] : llvm::enumerate(makeTensorPtrOp.getOffsets())) {
+        if (llvm::find(boundaryCheck, idx) == boundaryCheck.end()) {
+          dstOffsets.push_back(srcOffsets[idx]);
+          continue;
+        }
         Value offset = rewriter.createOrFold<arith::SubIOp>(loc, zeroVal, offVal);
         Value size = getValueOrCreateConstantIndexOp(rewriter, loc, boundarySizes[idx]);
         offset = rewriter.createOrFold<arith::MaxSIOp>(loc, offset, zeroVal);
@@ -1051,6 +1055,10 @@ StoreConverter::matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
     if (auto makeTensorPtrOp = op.getPtr().getDefiningOp<triton::MakeTensorPtrOp>()) {
       auto zeroVal = rewriter.createOrFold<arith::ConstantOp>(loc, rewriter.getI32IntegerAttr(0));
       for (auto [idx, offVal] : llvm::enumerate(makeTensorPtrOp.getOffsets())) {
+        if (llvm::find(boundaryCheck, idx) == boundaryCheck.end()) {
+          srcOffsets.push_back(dstOffsets[idx]);
+          continue;
+        }
         Value offset = rewriter.createOrFold<arith::SubIOp>(loc, zeroVal, offVal);
         Value size = getValueOrCreateConstantIndexOp(rewriter, loc, boundarySizes[idx]);
         offset = rewriter.createOrFold<arith::MaxSIOp>(loc, offset, zeroVal);
