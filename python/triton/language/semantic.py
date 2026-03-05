@@ -1673,15 +1673,19 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format: str, rhs: tl.te
     lhs = _bitcast_to_fp_type(lhs, lhs_format, builder)
     rhs = _bitcast_to_fp_type(rhs, rhs_format, builder)
 
-    if lhs_k_pack == False:
+    assert lhs_k_pack or lhs_format == "e2m1", "only mxfp4 inputs can be packed along a dimension different than K"
+    assert rhs_k_pack or rhs_format == "e2m1", "only mxfp4 inputs can be packed along a dimension different than K"
+
+    lhs_k_pack_v = lhs_k_pack.value if isinstance(lhs_k_pack, tl.constexpr) else lhs_k_pack
+    rhs_k_pack_v = rhs_k_pack.value if isinstance(rhs_k_pack, tl.constexpr) else rhs_k_pack
+
+    if lhs_k_pack_v is False:
         dims = (1, 0)
-        dims = core._unwrap_iterable(dims)
         tmp_lhs = permute(lhs, dims, builder)
         lhs = reshape(tmp_lhs, (lhs.shape[0], lhs.shape[1]), True, builder)
 
-    if rhs_k_pack == False:
+    if rhs_k_pack_v is False:
         dims = (1, 0)
-        dims = core._unwrap_iterable(dims)
         tmp_rhs = permute(rhs, dims, builder)
         rhs = reshape(tmp_rhs, (rhs.shape[0], rhs.shape[1]), True, builder)
 
