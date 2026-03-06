@@ -215,6 +215,7 @@ class TileGenerator:
                 break
 
         last_splits = num_vector_core // splits
+        last_splits = max(1, last_splits)
         last_blocks = (self.numels[axis_idx] + last_splits - 1) // last_splits
         return last_blocks
 
