@@ -447,8 +447,7 @@ LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
           },
           /*actionFn*/
           [](OpBuilder &b, Operation *op) {
-            LLVM_DEBUG({ op->setAttr("MixUse", UnitAttr::get(b.getContext())); });
-            op->removeAttr("MetaUse");
+            setMixUseRecursively(op);
           },
           stopOps);
       LLVM_DEBUG({
