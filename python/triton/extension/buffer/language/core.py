@@ -248,15 +248,38 @@ def to_tensor(
 
 
 def check_subview(src, offsets, sizes, strides):
-    """Check data of subview methods which the data length and the offset value must be 32-byte aligned."""
+    """
+    Check data of subview methods which the data length and the offset value must be 32-byte aligned.
+
+    The conditions for checking data are as follows:
+    1. offset value must be 32-bytes aligned.
+    2. all strides must be 1.
+    3. the first point's offset in the second row of the last dimension must be 32-bytes aligned.
+
+    For instance, the following example fails to satisfy the specified criteria.
+        %subview = memref.subview %arg0[1, 1][4, 4][2, 2]
+        : memref<8x8xf32, strided<[8, 1], offset: 0>> to
+        memref<4x4xf32, strided<[16, 2], offset: 9>>
+    offsets = [8, 8] | sizes = [4, 4] | strides = [2, 2]
+    result_offset = 9
+    second_row_start_offset = 25
+    The scene will be go wrong because the follow conditions are not meet.
+        1) result_offset is not 32-bytes aligned.
+        2) strides = [2, 2], not all strides are equal to 1.
+        3) second_row_start_offset are not 32-bytes aligned.
+    """
     bytes_per_block = 32
     bits_per_byte = 8
     base_byte = bytes_per_block // (src.dtype.primitive_bitwidth // bits_per_byte)
     result_strides = []
     result_offset = 0
-    outmost_vetex_offset = 0
+    second_row_start_offset = 0
     length = len(strides)
     src_strides = [1] * length
+    if length == 1:
+        if offset[0] % base_byte != 0:
+            raise TypeError(f"all strides should be 1 and the offset value should be 32-bytes aligned.")
+        return
     for i in range(length - 2, -1, -1):
         src_strides[i] = src_strides[i + 1] * src.shape[i + 1]
     for i in range(0, length):
@@ -264,13 +287,14 @@ def check_subview(src, offsets, sizes, strides):
             return
         result_strides.append(src_strides[i] * strides[i])
         result_offset = result_offset + offsets[i] * src_strides[i]
-        outmost_vetex_offset = outmost_vetex_offset + (sizes[i] - 1) * result_strides[i]
-    outmost_vetex_offset = result_offset + outmost_vetex_offset
+    second_row_start_offset = result_offset + src_strides[-2] * strides[-2]
+    is_unaligned = False
+    if size[1] > 1:
+        is_unaligned = second_row_start_offset % base_byte != 0
     stride_1 = all(s == 1 for s in strides)
-    is_unaligned = result_offset % base_byte != 0 or (result_offset % base_byte == 0 and not stride_1
-                                                      and outmost_vetex_offset % base_byte != 0)
+    is_unaligned = result_offset % base_byte != 0 or is_unaligned or not stride_1
     if is_unaligned:
-        raise TypeError(f"Sizes and the offset value must be 32-bytes aligned.")
+        raise TypeError(f"all strides should be 1 and the offset value should be 32-bytes aligned.")
 
 
 @builtin
