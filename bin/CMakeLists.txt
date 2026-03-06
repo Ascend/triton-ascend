@@ -105,10 +105,6 @@ target_include_directories(triton-mlir-opt PRIVATE
   ${CMAKE_CURRENT_BINARY_DIR}/../third_party/ascend/AscendNPU-IR/bishengir/include
 )
 
-if(BISHENGIR_BUILD_STANDALONE_IR_ONLY)
-  target_compile_definitions(triton-mlir-opt PRIVATE BISHENGIR_BUILD_STANDALONE_IR_ONLY)
-endif()
-
 target_link_libraries(triton-mlir-opt PRIVATE
   ${dialect_libs}
   ${conversion_libs}

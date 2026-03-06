@@ -170,6 +170,21 @@ if (NOT WIN32 AND NOT APPLE AND NOT BSD)
   link_libraries(stdc++fs)
 endif()
 
+# Adapter LLVM VERSION For AscendNPU IR
+option(LLVM_MAJOR_VERSION_21_COMPATIBLE "NPUIR build with LLVM 21 or later" OFF)
+if(LLVM_MAJOR_VERSION_21_COMPATIBLE)
+  message(STATUS "[TA]Building AscendNPU IR with LLVM 21 or later")
+  add_definitions(-D__LLVM_MAJOR_VERSION_21_COMPATIBLE__)
+endif()
+
+# Some compatibility changes for LLVM 21 are also needed on LLVM 22.
+# Therefore __LLVM_MAJOR_VERSION_21_COMPATIBLE__ would be enabled too.
+option(LLVM_MAJOR_VERSION_22_COMPATIBLE "NPUIR build with LLVM 22" OFF)
+if(LLVM_MAJOR_VERSION_22_COMPATIBLE)
+  message(STATUS "[TA]Building AscendNPU IR with LLVM 22 or later")
+  add_definitions(-D__LLVM_MAJOR_VERSION_21_COMPATIBLE__)
+  add_definitions(-D__LLVM_MAJOR_VERSION_22_COMPATIBLE__)
+endif()
 
 # -----
 

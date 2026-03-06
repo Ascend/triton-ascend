@@ -1523,7 +1523,8 @@ void init_triton_ir(py::module &&m) {
                  ctx, cast<RankedTensorType>(blockTy), isSigned);
            })
       .def("create_descriptor_load",
-           [](TritonOpBuilder &self, Value desc, std::vector<Value> &indices, CacheModifier cacheModifier,
+           [](TritonOpBuilder &self, Value desc, std::vector<Value> &indices,
+              CacheModifier cacheModifier,
               EvictionPolicy evictionPolicy) -> Value {
              auto descTy = cast<triton::TensorDescType>(desc.getType());
              auto resTy = descTy.getSignlessBlockType();
