@@ -288,7 +288,7 @@ def check_subview(src, offsets, sizes, strides):
         result_offset = result_offset + offsets[i] * src_strides[i]
     second_row_start_offset = result_offset + src_strides[-2] * strides[-2]
     is_unaligned = False
-    if size[1] > 1:
+    if sizes[1] > 1:
         is_unaligned = second_row_start_offset % base_byte != 0
     stride_1 = all(s == 1 for s in strides)
     is_unaligned = result_offset % base_byte != 0 or is_unaligned or not stride_1
