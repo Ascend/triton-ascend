@@ -232,6 +232,9 @@ class NPUDriver(DriverBase):
         cache_size = 192 * 1024 * 1024
         return get_backend_func("get_empty_tensor", cache_size // 4)
 
+    def clear_cache(self, cache):
+        cache.zero_()
+
 
 # fixed the issue of file corrupted in multi-threaded scenarios.
 def _exec_cmd_with_lock(lock_path, lock_name, fn, debug=False):

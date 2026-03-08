@@ -293,7 +293,7 @@ def cdiv(x, div, _semantic=None):
     elif x_scalar_type.is_int() and div_scalar_type.is_int():
         # integer cdiv: (x + div - 1) // div as before
         return _semantic.floordiv(
-            _semantic.add(x, _semantic.sub(div, 1, True, _semantic), True, _semantic),
+            _semantic.add(x, _semantic.sub(div, 1, True), True),
             div
         )
     else:
