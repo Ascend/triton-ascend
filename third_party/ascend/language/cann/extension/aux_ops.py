@@ -106,7 +106,7 @@ def compile_hint_impl(ptr: tensor, hint_name: str, hint_val, builder: ir.builder
     elif isinstance(hint_val, int):
         hint_val = builder.get_int32_attr(hint_val)
     elif isinstance(hint_val, core.constexpr):
-        hint_val = builder.get_str_attr(hint_val.value)
+        hint_val = builder.get_string_attr(hint_val.value)
     elif isinstance(hint_val, list):
         # only support i64 array attr for now
         hint_val = builder.get_i64_array_attr(hint_val)

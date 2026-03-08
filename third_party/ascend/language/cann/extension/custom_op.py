@@ -154,7 +154,7 @@ def _args_to_operands(op, builder, args, kwargs):
 
 def _add_optional_attr(op, name, builder, attrs):
     if hasattr(op, name):
-        attrs[name] = builder.get_str_attr(getattr(op, name))
+        attrs[name] = builder.get_string_attr(getattr(op, name))
 
 
 def _make_attrs(op, builder):
