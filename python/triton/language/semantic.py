@@ -914,7 +914,7 @@ class TritonSemantic(Generic[TensorTy]):
                 (src_sca_ty.is_int_unsigned() or dst_sca_ty.is_int_unsigned()) and \
                 src_sca_ty.int_bitwidth >= dst_sca_ty.int_bitwidth:
                 return self.cast(self.cast(input, tl.float32), dst_sca_ty)
-        else:
+            else:
                 return self.tensor(self.builder.create_int_cast(input.handle, dst_ty.to_ir(self.builder), sign_extend),
                                    dst_ty)
 
