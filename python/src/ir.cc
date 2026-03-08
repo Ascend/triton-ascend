@@ -835,6 +835,10 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, std::string value) -> Attribute {
              return self.getBuilder().getStringAttr(value);
            })
+      .def("get_i64_array_attr",
+           [](TritonOpBuilder &self, const std::vector<int64_t>& array) {
+             return self.getBuilder().getI64ArrayAttr(array);
+           })
       .def("get_disable_loop_licm_attr",
            [](TritonOpBuilder &self) -> Attribute {
              auto licmAttr =
