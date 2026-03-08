@@ -28,10 +28,7 @@ class Autotuner(KernelInterface):
             'prune_num_stages_by'(optional): a function used to prune num_stages. It takes configs:List[Config] as its input, and returns pruned configs.
         """
         if not configs:
-            self.configs = [
-                Config({}, num_warps=4, num_stages=2, num_ctas=1, num_buffers_warp_spec=0, num_consumer_groups=0,
-                       reg_dec_producer=0, reg_inc_consumer=0)
-            ]
+            self.configs = [Config({}, num_warps=4, num_stages=3, num_ctas=1)]
         else:
             self.configs = configs
         self.keys = key
@@ -344,10 +341,6 @@ class Config:
                     ("num_warps", self.num_warps),
                     ("num_ctas", self.num_ctas),
                     ("num_stages", self.num_stages),
-                    ("num_buffers_warp_spec", self.num_buffers_warp_spec),
-                    ("num_consumer_groups", self.num_consumer_groups),
-                    ("reg_dec_producer", self.reg_dec_producer),
-                    ("reg_inc_consumer", self.reg_inc_consumer),
                     ("maxnreg", self.maxnreg),
                     ("ir_override", self.ir_override),
                 ) if v is not None
@@ -361,10 +354,6 @@ class Config:
         res.append(f"num_warps: {self.num_warps}")
         res.append(f"num_ctas: {self.num_ctas}")
         res.append(f"num_stages: {self.num_stages}")
-        res.append(f"num_buffers_warp_spec: {self.num_buffers_warp_spec}")
-        res.append(f"num_consumer_groups: {self.num_consumer_groups}")
-        res.append(f"reg_dec_producer: {self.reg_dec_producer}")
-        res.append(f"reg_inc_consumer: {self.reg_inc_consumer}")
         res.append(f"maxnreg: {self.maxnreg}")
         return ", ".join(res)
 
