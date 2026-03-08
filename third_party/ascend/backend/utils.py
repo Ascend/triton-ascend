@@ -493,11 +493,13 @@ def convert_sigtype_to_int(sigty: str):
         # Boolean
         "i1": 12,  # BOOL
         # Integer types
+        "i4": 29,  # INT4
         "i8": 2,  # INT8
         "i16": 6,  # INT16
         "i32": 3,  # INT32
         "i64": 9,  # INT64
         # Unsigned integer types
+        "u1": 30,  # UINT1
         "u8": 4,  # UINT8
         "u16": 7,  # UINT16
         "u32": 8,  # UINT32
