@@ -36,7 +36,6 @@ from functools import wraps
 
 from triton._C.libtriton import ir
 import triton.language.core as tl
-from triton.language import semantic as real_semantic
 
 
 T = TypeVar("T")
@@ -51,9 +50,9 @@ def builtin(fn: T) -> T:
 
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if "_builder" not in kwargs or kwargs["_builder"] is None:
+        if "_semantic" not in kwargs or kwargs["_semantic"] is None:
             raise ValueError("Did you forget to add @triton.jit ? "
-                             "(`_builder` argument must be provided outside of JIT functions.)")
+                             "(`_semantic` argument must be provided outside of JIT functions.)")
         return fn(*args, **kwargs)
 
     # also set triton_builtin to true so that CodeGenerator will recognize this function
@@ -154,12 +153,16 @@ class buffer(tl.base_value):
 
     def __init__(self, handle, buffer_ty: buffer_type):
         """Not called by user code."""
-        super().__init__(handle)
+        super().__init__()
+        self.handle = handle
         self.type = buffer_ty
         self.dtype = buffer_ty.element_ty.scalar
         self.shape = buffer_ty.shape
         self.space = buffer_ty.space
         self.strides = buffer_ty.strides
+
+    def _flatten_ir(self, handles: List[ir.value]) -> None:
+        handles.append(self.handle)
 
     def __str__(self) -> str:
         # ex. "<16x32xfloat32, address_space>"
@@ -175,14 +178,14 @@ class buffer(tl.base_value):
         offsets: List[tl.constexpr],
         sizes: List[tl.constexpr],
         strides: List[tl.constexpr],
-        _builder=None
+        _semantic=None
     ) -> 'buffer':
-        return subview(self, offsets, sizes, strides, _builder=_builder)
+        return subview(self, offsets, sizes, strides, _semantic=_semantic)
 
     @builtin
-    def to_tensor(self, writable=True, target_shape=None, _builder=None):
+    def to_tensor(self, writable=True, target_shape=None, _semantic=None):
         """Convert this buffer to a tl.tensor"""
-        return to_tensor(self, writable=writable, target_shape=target_shape, _builder=_builder)
+        return to_tensor(self, writable=writable, target_shape=target_shape, _semantic=_semantic)
 
 
 semantic = importlib.import_module(".semantic", package=__package__)
@@ -194,7 +197,7 @@ def alloc(
     shape: List[tl.constexpr],
     _address_space: address_space = None,
     is_mem_unique: bool = False,
-    _builder=None
+    _semantic=None
 ) -> buffer:
     """
     Allocates a region of local memory with the specified shape and type.
@@ -206,7 +209,7 @@ def alloc(
     :param _address_space: (Optional) backend-specific local memory address space
     :type _address_space: bl.address_space
     """
-    return semantic.alloc(etype, shape, _address_space, is_mem_unique, _builder)
+    return semantic.alloc(etype, shape, _address_space, is_mem_unique, _semantic.builder)
 
 
 @builtin
@@ -214,7 +217,7 @@ def to_buffer(
     tensor: tl.tensor,
     space: address_space = None,
     bind_buffer: buffer = None,
-    _builder=None
+    _semantic=None
 ) -> buffer:
     """
     Convert a tensor to a buffer.
@@ -225,7 +228,7 @@ def to_buffer(
     :type space: address_space
     """
     return semantic.to_buffer(
-        tensor, space, bind_buffer, _builder
+        tensor, space, bind_buffer, _semantic.builder
     )
 
 
@@ -234,7 +237,7 @@ def to_tensor(
     memref: buffer,
     writable: bool = True,
     target_shape=None,
-    _builder=None
+    _semantic=None
 ) -> tl.tensor:
     """
     Create a tl.tensor from a bl.buffer.
@@ -244,7 +247,7 @@ def to_tensor(
     :param writable: If set true, the resultant tensor is considered "writable" during bufferization.
     :type writable: bool
     """
-    return semantic.to_tensor(memref, writable, _builder, target_shape=target_shape)
+    return semantic.to_tensor(memref, writable, _semantic.builder, target_shape=target_shape)
 
 
 @builtin
@@ -253,7 +256,7 @@ def subview(
     offsets: List[tl.constexpr],
     sizes: List[tl.constexpr],
     strides: List[tl.constexpr],
-    _builder=None
+    _semantic=None
 ) -> buffer:
     '''
     Creates a subview of the source buffer with the specified offsets, sizes, and strides.
@@ -296,14 +299,14 @@ def subview(
             # Check that constexpr offset values cannot be negative
             if offset < 0:
                 raise ValueError(f"Offset value must be non-negative, got {offset}")
-            new_offsets.append(real_semantic.to_tensor(offset, _builder))
+            new_offsets.append(_semantic.to_tensor(offset))
         elif isinstance(offset, int):
             # Convert regular integers to constexpr and then to tensor
             if offset < 0:
                 raise ValueError(f"Offset value must be non-negative, got {offset}")
-            new_offsets.append(real_semantic.to_tensor(tl.constexpr(offset), _builder))
+            new_offsets.append(_semantic.to_tensor(tl.constexpr(offset)))
         else:
             # Assume it's already a tensor
             new_offsets.append(offset)
 
-    return semantic.subview(src, new_offsets, new_sizes, new_strides, _builder)
+    return semantic.subview(src, new_offsets, new_sizes, new_strides, _semantic.builder)

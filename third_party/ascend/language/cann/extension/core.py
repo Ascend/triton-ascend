@@ -72,9 +72,9 @@ def builtin(fn: T) -> T:
 
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if "_builder" not in kwargs or kwargs["_builder"] is None:
+        if "_semantic" not in kwargs or kwargs["_semantic"] is None:
             raise ValueError("Did you forget to add @triton.jit ? "
-                             "(`_builder` argument must be provided outside of JIT functions.)")
+                             "(`_semantic` argument must be provided outside of JIT functions.)")
         return fn(*args, **kwargs)
 
     # also set triton_builtin to true so that CodeGenerator will recognize this function
@@ -171,7 +171,7 @@ def copy_from_ub_to_l1(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, b
 
 
 @builtin
-def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _builder: None) -> None:
+def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _semantic: None) -> None:
     """
     Copies data from the Unified Buffer (UB) to the Unified Buffer (UB) or L1 Buffer.
 
@@ -180,7 +180,7 @@ def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _bu
     :param dst: The destination buffer located Unified Buffer (UB) or L1 memory.
     :type dst: tl.tensor | bl.buffer
     """
-    return semantic.copy(src, dst, _builder)
+    return semantic.copy(src, dst, _semantic.builder)
 
 
 def create_sync_block(sender, receiver, event_id, is_set: bool,
