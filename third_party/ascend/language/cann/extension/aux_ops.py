@@ -107,7 +107,7 @@ def compile_hint_impl(ptr: tensor, hint_name: str, hint_val, builder: ir.builder
         hint_val = builder.get_int32_attr(hint_val)
     elif isinstance(hint_val, core.constexpr):
         hint_val = builder.get_string_attr(hint_val.value)
-    elif isinstance(hint_val, list):
+    elif isinstance(hint_val, (list, core.tuple)):
         # only support i64 array attr for now
         hint_val = builder.get_i64_array_attr(hint_val)
     else:
@@ -125,7 +125,7 @@ def compile_hint(ptr, hint_name, hint_val=None, _semantic=None):
 
     hint_name = _unwrap_if_constexpr(hint_name)
     assert isinstance(hint_name, str), f"hint name: {hint_name} is not string"
-    if isinstance(hint_val, list):
+    if isinstance(hint_val, (list, core.tuple)):
         hint_val = [_unwrap(val) for val in hint_val]
     else:
         hint_val = _unwrap(hint_val)
