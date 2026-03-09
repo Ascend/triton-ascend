@@ -1936,12 +1936,58 @@ LogicalResult
 DotScaledConverter::matchAndRewrite(triton::DotScaledOp op, OpAdaptor adaptor,
                                     ConversionPatternRewriter &rewriter) const
                                     {
+  Location loc = op.getLoc();
+
   Value lhs = adaptor.getLhs();
-  Value lhsScale = adaptor.getLhsScale();
-  Value rhsScale = adaptor.getRhsScale();
   Value rhs = adaptor.getRhs();
   Value c = adaptor.getC();
+  Value lhsScale = adaptor.getLhsScale();
+  Value rhsScale = adaptor.getRhsScale();
   RankedTensorType dstType = cast<RankedTensorType>(op.getType());
+
+  auto lhsTypeAttr = op->getAttrOfType<triton::F8F6F4TypeAttr>("lhs_type");
+  auto rhsTypeAttr = op->getAttrOfType<triton::F8F6F4TypeAttr>("rhs_type");
+  if (!lhsTypeAttr) {
+    lhsTypeAttr = triton::F8F6F4TypeAttr::get(rewriter.getContext(), triton::F8F6F4Type::E4M3);
+  }
+  if (!rhsTypeAttr) {
+    rhsTypeAttr = triton::F8F6F4TypeAttr::get(rewriter.getContext(), triton::F8F6F4Type::E4M3);
+  }
+
+  bool isFP8Input = (lhsTypeAttr.getValue() == triton::F8F6F4Type::E4M3 ||
+                     lhsTypeAttr.getValue() == triton::F8F6F4Type::E5M2) &&
+                    (rhsTypeAttr.getValue() == triton::F8F6F4Type::E4M3 ||
+                     rhsTypeAttr.getValue() == triton::F8F6F4Type::E5M2);
+  if (isFP8Input) {
+    if (!rhsScale) {
+      RankedTensorType defaultScaleTy = RankedTensorType::get({1}, rewriter.getI8Type());
+      Value defaultScaleVal = rewriter.create<arith::ConstantOp>(loc, rewriter.getI8IntegerAttr(1));
+      Value defaultScaleEmpty = rewriter.create<tensor::EmptyOp>(loc, defaultScaleTy.getShape(), defaultScaleTy.getElementType());
+      rhsScale = rewriter.create<linalg::FillOp>(loc, ValueRange{defaultScaleVal}, ValueRange{defaultScaleEmpty}).getResult(0);
+    }
+    Value acc = c ? c : rewriter.create<tensor::EmptyOp>(loc, dstType.getShape(), dstType.getElementType());
+
+    Value matmulMxResult = rewriter.create<hfusion::MatMulMxOp>(
+      loc,
+      dstType,
+      lhs,
+      rhs,
+      lhsScale,
+      rhsScale,
+      acc
+    );
+
+    Value finalResult = matmulMxResult;
+    if (dstType.getElementType().isBF16()) {
+      finalResult = rewriter.create<arith::TruncFOp>(loc, dstType, matmulMxResult);
+    }
+    rewriter.replaceOp(op, finalResult);
+    return success();
+  }
+
+  if (!lhsScale) {
+    return op.emitError("lhsScale is required for non-FP8 input");
+  }
 
   RankedTensorType lhsTy = cast<RankedTensorType>(lhs.getType());
   RankedTensorType lhsScaleTy = cast<RankedTensorType>(lhsScale.getType());
