@@ -29,6 +29,7 @@ import sysconfig
 from pathlib import Path
 import logging
 from platform import python_version
+from triton.tools.get_ascend_devices import is_compile_on_910_95
 from triton.backends.ascend.backend_register import backend_strategy_registry
 
 import pybind11
@@ -534,8 +535,11 @@ def is_ffts_supported(arch: str):
     Cases:
     - empty str: User does not specify arch, thus it runs on 910B/910D both of which support ffts. Return True.
     - Ascend310B4: 310B4 does not support ffts. Return False.
+    - Ascend910_95*: 910_95 does not support ffts. Return False.
     - Other arch: 910B/910D supports ffts. Return True.
     '''
+    if is_compile_on_910_95:
+        return False
     if arch in ["Ascend910A", "Ascend310B4"]:
         return False
     return True
@@ -544,5 +548,12 @@ def is_ffts_supported(arch: str):
 def force_disable_ffts():
     '''
     '''
+    if is_compile_on_910_95:
+        return True
     disable_ffts = os.getenv("TRITON_DISABLE_FFTS", "false").lower() in ("true", "1")
     return disable_ffts
+
+
+def triton_support_ffts():
+    arch = get_ascend_arch_from_env()
+    return is_ffts_supported(arch) and (not force_disable_ffts())
