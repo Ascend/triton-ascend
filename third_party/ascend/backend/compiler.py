@@ -115,6 +115,15 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             pm,
             auto_blockify_size
         )
+        if (metadata["add_auto_scheduling"]):
+            ascend.passes.ttir.add_dag_sync(pm)
+            ascend.passes.ttir.add_dag_scope(pm)
+            passes.common.add_cse(pm)
+            passes.common.add_canonicalizer(pm)
+            ascend.passes.ttir.add_dag_ssbuffer(pm)
+            passes.common.add_cse(pm)
+            passes.common.add_canonicalizer(pm)
+
         ascend.passes.ttir.add_triton_to_structure(
             pm,
             enable_mask_fallback_conversion,
@@ -728,6 +737,7 @@ class NPUOptions:
     tile_mix_cube_loop: int = None
     disable_auto_inject_block_sync: bool = None
     enable_mixed_cv: bool = None
+    add_auto_scheduling: bool = False
 
     stream: int = None
     parallel_mode: str = "simd"
