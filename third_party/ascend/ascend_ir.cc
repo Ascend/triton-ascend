@@ -216,9 +216,6 @@ void init_ascend_ir(py::module &&m) {
         .export_values();
 
   m.def("load_dialects", [](MLIRContext &context) {
-    // Allow unregistered dialects so we can parse HACC attributes without
-    // registering the dialect
-    context.allowUnregisteredDialects();
     DialectRegistry registry;
     registry.insert<annotation::AnnotationDialect, mlir::hivm::HIVMDialect,
                     scope::ScopeDialect>();
@@ -259,6 +256,8 @@ void init_ascend_ir(py::module &&m) {
       .def("parse_attr",
            [](TritonOpBuilder &self, std::string value) -> Attribute {
              auto *ctx = self.getBuilder().getContext();
+             // Enable parsing of HACC attributes by allowing unregistered dialects.
+             ctx->allowUnregisteredDialects();
              return mlir::parseAttribute(value, ctx);
            })
       .def("create_fixpipe",
