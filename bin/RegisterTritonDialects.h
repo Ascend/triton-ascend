@@ -7,6 +7,7 @@
 #include "ascend/include/TritonToHIVM/Passes.h"
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToLLVM/Passes.h"
+#include "ascend/include/AutoBlockify/Passes.h"
 // #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 // #include "amd/include/TritonAMDGPUTransforms/Passes.h"
 // #include "third_party/nvidia/include/Dialect/NVGPU/IR/Dialect.h"
@@ -66,6 +67,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerTritonToHIVMPasses();
   mlir::triton::registerTritonToHFusionPasses();
   mlir::triton::registerTritonToLLVMPasses();
+  mlir::triton::registerAutoBlockifyPasses();
   mlir::registerLLVMDIScope();
 
   // TritonAMDGPUToLLVM passes

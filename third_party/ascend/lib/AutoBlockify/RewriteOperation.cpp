@@ -117,6 +117,10 @@ void PropagateUnrealizedCastDown::rewriteExpandDims(
   auto mask = op.getInputs()[1];
   auto newOp = rewriter.create<triton::ExpandDimsOp>(
       expandDimsOp.getLoc(), input, expandDimsOp.getAxis() + 1);
+  for (auto attr : expandDimsOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
   replaceValue(newOp, expandDimsOp, mask, rewriter);
 }
 
@@ -132,6 +136,10 @@ void PropagateUnrealizedCastDown::rewriteReduce(
   auto &newCombineOp = newOp.getCombineOp();
   rewriter.cloneRegionBefore(reduceOp.getCombineOp(), newCombineOp,
                              newCombineOp.end());
+  for (auto attr : reduceOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
   replaceValue(newOp, reduceOp, mask, rewriter);
 }
 
@@ -147,6 +155,10 @@ void PropagateUnrealizedCastDown::rewriteScan(UnrealizedConversionCastOp op,
   auto &newCombineOp = newOp.getCombineOp();
   rewriter.cloneRegionBefore(scanOp.getCombineOp(), newCombineOp,
                              newCombineOp.end());
+  for (auto attr : scanOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
   replaceValue(newOp, scanOp, mask, rewriter);
 }
 
@@ -171,6 +183,10 @@ void PropagateUnrealizedCastDown::rewriteLoad(UnrealizedConversionCastOp op,
   auto newOp = rewriter.create<triton::LoadOp>(
       loadOp.getLoc(), ptr, mask, other, boundaryCheck, loadOp.getPadding(),
       loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+  for (auto attr : loadOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
   replaceValue(newOp, loadOp, uccMask, rewriter);
 }
 
@@ -185,9 +201,14 @@ void PropagateUnrealizedCastDown::rewriteStore(
   mask = createMask(mask, uccMask, ptrShape, rewriter);
   auto boundaryCheck = llvm::map_to_vector(storeOp.getBoundaryCheck(),
                                            [](int32_t idx) { return idx + 1; });
-  rewriter.replaceOpWithNewOp<triton::StoreOp>(
-      storeOp, ptr, value, mask, boundaryCheck, storeOp.getCache(),
+  auto newOp = rewriter.create<triton::StoreOp>(
+      storeOp.getLoc(), ptr, value, mask, boundaryCheck, storeOp.getCache(),
       storeOp.getEvict());
+  for (auto attr : storeOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
+  rewriter.replaceOp(storeOp, newOp);
 }
 
 void PropagateUnrealizedCastDown::rewriteAtomicRMW(
@@ -202,6 +223,10 @@ void PropagateUnrealizedCastDown::rewriteAtomicRMW(
   auto newOp = rewriter.create<triton::AtomicRMWOp>(
       atomicRMWOp.getLoc(), resType, atomicRMWOp.getAtomicRmwOp(), ptr, val,
       mask, atomicRMWOp.getSem(), atomicRMWOp.getScope());
+  for (auto attr : atomicRMWOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
   replaceValue(newOp, atomicRMWOp, uccMask, rewriter);
 }
 
@@ -219,8 +244,13 @@ void PropagateUnrealizedCastDown::rewriteAssert(
   condition = createMask(nullptr, condition, inputShape, rewriter);
   condition =
       rewriter.create<arith::OrIOp>(condition.getLoc(), condition, input);
-  rewriter.replaceOpWithNewOp<triton::AssertOp>(assertOp, condition,
-                                                assertOp.getMessage());
+  auto newOp = rewriter.create<triton::AssertOp>(assertOp.getLoc(), condition,
+                                                 assertOp.getMessage());
+  for (auto attr : assertOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
+  rewriter.replaceOp(assertOp, newOp);
 }
 
 void PropagateUnrealizedCastDown::rewriteExtractSlice(
@@ -239,6 +269,10 @@ void PropagateUnrealizedCastDown::rewriteExtractSlice(
       extractSliceOp.getLoc(), src, offsets, sizes, strides);
   auto newMask = rewriter.create<tensor::ExtractSliceOp>(
       mask.getLoc(), mask, offsets, sizes, strides);
+  for (auto attr : extractSliceOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
   replaceValue(newOp, extractSliceOp, newMask, rewriter);
 }
 
@@ -257,6 +291,10 @@ void PropagateUnrealizedCastDown::rewriteInsertSlice(
   strides.insert(strides.begin(), rewriter.getIndexAttr(1));
   auto newOp = rewriter.create<tensor::InsertSliceOp>(
       insertSliceOp.getLoc(), src, dst, offsets, sizes, strides);
+  for (auto attr : insertSliceOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
   replaceValue(newOp, insertSliceOp, mask, rewriter);
 }
 
@@ -277,8 +315,8 @@ void PropagateUnrealizedCastDown::rewriteWhile(
       newInits.push_back(init);
     }
   }
-  rewriter.replaceOpWithNewOp<scf::WhileOp>(
-      whileOp, whileOp->getResultTypes(), newInits,
+  auto newOp = rewriter.create<scf::WhileOp>(
+      whileOp.getLoc(), whileOp->getResultTypes(), newInits,
       [&](OpBuilder &b, Location loc, ValueRange args) {
         mapRegionIterArg(mapping, whileOp.getBeforeArguments(), args, indices,
                          mask, b);
@@ -294,6 +332,11 @@ void PropagateUnrealizedCastDown::rewriteWhile(
             cast<scf::YieldOp>(whileOp.getAfterBody()->getTerminator());
         mapYieldedValue(mapping, yieldOp, indices, op, b);
       });
+  for (auto attr : whileOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
+  rewriter.replaceOp(whileOp, newOp);
 }
 
 void PropagateUnrealizedCastDown::rewriteLoop(UnrealizedConversionCastOp op,
@@ -327,6 +370,10 @@ void PropagateUnrealizedCastDown::rewriteLoop(UnrealizedConversionCastOp op,
           auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
           mapYieldedValue(mapping, yieldOp, indices, op, b);
         });
+    for (auto attr : forOp->getAttrs()) {
+      if (!newOp->hasAttr(attr.getName()))
+        newOp->setAttr(attr.getName(), attr.getValue());
+    }
   } else {
     llvm_unreachable("Unhandled loopOp");
   }
@@ -352,6 +399,10 @@ void PropagateUnrealizedCastDown::rewriteIf(UnrealizedConversionCastOp &op,
     elseBlockBuilder = nullptr;
   auto newOp = rewriter.create<scf::IfOp>(ifOp.getLoc(), ifOp.getCondition(),
                                           thenBlockBuilder, elseBlockBuilder);
+  for (auto attr : ifOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
   if (mapping.contains(op))
     op = cast<UnrealizedConversionCastOp>(mapping.lookup(op));
   replaceValue(newOp, ifOp, mask, rewriter, indices);
@@ -374,7 +425,12 @@ void PropagateUnrealizedCastDown::rewriteYield(
         op.getLoc(), res.getType(), ValueRange({input}));
     for (auto curIdx : indices)
       newOperands[curIdx] = uccOp->getResult(0);
-    rewriter.replaceOpWithNewOp<scf::YieldOp>(yieldOp, newOperands);
+    auto newOp = rewriter.create<scf::YieldOp>(yieldOp.getLoc(), newOperands);
+    for (auto attr : yieldOp->getAttrs()) {
+      if (!newOp->hasAttr(attr.getName()))
+        newOp->setAttr(attr.getName(), attr.getValue());
+    }
+    rewriter.replaceOp(yieldOp, newOp);
     rewriter.setInsertionPoint(loopOp);
     for (auto curIdx : indices) {
       auto &initArg = loopOp.getInitsMutable()[curIdx];
@@ -390,7 +446,12 @@ void PropagateUnrealizedCastDown::rewriteYield(
   } else if (auto ifOp = dyn_cast<scf::IfOp>(yieldOp->getParentOp())) {
     for (auto curIdx : indices)
       newOperands[curIdx] = input;
-    yieldOp = rewriter.replaceOpWithNewOp<scf::YieldOp>(yieldOp, newOperands);
+    auto newOp = rewriter.create<scf::YieldOp>(yieldOp.getLoc(), newOperands);
+    for (auto attr : yieldOp->getAttrs()) {
+      if (!newOp->hasAttr(attr.getName()))
+        newOp->setAttr(attr.getName(), attr.getValue());
+    }
+    rewriter.replaceOp(yieldOp, newOp);
     yieldOp = ifOp.thenYield() == yieldOp ? ifOp.elseYield() : ifOp.thenYield();
     if (yieldOp) {
       rewriter.setInsertionPoint(yieldOp);
@@ -421,8 +482,13 @@ void PropagateUnrealizedCastDown::rewriteCondition(
       curIdx = idx;
   }
   args[curIdx] = input;
-  rewriter.replaceOpWithNewOp<scf::ConditionOp>(
-      conditionOp, conditionOp.getCondition(), args);
+  auto newOp = rewriter.create<scf::ConditionOp>(
+      conditionOp.getLoc(), conditionOp.getCondition(), args);
+  for (auto attr : conditionOp->getAttrs()) {
+    if (!newOp->hasAttr(attr.getName()))
+      newOp->setAttr(attr.getName(), attr.getValue());
+  }
+  rewriter.replaceOp(conditionOp, newOp);
 
   res = whileOp->getResult(curIdx);
   auto oldResType = res.getType();
