@@ -1,6 +1,19 @@
 #pragma once
-#include "ascend/include/TritonToLinalg/Passes.h"
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h"
+#include "ascend/include/TritonToAnnotation/Passes.h"
+#include "ascend/include/TritonToHFusion/Passes.h"
+#include "ascend/include/TritonToHIVM/Passes.h"
+#include "ascend/include/TritonToLinalg/Passes.h"
+#include "ascend/include/TritonToLLVM/Passes.h"
+#include "ascend/include/TritonToStructured/Passes.h"
+#include "ascend/include/TritonToUnstructure/Passes.h"
+
+#include "bishengir/Dialect/Annotation/IR/Annotation.h"
+#include "bishengir/Dialect/HACC/IR/HACC.h"
+#include "bishengir/Dialect/HFusion/IR/HFusion.h"
+#include "bishengir/Dialect/HIVM/IR/HIVM.h"
+#include "bishengir/Dialect/Scope/IR/Scope.h"
+
 #include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "amd/include/TritonAMDGPUTransforms/Passes.h"
@@ -81,8 +94,17 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerConvertTritonGPUToLLVMPass();
   mlir::triton::registerConvertNVGPUToLLVMPass();
   mlir::triton::registerAllocateSharedMemoryNvPass();
-  mlir::triton::registerTritonToLinalgPass();
+
   mlir::triton::registerDiscreteMaskAccessConversion();
+  mlir::triton::registerTritonToAnnotationPass();
+  mlir::triton::registerTritonToHFusionPass();
+  mlir::triton::registerTritonToHIVMPass();
+  mlir::triton::registerTritonToLinalgPass();
+  mlir::triton::registerTritonToLLVMPass();
+  mlir::triton::registerTritonToStructuredPass();
+  mlir::triton::registerTritonToUnstructurePass();
+  mlir::triton::registerBubbleUpOperationPass();
+
   mlir::registerLLVMDIScope();
 
   // TritonAMDGPUToLLVM passes
@@ -135,5 +157,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::amdgpu::TritonAMDGPUDialect,
       mlir::triton::proton::ProtonDialect,
       mlir::triton::proton::gpu::ProtonGPUDialect, mlir::ROCDL::ROCDLDialect,
-      mlir::triton::gluon::GluonDialect>();
+      mlir::triton::gluon::GluonDialect,
+      mlir::triton::ascend::TritonAscendDialect,
+      mlir::hivm::HIVMDialect, mlir::scope::ScopeDialect, mlir::hacc::HACCDialect,
+      mlir::annotation::AnnotationDialect, mlir::hfusion::HFusionDialect>();
 }
