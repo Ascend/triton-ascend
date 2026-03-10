@@ -114,13 +114,12 @@ def _layer_norm(M, N, dtype, eps=1e-5, device='npu'):
     print(f"layernorm {M},{N} {dtype} passed")
 
 
-# TODO: TO fix this case
-# def test_layernorm():
-#     _layer_norm(128, 128, torch.float16)
-#     _layer_norm(128, 128, torch.bfloat16)
-#     _layer_norm(128, 128, torch.float32)
+def test_layernorm():
+    _layer_norm(128, 128, torch.float16)
+    _layer_norm(128, 128, torch.bfloat16)
+    _layer_norm(128, 128, torch.float32)
 
-#     # _layer_norm(128, 3, torch.bfloat16)
-#     # _layer_norm(128, 16, torch.bfloat16)
-#     # _layer_norm(128, 37, torch.bfloat16)
-#     # _layer_norm(128, 781, torch.bfloat16)
+    # _layer_norm(128, 3, torch.bfloat16)
+    # _layer_norm(128, 16, torch.bfloat16)
+    # _layer_norm(128, 37, torch.bfloat16)
+    # _layer_norm(128, 781, torch.bfloat16)

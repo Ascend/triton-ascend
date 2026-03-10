@@ -26,7 +26,7 @@ import torch
 import torch_npu
 import numpy as np
 
-""" Todo: fix this test case
+
 @triton.jit
 def triton_test_fn_atomic_min_dma(
     in_ptr0, out_ptr0, out_ptr1, n_elements, BLOCK_SIZE: tl.constexpr
@@ -96,4 +96,3 @@ def test_atomic_min_2d_supply(dtype, shape):
     n_elements = shape[0] * shape[1]
     triton_test_fn_atomic_min_dma_supply[shape[0], 1, 1](x0, x1, n_elements, BLOCK_SIZE=shape[1])
     test_common.validate_cmp(dtype, x1, x1_ref)
-"""

@@ -591,20 +591,19 @@ def _test_correctness_functional(
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
-# TODO: TO fix this case
-# @pytest.mark.parametrize(
-#     "B, T, V",
-#     [
-#         (2, 512, 4096),
-#     ],
-# )
-# @pytest.mark.parametrize(
-#     "scalar, dtype, atol, rtol",
-#     [
-#         (1.0, torch.bfloat16, 1e-8, 5e-2),
-#         (1.0, torch.float32, 1e-8, 1e-6),
-#         (1.0, torch.int32, 0, 0),
-#     ],
-# )
-# def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
-#     _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol)
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (2, 512, 4096),
+    ],
+)
+@pytest.mark.parametrize(
+    "scalar, dtype, atol, rtol",
+    [
+        (1.0, torch.bfloat16, 1e-8, 5e-2),
+        (1.0, torch.float32, 1e-8, 1e-6),
+        (1.0, torch.int32, 0, 0),
+    ],
+)
+def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
+    _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol)
