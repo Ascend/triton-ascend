@@ -51,6 +51,7 @@ void init_triton_ascend_ir(py::module &&m) {
       [](TritonOpBuilder &self, Value &ful, std::vector<Value> &offs_vec,
         std::vector<int> &sizs_vec, std::vector<int> &strd_vec) -> Value {
         llvm::SmallVector<Value> offsets;
+        llvm::SmallVector<int64_t> staticOffsets;
         for (const auto &o : offs_vec) {
           auto oTy = o.getType();
           if (!oTy.isIndex()) {
@@ -60,29 +61,37 @@ void init_triton_ascend_ir(py::module &&m) {
           } else {
             offsets.push_back(o);
           }
+          staticOffsets.push_back(ShapedType::kDynamic);
         }
         llvm::SmallVector<Value> sizes;
+        llvm::SmallVector<int64_t> staticSizes;
         llvm::SmallVector<int64_t> retSizes;
         for (const auto &s : sizs_vec) {
-          auto v = self.create<arith::ConstantIndexOp>(s);
-          sizes.push_back(v);
+          // auto v = self.create<arith::ConstantIndexOp>(s);
+          // sizes.push_back(v);
+          staticSizes.push_back(s);
           retSizes.push_back(s);
         }
         llvm::SmallVector<Value> strides;
+        llvm::SmallVector<int64_t> staticStrides;
         for (const auto &s : strd_vec) {
           auto v = self.create<arith::ConstantIndexOp>(s);
           strides.push_back(v);
+          staticStrides.push_back(ShapedType::kDynamic);
         }
         auto retTy = RankedTensorType::get(retSizes,
           cast<RankedTensorType>(ful.getType()).getElementType());
 
-        return self.create<tensor::ExtractSliceOp>(retTy, ful, offsets, sizes, strides);
+        return self.create<tensor::ExtractSliceOp>(retTy, ful,
+                            offsets, sizes, strides,
+                            staticOffsets, staticSizes, staticStrides);
       })
     .def("create_insert_slice",
       [](TritonOpBuilder &self, Value &ful, Value &sub,
         std::vector<Value> &offs_vec, std::vector<int> &sizs_vec,
         std::vector<int> &strd_vec) -> Value {
         llvm::SmallVector<Value> offsets;
+        llvm::SmallVector<int64_t> staticOffsets;
         for (const auto &o : offs_vec) {
           auto oTy = o.getType();
           if (!oTy.isIndex()) {
@@ -92,24 +101,30 @@ void init_triton_ascend_ir(py::module &&m) {
           } else {
             offsets.push_back(o);
           }
+          staticOffsets.push_back(ShapedType::kDynamic);
         }
         llvm::SmallVector<Value> sizes;
+        llvm::SmallVector<int64_t> staticSizes;
         llvm::SmallVector<int64_t> retSizes;
         for (const auto &s : sizs_vec) {
-          auto v = self.create<arith::ConstantIndexOp>(s);
-          sizes.push_back(v);
+          // auto v = self.create<arith::ConstantIndexOp>(s);
+          // sizes.push_back(v);
+          staticSizes.push_back(s);
           retSizes.push_back(s);
         }
         llvm::SmallVector<Value> strides;
+        llvm::SmallVector<int64_t> staticStrides;
         for (const auto &s : strd_vec) {
           auto v = self.create<arith::ConstantIndexOp>(s);
           strides.push_back(v);
+          staticStrides.push_back(ShapedType::kDynamic);
         }
         auto retTy = RankedTensorType::get(
           retSizes,
           cast<RankedTensorType>(ful.getType()).getElementType());
-        auto ret = self.create<tensor::InsertSliceOp>(sub, ful, offsets,
-                                                      sizes, strides);
+        auto ret = self.create<tensor::InsertSliceOp>(sub, ful, 
+                                offsets, sizes, strides,
+                                staticOffsets, staticSizes, staticStrides);
         return ret;
       })
     .def("create_custom_op_for_inter_core_sync",
