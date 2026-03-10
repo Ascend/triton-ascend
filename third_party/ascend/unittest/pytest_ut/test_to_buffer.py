@@ -48,7 +48,7 @@ def to_buffer():
 def test_to_buffer():
     src = ASTSource(
         fn=to_buffer,
-        constants={},
+        constexprs={},
         signature={},
     )
     triton.compile(src=src, target=target)
