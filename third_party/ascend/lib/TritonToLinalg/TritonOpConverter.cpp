@@ -2480,7 +2480,7 @@ IndexSelectSimdConverter::IndexSelectSimdConverter(MLIRContext *context)
 
 LogicalResult
 IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, OpAdaptor adaptor,
-                                     ConversionPatternRewriter &rewriter) const {
+                                          ConversionPatternRewriter &rewriter) const {
   auto loc = op.getLoc();
   
   // Get converted operands
@@ -2500,66 +2500,88 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
   // src is now memref<?xT> after type conversion, need to reinterpret to full shape
   auto srcMemRefType = cast<MemRefType>(src.getType());
   
-  // Build multi-dimensional memref type
-  SmallVector<int64_t> fullSrcShape;
-  for (auto shapeVal : srcShapeVals) {
-    if (auto constOp = shapeVal.getDefiningOp<arith::ConstantIndexOp>()) {
-      fullSrcShape.push_back(constOp.value());
-    } else {
-      fullSrcShape.push_back(ShapedType::kDynamic);
+  // DenseI32ArrayAttr can be implicitly converted to ArrayRef<int32_t>
+  ArrayRef<int32_t> readShape = readShapeAttr;
+
+  // Helper lambda to convert Value to Index type if needed
+  auto toIndexValue = [&](Value val) -> Value {
+    if (!val.getType().isIndex()) {
+      return rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), val);
     }
+    return val;
+  };
+
+  // Build multi-dimensional memref type and determine static sizes
+  // Merge two passes: build fullSrcShape and staticSizes in one loop
+  SmallVector<int64_t> fullSrcShape;
+  SmallVector<int64_t> staticSizes;
+  SmallVector<Value> sizes;
+  
+  for (size_t i = 0; i < srcShapeVals.size(); ++i) {
+    bool isDynamicDim = (i == static_cast<size_t>(dim) && readShape[i] == -1);
+    int64_t staticSize;
+    
+    if (isDynamicDim) {
+      // Dynamic dimension: readShape[i] == -1 indicates dynamic
+      staticSize = ShapedType::kDynamic;
+      fullSrcShape.push_back(ShapedType::kDynamic);
+      sizes.push_back(toIndexValue(srcShapeVals[i]));
+    } else if (auto constOp = srcShapeVals[i].getDefiningOp<arith::ConstantIndexOp>()) {
+      // Static dimension: use constant value
+      staticSize = constOp.value();
+      fullSrcShape.push_back(staticSize);
+    } else {
+      // Runtime value: must use dynamic
+      staticSize = ShapedType::kDynamic;
+      fullSrcShape.push_back(ShapedType::kDynamic);
+      sizes.push_back(toIndexValue(srcShapeVals[i]));
+    }
+    staticSizes.push_back(staticSize);
   }
   auto fullSrcMemRefType = MemRefType::get(fullSrcShape, elemType);
-  
-  // Reinterpret cast from 1D to multi-dimensional
-  // Build strides: stride[i] = product of all dimensions after i
-  SmallVector<OpFoldResult> sizes, strides; // offsets are 0
-  
-  // Calculate strides from right to left (row-major layout)
-  SmallVector<Value> stridesList;
-  Value currentStride = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-  
-  for (int i = fullSrcShape.size() - 1; i >= 0; --i) {
-    stridesList.insert(stridesList.begin(), currentStride);
-    
-    // Update stride for next dimension: stride *= size[i]
-    if (i > 0) {  // Don't need to calculate for the first dimension
-      if (fullSrcShape[i] != ShapedType::kDynamic) {
-        // Static dimension: multiply by constant
-        currentStride = rewriter.create<arith::MulIOp>(
-            loc, currentStride,
-            rewriter.create<arith::ConstantIndexOp>(loc, fullSrcShape[i]));
-      } else {
-        // Dynamic dimension: multiply by runtime value
-        Value dimSize = srcShapeVals[i];
-        if (!dimSize.getType().isIndex()) {
-          dimSize = rewriter.create<arith::IndexCastOp>(
-              loc, rewriter.getIndexType(), dimSize);
-        }
-        currentStride = rewriter.create<arith::MulIOp>(loc, currentStride, dimSize);
-      }
-    }
-  }
-  
-  // Build offsets, sizes, and strides for ReinterpretCastOp
+
+  // Build static offsets, sizes, and strides for ReinterpretCastOp
+  SmallVector<Value> offsets, strides;
+  SmallVector<int64_t> staticOffsets, staticStrides;
+  staticOffsets.push_back(0); // offsets are 0
+
+  // Calculate static strides: stride[i] = product of all dimensions after i
   for (size_t i = 0; i < srcShapeVals.size(); ++i) {
-    // Convert Value to OpFoldResult for sizes
-    Value sizeVal = srcShapeVals[i];
-    if (!sizeVal.getType().isIndex()) {
-      sizeVal = rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getIndexType(), sizeVal);
-    }
-    sizes.push_back(sizeVal);
+    int64_t staticStride = 1;
+    bool isDynamic = false;
     
-    // Convert Value to OpFoldResult for strides
-    strides.push_back(stridesList[i]);
+    // Check if stride needs to be dynamic (any dimension after i is dynamic)
+    for (size_t j = i + 1; j < srcShapeVals.size(); ++j) {
+      if (staticSizes[j] == ShapedType::kDynamic) {
+        isDynamic = true;
+        break;
+      }
+      staticStride *= staticSizes[j];
+    }
+    
+    if (isDynamic) {
+      staticStride = ShapedType::kDynamic;
+      // Compute stride dynamically: stride[i] = product of sizes after i
+      Value strideVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      for (size_t j = i + 1; j < srcShapeVals.size(); ++j) {
+        if (staticSizes[j] != ShapedType::kDynamic) {
+          strideVal = rewriter.create<arith::MulIOp>(
+              loc, strideVal,
+              rewriter.create<arith::ConstantIndexOp>(loc, staticSizes[j]));
+        } else {
+          // Dynamic dimension: use runtime value
+          strideVal = rewriter.create<arith::MulIOp>(
+              loc, strideVal, toIndexValue(srcShapeVals[j]));
+        }
+      }
+      strides.push_back(strideVal);
+    }
+    staticStrides.push_back(staticStride);
   }
 
-  OpFoldResult offset = rewriter.getIndexAttr(0);
-  
-  // Use the correct builder method for ReinterpretCastOp
   auto srcMemRef = rewriter.create<memref::ReinterpretCastOp>(
-      loc, fullSrcMemRefType, src, offset, sizes, strides);
+      loc, fullSrcMemRefType, src, offsets, sizes, strides,
+      staticOffsets, staticSizes, staticStrides);
   
   // Allocate output buffer
   auto resultMemRefType = MemRefType::get(resultShape, elemType);
@@ -2596,8 +2618,6 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
   
   // Build source subview offsets/sizes/strides
   SmallVector<OpFoldResult> srcSubviewOffsets, srcSubviewSizes, srcSubviewStrides;
-  // DenseI32ArrayAttr can be implicitly converted to ArrayRef<int32_t>
-  ArrayRef<int32_t> readShape = readShapeAttr;
   
   for (size_t i = 0; i < srcOffsetVals.size(); ++i) {
     if (i == static_cast<size_t>(dim)) {
