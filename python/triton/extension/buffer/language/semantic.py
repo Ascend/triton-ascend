@@ -40,6 +40,8 @@ def alloc(
     builder: ir.builder
 ) -> bl.buffer:
     shape = tl._unwrap_shape(shape)
+    if etype == tl.int1:
+        raise TypeError("Unsupported alloc int1 type")
     if not isinstance(shape, (tuple, list)):
         raise TypeError("shape must be list/tuple")
     etype = tl._constexpr_to_value(etype)
