@@ -2486,7 +2486,6 @@ IndirectLoadConverter::matchAndRewrite(triton::ascend::IndirectLoadOp op, OpAdap
   return success();
 }
 
-
 LogicalResult
 IndirectStoreConverter::matchAndRewrite(triton::ascend::IndirectStoreOp op, OpAdaptor adaptor,
                                         ConversionPatternRewriter &rewriter) const
@@ -2610,11 +2609,27 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
     }
     sizes.push_back(shapeSize);
   }
-  
-  // offset is always 0
-  OpFoldResult offset = rewriter.getIndexAttr(0);
-  
-  // Use the correct builder method for ReinterpretCastOp
+
+  auto peelAddPtrChain = [&]() -> Value {
+    Value ptr = op.getSrc();
+    Value offIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+
+    while (auto add = ptr.getDefiningOp<triton::AddPtrOp>()) {
+      Value delta = add.getOffset();
+
+      if (!delta.getType().isIndex()) {
+        delta = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), delta);
+      }
+
+      offIdx = rewriter.create<arith::AddIOp>(loc, offIdx, delta);
+      ptr = add.getPtr();
+    }
+
+    return offIdx;
+  };
+
+  OpFoldResult offset = peelAddPtrChain();
   auto srcMemRef = rewriter.create<memref::ReinterpretCastOp>(
       loc, fullSrcMemRefType, src, offset, sizes, strides);
   
