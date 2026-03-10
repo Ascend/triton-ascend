@@ -24,7 +24,7 @@ import triton.language as tl
 import torch_npu
 import pytest
 
-""" Todo: fix this test case
+
 @triton.jit
 def swap_kernel(
     x_ptr,  # *Pointer* to first inout vector.
@@ -58,4 +58,3 @@ def test(shape):
     swap(x, y, shape[0])
     torch.testing.assert_close(x, y_, rtol=1e-04, atol=1e-04, equal_nan=True)
     torch.testing.assert_close(y, x_, rtol=1e-04, atol=1e-04, equal_nan=True)
-"""

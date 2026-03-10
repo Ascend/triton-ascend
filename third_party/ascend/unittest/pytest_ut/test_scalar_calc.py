@@ -26,7 +26,8 @@ import triton.language.extra.cann.libdevice as libdevice
 
 import pytest
 import test_common
-""" Todo: fix this test case
+
+
 ### add
 @pytest.mark.parametrize('param_list',
                          [
@@ -773,4 +774,3 @@ def test_scalar_sum_calc(param_list):
     y_cal = test_common.generate_tensor((1,), dtype).npu()
     triton_kernel[1, 1, 1](y_cal, x0, N=N)
     test_common.validate_cmp(dtype, y_cal[0], y_ref)
-"""

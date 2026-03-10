@@ -23,7 +23,8 @@ import triton
 import triton.language as tl
 import triton.language.math as tl_math
 import pytest
-""" Todo: fix this test case
+
+
 def test_ldst_indirect_00():
 
     @triton.jit
@@ -476,4 +477,3 @@ def test_ldst_indirect_09():
 if __name__ == "__main__":
     test_ldst_indirect_05()
     print("success: test_ldst_indirect_05")
-"""

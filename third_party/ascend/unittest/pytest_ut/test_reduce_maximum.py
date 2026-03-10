@@ -25,7 +25,7 @@ import torch_npu
 import pytest
 import test_common
 
-""" Todo: fix this test case
+
 @triton.jit
 def maximum(a, b):
     ret = tl.maximum(a, b, tl.PropagateNan.ALL)
@@ -330,4 +330,3 @@ def test_max(testfunc, dtype, shape, dim_name):
     testfunc[(1,)](x0, output, *shape)
 
     test_common.validate_cmp(dtype, output, ans)
-"""

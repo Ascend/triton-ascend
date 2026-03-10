@@ -27,7 +27,7 @@ import test_common
 import torch
 import torch_npu
 
-""" Todo: fix this test case
+
 types_all = [
     (torch.float32, 'float32'),
 ]
@@ -585,4 +585,3 @@ def test_k_load_perm_scalar(y1_numel, y0_numel, x2_numel, Y1BLOCK, Y0BLOCK, Y0BL
     )
 
     torch.testing.assert_close(out_ptr_triton, out_ptr_triton_ref, rtol=1e-5, atol=1e-6)
-"""

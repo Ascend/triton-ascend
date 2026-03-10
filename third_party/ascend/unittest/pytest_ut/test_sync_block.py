@@ -67,34 +67,34 @@ def triton_matmul_exp(A_ptr, B_ptr, C_ptr, TBuff_ptr,
     tl.store(c_ptrs, tl.exp(acc_11_reload))
 
 
-# @pytest.mark.parametrize(
-#     'dtype, ashape, bshape',
-#     [
-#         # dtype, A-shape, B-shape
-#         ['float32', (4, 4), (4, 4)],
-#         ['float32', (2, 3), (3, 5)],
-#     ]
-# )
-# def test_matmul_exp(dtype, ashape, bshape):
-#     M, K = ashape
-#     K2, N = bshape
-#     assert K == K2, "Inner dimensions must match"
+@pytest.mark.parametrize(
+    'dtype, ashape, bshape',
+    [
+        # dtype, A-shape, B-shape
+        ['float32', (4, 4), (4, 4)],
+        ['float32', (2, 3), (3, 5)],
+    ]
+)
+def test_matmul_exp(dtype, ashape, bshape):
+    M, K = ashape
+    K2, N = bshape
+    assert K == K2, "Inner dimensions must match"
 
-#     # generate input tensors
-#     A = test_common.generate_tensor(ashape, dtype).npu()
-#     B = test_common.generate_tensor(bshape, dtype).npu()
-#     C = test_common.generate_tensor((M, N), dtype).npu()
-#     TBuff = test_common.generate_tensor((M, N), dtype).npu()
+    # generate input tensors
+    A = test_common.generate_tensor(ashape, dtype).npu()
+    B = test_common.generate_tensor(bshape, dtype).npu()
+    C = test_common.generate_tensor((M, N), dtype).npu()
+    TBuff = test_common.generate_tensor((M, N), dtype).npu()
 
-#     # run kernel
-#     grid = (M, N)  # one program per output element
-#     triton_matmul_exp[grid](A, B, C, TBuff, M, N, K)
+    # run kernel
+    grid = (M, N)  # one program per output element
+    triton_matmul_exp[grid](A, B, C, TBuff, M, N, K)
 
-#     # reference result
-#     C_ref = (A @ B).exp()
+    # reference result
+    C_ref = (A @ B).exp()
 
-#     # compare
-#     test_common.validate_cmp(dtype, C, C_ref)
+    # compare
+    test_common.validate_cmp(dtype, C, C_ref)
 
-# if __name__ == "__main__":
-#     test_matmul_exp('float32', (4, 4), (4, 4))
+if __name__ == "__main__":
+    test_matmul_exp('float32', (4, 4), (4, 4))
