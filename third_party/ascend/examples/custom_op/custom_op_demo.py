@@ -65,13 +65,13 @@ class _example_custom_op:
 
 
 @al.builtin
-def example_op(src, index, offset, axis, _builder=None):
+def example_op(src, index, offset, axis, _semantic=None):
     # you can wrap a custom op as a builtin operation,
     # output can be provided here to make it easy to use.
-    x = tl.semantic.full(src.shape, 0, tl.float32, _builder)
-    y = tl.semantic.full(index.shape, 0, tl.float32, _builder)
+    x = _semantic.full(src.shape, 0, tl.float32)
+    y = _semantic.full(index.shape, 0, tl.float32)
     return al.custom_semantic(_example_custom_op.name,
-        src, index, offset, axis, out=(x, y), _builder=_builder)
+        src, index, offset, axis, out=(x, y), _semantic=_semantic)
 
 
 @triton.jit
