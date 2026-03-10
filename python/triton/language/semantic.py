@@ -1653,8 +1653,8 @@ def dot_scaled(lhs: tl.tensor, lhs_scale: tl.tensor, lhs_format: str, rhs: tl.te
                builder: ir.builder) -> tl.tensor:
     assert lhs.type.is_block() and rhs.type.is_block()
     if is_compile_on_910_95:
-        assert lhs.dtype in [tl.float16, tl.bfloat16, tl.uint8], f"lhs matrix dtype must be in [bf16, fp16, uint8]"
-        assert rhs.dtype in [tl.float16, tl.bfloat16, tl.uint8], f"rhs matrix dtype must be in [bf16, fp16, uint8]"
+        assert lhs.dtype in [tl.float16, tl.bfloat16, tl.uint8, tl.float8e5, tl.float8e4nv], f"lhs matrix dtype must be in [bf16, fp16, uint8, e5m2, e4m3]"
+        assert rhs.dtype in [tl.float16, tl.bfloat16, tl.uint8, tl.float8e5, tl.float8e4nv], f"rhs matrix dtype must be in [bf16, fp16, uint8, e5m2, e4m3]"
     else:
         assert lhs.dtype == tl.bfloat16 or lhs.dtype == tl.float16, f"lhs matrix dtype must be bf16 or fp16"
         assert rhs.dtype == tl.bfloat16 or lhs.dtype == tl.float16, f"rhs matrix dtype must be bf16 or fp16"
