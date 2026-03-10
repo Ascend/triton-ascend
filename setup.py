@@ -48,7 +48,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from python.build_helpers import get_base_dir, get_cmake_dir
 
 
-triton_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+triton_dir = os.path.dirname(os.path.abspath(__file__))
 
 os.environ.setdefault("TRITON_BUILD_WITH_CCACHE", "true")
 os.environ.setdefault("TRITON_BUILD_WITH_CLANG_LLD", "true")
@@ -873,7 +873,7 @@ def get_package_name():
 
 
 is_manylinux = check_env_flag("IS_MANYLINUX", "FALSE")
-readme = os.path.join(triton_dir, "triton-ascend/README.md")
+readme = os.path.join(triton_dir, "README.md")
 if not os.path.exists(readme):
     raise FileNotFoundError("Unable to find 'README.md'")
 with open(readme, encoding="utf-8") as fdesc:
