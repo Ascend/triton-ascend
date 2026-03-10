@@ -130,7 +130,7 @@ def compile_hint_impl(ptr: tensor, hint_name: str, hint_val, builder: ir.builder
         hint_val = builder.get_i64_array_attr(hint_val)
     else:
         raise ValueError(f"Unsupported hint value type: {type(hint_val)}")
-    builder.create_annotation(ptr.handle, hint_name, hint_val)
+    builder.create_annotation_mark(ptr.handle, hint_name, hint_val)
 
 @builtin
 def compile_hint(ptr, hint_name, hint_val=None, _builder=None):
