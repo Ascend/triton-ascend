@@ -193,7 +193,7 @@ def acos(arg0: core.tensor, _builder: ir.builder):
     is_neg_mid = semantic.less_than(arg0, 0.0, _builder)
     acos_mid_signed = semantic.where(is_neg_mid, semantic.sub(pi, acos_mid, True, _builder), acos_mid, _builder)
 
-    is_center = semantic.less_than(abs_x, 0.5,  _builder)
+    is_center = semantic.less_than(abs_x, 0.6, _builder)
     res_mid_boundary = semantic.where(is_center, acos_center, acos_mid_signed, _builder)
     return res_mid_boundary
 
