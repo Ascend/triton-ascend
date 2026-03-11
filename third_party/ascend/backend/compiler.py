@@ -473,10 +473,10 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--append-bisheng-options=-mllvm --cce-vf-remove-membar={enable_cce_vf_remove_membar}"]
 
-        enable_drop_unit_dims = metadata["enable_drop_unit_dims"]
-        if enable_drop_unit_dims is not None:
+        enable_flatten = metadata["enable_flatten"]
+        if enable_flatten is not None:
             _compile_option_list += \
-                [f"--enable-drop-unit-dims={enable_drop_unit_dims}"]
+                [f"--enable-flatten={enable_flatten}"]
 
         enable_auto_vectorize_v2 = metadata["enable_auto_vectorize_v2"]
         if enable_auto_vectorize_v2 is not None:
@@ -594,10 +594,10 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--enable-hivm-unit-flag-sync={unit_flag}"]
 
-        enable_drop_unit_dims = metadata["enable_drop_unit_dims"]
-        if enable_drop_unit_dims is not None:
+        enable_flatten = metadata["enable_flatten"]
+        if enable_flatten is not None:
             _compile_option_list += \
-                [f"--enable-drop-unit-dims={enable_drop_unit_dims}"]
+                [f"--enable-flatten={enable_flatten}"]
 
         enable_auto_vectorize_v2 = metadata["enable_auto_vectorize_v2"]
         if enable_auto_vectorize_v2 is not None:
@@ -726,7 +726,7 @@ class NPUOptions:
     unit_flag: bool = None
     enable_cce_vf_auto_sync: bool = None
     enable_cce_vf_remove_membar: bool = None
-    enable_drop_unit_dims: bool = None
+    enable_flatten: bool = None
     enable_auto_vectorize_v2: bool = None
     inject_barrier_all: bool = None
     inject_block_all: bool = None
