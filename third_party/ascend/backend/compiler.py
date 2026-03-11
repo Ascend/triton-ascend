@@ -213,7 +213,7 @@ def bc_to_linalg_by_bishengir_opt(bc_data: bytes, metadata, opt):
         with open(bc_path, "wb") as f:
             f.write(bc_data)
 
-        bishengir_opt_path = _get_bishengir_opt_path()
+        bishengir_opt_path, env = _get_bishengir_opt_path()
 
         subprocess.check_call(
             [
@@ -221,7 +221,8 @@ def bc_to_linalg_by_bishengir_opt(bc_data: bytes, metadata, opt):
                 bc_path,
                 "-o",
                 mlir_path,
-            ]
+            ],
+            env=env
         )
 
         # Read the generated MLIR text
