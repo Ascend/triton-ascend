@@ -286,6 +286,7 @@ docker run -u 0 -dit --shm-size=512g --name=triton-ascend_container --net=host -
 --device=/dev/davinci_manager \
 --device=/dev/devmm_svm \
 --device=/dev/hisi_hdc \
+-v /usr/local/dcmi:/usr/local/dcmi \
 -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
 -v /usr/local/sbin/npu-smi:/usr/local/sbin/npu-smi \
 -v /usr/local/Ascend:/usr/local/Ascend \

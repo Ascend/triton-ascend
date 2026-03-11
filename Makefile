@@ -49,7 +49,7 @@ IS_8_5_0 		:= $(filter 8.5.0, $(CANN_VERSION))
 IS_RC_VERSION 	:= $(filter 8.3.RC% 8.2.RC%, $(CANN_VERSION))
 CANN_BASE_URL 	:= https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20$(CANN_VERSION)
 ifeq ($(IS_8_5_0), $(CANN_VERSION)) # VERSION 8.5.0: Unified naming convention
-	KERNEL_URL := $(CANN_BASE_URL)/Ascend-cann-A3-ops_$(CANN_VERSION)_linux-$(ARCH).run
+	KERNEL_URL := $(CANN_BASE_URL)/Ascend-cann-$(CHIP_TYPE)-ops_$(CANN_VERSION)_linux-$(ARCH).run
 else ifeq ($(IS_RC_VERSION), $(CANN_VERSION)) # VERSIONS 8.3.RCx/8.2.RCx: Suffix is "-kernels". Special naming for A3 (Atlas-A3-cann-kernels)
 	ifeq ($(CHIP_TYPE), A3)
 		KERNEL_URL := $(CANN_BASE_URL)/Atlas-A3-cann-kernels_$(CANN_VERSION)_linux-$(ARCH).run

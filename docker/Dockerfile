@@ -36,12 +36,11 @@ RUN curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xBA693236
     echo "deb [signed-by=/usr/share/keyrings/deadsnakes-ppa.gpg] http://ppa.launchpad.net/deadsnakes/ppa/ubuntu jammy main" > /etc/apt/sources.list.d/deadsnakes-ppa.list && \
     apt-get update || true
 
-RUN apt update && \
-    apt install --yes --no-install-recommends --no-install-suggests \
-    clang \
+RUN apt install --yes --no-install-recommends --no-install-suggests \
+    clang-15 \
     clang-format \
     cmake \
-    lld \
+    lld-15 \
     ninja-build \
     python3-dev \
     python3-venv \
@@ -93,14 +92,15 @@ RUN cd build && \
     cd .. && \
     rm -rf build
 
+# Install triton for 3.9/3.10/3.11 python dev
 COPY . triton-ascend/
-RUN cd triton-ascend&& \
+RUN cd triton-ascend && \
     cd python && \
     for PY in python3.9 python3.10 python3.11; do \
       ${PY} setup.py clean --all && \
-      ${PY} -m pip install . && \
+      ${PY} -m pip install . ; \
     done && \
     cd ..
 
-RUN echo "source /usr/local/Ascend/ascend-toolkit/set_env.sh" >> ~/.bashrc && \
-    echo "export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common/:/usr/local/Ascend/driver/lib64/driver/:\$LD_LIBRARY_PATH" >> ~/.bashrc
+RUN echo "export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/common/:/usr/local/Ascend/driver/lib64/driver/:\$LD_LIBRARY_PATH" >> ~/.bashrc && \
+    echo "source /usr/local/Ascend/cann/set_env.sh" >> ~/.bashrc
