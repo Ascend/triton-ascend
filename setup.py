@@ -554,6 +554,13 @@ class CMakeBuild(build_ext):
             # Make it executable (Unix-like systems)
             if platform.system() != "Windows":
                 os.chmod(triton_mlir_opt_dst, 0o755)
+                # Strip debug symbols to reduce binary size (can reduce size by ~80%)
+                try:
+                    subprocess.check_call(["strip", "--strip-all", triton_mlir_opt_dst])
+                    print(f"Stripped triton-mlir-opt to reduce size")
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    # strip command not available or failed, continue without stripping
+                    pass
             print(f"Copied triton-mlir-opt to {triton_mlir_opt_dst}")
 
 def download_and_copy_dependencies():
