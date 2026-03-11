@@ -182,8 +182,6 @@ add_llvm_executable(triton-mlir-opt triton-mlir-opt.cpp PARTIAL_SOURCES_INTENDED
 llvm_update_compile_flags(triton-mlir-opt)
 
 target_link_libraries(triton-mlir-opt PRIVATE
-  ${dialect_libs}
-  ${conversion_libs}
   ${triton_libs}
   # MLIR core
   MLIROptLib
