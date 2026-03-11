@@ -751,7 +751,7 @@ class plugin_egg_info(egg_info):
 
 class BuildWheel(bdist_wheel):
     def run(self):
-        add_links()
+        add_links(external_only=True)
         bdist_wheel.run(self)
 
         if is_manylinux:
