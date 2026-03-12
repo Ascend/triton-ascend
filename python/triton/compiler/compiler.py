@@ -327,10 +327,17 @@ def compile(src, target=None, options=None, _env_vars=None):
             if (ext == "ttadapter"):
                 stage_name = "ConvertTritonIRToLinalgIR"
             elif (ext == "npubin"):
-                stage_name = "ConvertLinalgRToBinary"
+                stage_name = "ConvertLinalgIRToBinary"
+            elif (ext == "bcmlir"):
+                stage_name = "BytecodeToLinalgIRByBishengirOpt"
+            elif (ext == "mlirbc"):
+                stage_name = "LinalgIRToBytecodeByTritonMLIROpt"
             else:
                 stage_name = "MLIRCompile"
-            error_detail = e.stderr.decode('utf-8') if hasattr(e, 'stderr') and e.stderr else str(e)
+            if hasattr(e, 'stderr') and e.stderr:
+                error_detail = e.stderr.decode('utf-8') if isinstance(e.stderr, bytes) else e.stderr
+            else:
+                error_detail = str(e)
             error_detail += f"\n\n[INFO]: The compiled kernel cache is in {fn_cache_manager.cache_dir}\n\n"
             raise MLIRCompilationError(stage_name, error_detail) from e
         ir_filename = f"{file_name}.{ext}"
