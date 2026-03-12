@@ -62,6 +62,7 @@ from triton.runtime import driver
 from triton.runtime.cache import get_dump_manager
 from triton.tools.get_ascend_devices import is_compile_on_910_95
 
+
 # TODO: materialize the concrete min shape
 def min_dot_size(target: GPUTarget):
     return lambda lhsType, rhsType: (1, 1, 1)
@@ -373,6 +374,24 @@ def get_auto_bind_sub_block_option(metadata):
     )
 
 
+def _save_npuir_debug_output(stdout_bytes: bytes, stderr_bytes: bytes, tmpdir: str, metadata_hash: str):
+    stdout = stdout_bytes.decode('utf-8') if stdout_bytes else ''
+    stderr = stderr_bytes.decode('utf-8') if stderr_bytes else ''
+    combined = stdout + stderr
+    if not combined.strip():
+        combined = "No output captured."
+    output_path = os.path.join(tmpdir, "kernel.npuir.mlir")
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(combined)
+
+    dump_manager = get_dump_manager(metadata_hash)
+    dump_manager.put(
+        Path(output_path).read_text(encoding='utf-8'),
+        "kernel.npuir.mlir",
+        binary=False
+    )
+
+
 def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
     linalg, metadata = _parse_linalg_metadata(linalg, metadata)
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -509,6 +528,10 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         mix_mode = opt.mix_mode
         if mix_mode in ["aic"]:
             _compile_option_list += ["--disable-hfusion-vectorize=true"]
+
+        if opt.debug:
+            _compile_option_list += ["--bishengir-print-ir-after=hivm-inject-sync"]
+
         cmd_list = (
             [npu_compiler_path, ttadapter_path]
             + _compile_option_list
@@ -518,16 +541,37 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         if vf_merge_level:
             cmd_list += [f"--enable-vf-merge-level={vf_merge_level}"]
 
-        ret = subprocess.run(cmd_list, env = env, capture_output = True, check = True)
-        match = re.search(r'UB\s+size\s*=\s*(\d+)\s*bits', ret.stdout.decode('utf-8'))
+        if opt.debug:
+            print(f"[DEBUG] cmd_list: {cmd_list}")
+
+        try:
+            ret = subprocess.run(
+                cmd_list,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True
+            )
+        except subprocess.CalledProcessError as e:
+            if opt.debug:
+                _save_npuir_debug_output(e.stdout, e.stderr, tmpdir, metadata["hash"])
+            raise
+
+        if opt.debug:
+            _save_npuir_debug_output(ret.stdout, ret.stderr, tmpdir, metadata["hash"])
+
+        stdout_str = ret.stdout.decode('utf-8') if ret.stdout else ''
+        match = re.search(r'UB\s+size\s*=\s*(\d+)\s*bits', stdout_str)
         if match:
             # get the ub bits of triton kernel from bisheng for inductor autotune using
             metadata["required_ub_bits"] = int(match.group(1))
+
         if not Path(bin_path).exists():
-            error_msg = ret.stderr.decode('utf-8')
+            error_msg = ret.stderr.decode('utf-8') if ret.stderr else ''
             print(f"[DEBUG] {bin_path} is not found")
             print(f"[DEBUG] Stderr:\n{error_msg}")
             raise subprocess.CalledProcessError(ret.returncode, cmd_list, ret.stdout, ret.stderr)
+
         if Path(callback_path).is_file():
             lib = ctypes.CDLL(callback_path)
             __get_metadata_attr_by_callback(lib, "_infer_task_type_function", metadata, "bs_task_type")
@@ -663,21 +707,44 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
                 bishengir_hivm_opt,
                 "--enable-triton-kernel-compile=true",
             ]
+
+        if opt.debug:
+            _compile_option_list += ["--bishengir-print-ir-after=hivm-inject-sync"]
         cmd_list = (
             [npu_compiler_path, ttadapter_path]
             + _compile_option_list
             + ["-o", bin_file]
         )
-        ret = subprocess.run(cmd_list, env = env, capture_output = True, check = True)
-        match = re.search(r'UB\s+size\s*=\s*(\d+)\s*bits', ret.stdout.decode('utf-8'))
+        if opt.debug:
+            print(f"[DEBUG] cmd_list: {cmd_list}")
+
+        try:
+            ret = subprocess.run(
+                cmd_list,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True
+            )
+        except subprocess.CalledProcessError as e:
+            if opt.debug:
+                _save_npuir_debug_output(e.stdout, e.stderr, tmpdir, metadata["hash"])
+            raise
+
+        if opt.debug:
+            _save_npuir_debug_output(ret.stdout, ret.stderr, tmpdir, metadata["hash"])
+
+        stdout_str = ret.stdout.decode('utf-8') if ret.stdout else ''
+        match = re.search(r'UB\s+size\s*=\s*(\d+)\s*bits', stdout_str)
         if match:
-            # get the ub bits of triton kernel from bisheng for inductor autotune using
             metadata["required_ub_bits"] = int(match.group(1))
+
         if not Path(bin_path).exists():
-            error_msg = ret.stderr.decode('utf-8')
+            error_msg = ret.stderr.decode('utf-8') if ret.stderr else ''
             print(f"[DEBUG] {bin_path} is not found")
             print(f"[DEBUG] Stderr:\n{error_msg}")
             raise subprocess.CalledProcessError(ret.returncode, cmd_list, ret.stdout, ret.stderr)
+
         if Path(callback_path).is_file():
             lib = ctypes.CDLL(callback_path)
             __get_metadata_attr_by_callback(lib, "_infer_task_type_function", metadata, "bs_task_type")
