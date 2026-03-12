@@ -22,7 +22,7 @@ from math import pi as math_pi
 from triton.language import core, math, semantic
 from triton._C.libtriton import ir
 from triton.runtime.jit import jit
-from triton.backends.ascend.utils import get_ascend_arch_from_env
+from triton.backends.ascend.utils import get_ascend_arch_from_env, triton_enable_libdevice
 
 @core.extern
 def reciprocal(arg0, _builder=None):
@@ -126,18 +126,51 @@ def isnan(arg0, _builder=None):
 
 @core.extern
 def div_rz(arg0, arg1, _builder=None):
-    core.static_print("tl.div_rz is unsupported for now. Use libdevice.div_rz instead.")
-    core.static_assert(False)
+    return core.extern_elementwise(
+        "", "", [arg0, arg1], {
+            (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_div_rz", core.dtype("fp32")),
+        }, is_pure=True, _builder=_builder)
+
 
 @core.extern
 def fmod(arg0, arg1, _builder=None):
-    core.static_print("tl.fmod is unsupported for now. Use libdevice.fmod instead.")
-    core.static_assert(False)
+    return core.extern_elementwise(
+        "", "", [arg0, arg1], {
+            (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_fmod", core.dtype("fp32")),
+        }, is_pure=True, _builder=_builder)
+
 
 @core.extern
+def float_as_int(arg0, _builder=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"),): ("__hmf_float_as_int", core.dtype("int32")),
+        }, is_pure=True, _builder=_builder)
+
+
+@core.builtin 
+@math._check_dtype(dtypes=["fp32"]) 
+@math._add_math_1arg_docstr("trunc")
 def trunc(arg0, _builder=None):
-    core.static_print("tl.trunc is unsupported for now. Use libdevice.trunc instead.")
-    core.static_assert(False)
+    enable_libdevice = triton_enable_libdevice()
+    if (enable_libdevice):
+        return core.extern_elementwise(
+            "", "", [arg0], {
+                (core.dtype("fp32"),): ("__hmf_trunc", core.dtype("fp32")),
+            }, is_pure=True, _builder=_builder)
+    else:
+        arg0 = semantic.to_tensor(arg0, _builder) 
+ 
+ 
+        zero = semantic.full(arg0.shape, 0.0, arg0.type.scalar, _builder) 
+        condition = semantic.greater_equal(arg0, zero, _builder) 
+    
+    
+        floor_result = core.tensor(_builder.create_floor(arg0.handle), arg0.type) 
+        ceil_result = core.tensor(_builder.create_ceil(arg0.handle), arg0.type) 
+    
+    
+        return semantic.where(condition, floor_result, ceil_result, _builder)
 
 @core.extern
 def round(arg0, _builder=None):
@@ -672,33 +705,6 @@ def lgamma(arg0, _builder=None):
     lgamma_res = _builder.create_log(gamma_res)
 
     return semantic.where(is_inf, inf_tensor, core.tensor(lgamma_res, arg0.type), _builder)
-
-
-@core.builtin
-@math._check_dtype(dtypes=["fp32",])
-@math._add_math_1arg_docstr("trunc")
-def trunc(arg0: core.tensor, _builder: ir.builder):
-    """
-    Truncate the input to the nearest integer toward zero.
-
-    For positive numbers, this is equivalent to floor(x).
-    For negative numbers, this is equivalent to ceil(x).
-
-        Special cases:
-        - trunc(±0) returns ±0.
-        - trunc(±inf) returns ±inf.
-        - trunc(NaN) returns NaN.
-    """
-    arg0 = semantic.to_tensor(arg0, _builder)
-
-    zero = semantic.full(arg0.shape, 0.0, arg0.type.scalar, _builder)
-    condition = semantic.greater_equal(arg0, zero, _builder)
-
-    floor_result = core.tensor(_builder.create_floor(arg0.handle), arg0.type)
-    ceil_result = core.tensor(_builder.create_ceil(arg0.handle), arg0.type)
-
-    return semantic.where(condition, floor_result, ceil_result, _builder)
-
 
 @core.builtin
 @math._check_dtype(dtypes=["fp32",])

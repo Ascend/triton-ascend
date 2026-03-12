@@ -36,6 +36,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <utility>
+#include <cstdlib>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -51,10 +52,43 @@
 
 #include "bishengir/Dialect/Annotation/IR/Annotation.h"
 #include "bishengir/Dialect/HFusion/IR/HFusion.h"
+#include "bishengir/Dialect/HIVM/IR/HIVM.h"
 
 namespace TTOpConverters {
 using namespace mlir;
 using namespace triton;
+
+static const llvm::SmallVector<llvm::StringRef> libdeviceOps = {
+    "__hmf_div_rz", "__hmf_fmod", "__hmf_float_as_int", "__hmf_trunc"
+};
+
+/**
+ * Retrieves a boolean environment variable.
+ * @param envVar The name of the environment variable.
+ * @param defaultValue The default value to return if the variable is not set or cannot be parsed.
+ * @return true if the environment variable exists and its value is parsed as "true", otherwise returns defaultValue.
+ * Parsing rules (case-insensitive): "true" values: any non-empty string not equal to "0", "false", "no", "off" is considered true.
+ * "false" values: an empty string or a string equal to any of the false literals is considered false.
+ */
+bool getEnvBool(const char* envVar, bool defaultValue)
+{
+    const char* val = std::getenv(envVar);
+    if (val == nullptr) {
+        return defaultValue;  // variable not set
+    }
+    
+    std::string s(val);
+    // Convert to lowercase for easier comparison
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    
+    // Common false literals
+    if (s.empty() || s == "0" || s == "false" || s == "no" || s == "off") {
+        return false;
+    }
+    // All other cases (including "1", "true", "yes", "on", etc.) are considered true
+    return true;
+}
 
 static llvm::SmallString<kFuncNameCap> generateUniqueFuncName(
     ModuleOp moduleOp, llvm::StringRef funcNameBase)
@@ -1430,6 +1464,8 @@ LogicalResult ExternElementwiseClOpConverter::matchAndRewrite(
     auto mod = SymbolTable::getNearestSymbolTable(op);
     auto extFunc = dyn_cast_or_null<SymbolOpInterface>(
         SymbolTable::lookupSymbolIn(mod, op.getSymbol()));
+    // std::string symbol = op.getSymbol().str();
+    bool is_libdevice = llvm::is_contained(libdeviceOps, op.getSymbol()) && getEnvBool("TRITON_ENABLE_LIBDEVICE", false);
     if (!extFunc) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&mod->getRegion(0).front());
@@ -1438,6 +1474,12 @@ LogicalResult ExternElementwiseClOpConverter::matchAndRewrite(
       extFunc.setPrivate();
       extFunc->setAttr(LLVM::LLVMDialect::getReadnoneAttrName(),
                        UnitAttr::get(rewriter.getContext()));
+      // set coreType for external func, otherwise InferFuncCoreTypePass will fail
+      if (is_libdevice) {
+        hivm::TFuncCoreType e = hivm::TFuncCoreType::AIV;
+        extFunc->setAttr(hivm::TFuncCoreTypeAttr::name,
+                         hivm::TFuncCoreTypeAttr::get(extFunc->getContext(), e));
+      }
     }
     assert(isa<FunctionOpInterface>(
         SymbolTable::lookupSymbolIn(mod, op.getSymbol())));
@@ -1457,6 +1499,60 @@ LogicalResult ExternElementwiseClOpConverter::matchAndRewrite(
     if (!found) {
       output = rewriter.create<tensor::EmptyOp>(
           op.getLoc(), cast<RankedTensorType>(dstTy).getShape(), dstElemTy);
+    }
+
+    if (is_libdevice) {
+      auto srcType = cast<RankedTensorType>(srcs[0].getType());
+      SmallVector<Value> dimSizes;
+      int64_t rank = srcType.getRank();
+      for (int i = 0; i < rank; ++i) {
+        if (srcType.isDynamicDim(i)) {
+          auto dimOp = rewriter.create<tensor::DimOp>(loc, srcs[0], i);
+          dimSizes.push_back(dimOp);
+        } else {
+          auto constOp = rewriter.create<arith::ConstantIndexOp>(loc, srcType.getDimSize(i));
+          dimSizes.push_back(constOp);
+        }
+      }
+      // building nested loops by recursion
+      std::function<Value(OpBuilder&, Location, SmallVector<Value>, Value)> buildLoops = [&](
+          OpBuilder &b, Location loc, SmallVector<Value> indices, Value acc) -> Value {
+        int64_t dim = indices.size();
+        if (dim == rank) {
+          // innermost loop
+          SmallVector<Value> elemVals;
+          for (auto src : srcs) {
+            auto extract = b.create<tensor::ExtractOp>(loc, src, indices);
+            elemVals.push_back(extract);
+          }
+          auto call = b.create<func::CallOp>(loc, op.getSymbol(), dstElemTy, elemVals);
+          auto insert = b.create<tensor::InsertOp>(loc, call.getResult(0), acc, indices);
+          return insert;
+        } else {
+          Value lower = b.create<arith::ConstantIndexOp>(loc, 0);
+          Value upper = dimSizes[dim];
+          Value step = b.create<arith::ConstantIndexOp>(loc, 1);
+          auto loop = b.create<scf::ForOp>(loc, lower, upper, step, ValueRange{acc});
+          Block *body = loop.getBody();
+          OpBuilder innerBuilder = OpBuilder::atBlockBegin(body);
+          SmallVector<Value> newIndices = indices;
+          newIndices.push_back(loop.getInductionVar());
+          Value innerAcc = loop.getRegionIterArgs()[0];
+          Value updatedAcc = buildLoops(innerBuilder, loc, newIndices, innerAcc);
+          innerBuilder.create<scf::YieldOp>(loc, updatedAcc);
+          return loop.getResult(0);
+        }
+      };
+
+      Value result = buildLoops(rewriter, loc, {}, output);
+      if (isDstScalar) {
+        SmallVector<Value> zeroIndices(rank, rewriter.create<arith::ConstantIndexOp>(loc, 0));
+        auto extract = rewriter.create<tensor::ExtractOp>(loc, result, zeroIndices);
+        rewriter.replaceOp(op, extract);
+      } else {
+        rewriter.replaceOp(op, result);
+      }
+      return success();
     }
     // 3. create the linalg.map op
     auto mapOp = rewriter.create<linalg::MapOp>(

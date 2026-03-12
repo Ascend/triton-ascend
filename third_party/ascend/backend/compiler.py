@@ -697,7 +697,13 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
         if disable_auto_inject_block_sync is not None:
             _compile_option_list += \
                 [f"--disable-auto-inject-block-sync={disable_auto_inject_block_sync}"]
-
+        
+        enable_libdevice = os.getenv("TRITON_ENABLE_LIBDEVICE", False)
+        if (enable_libdevice):
+            _compile_option_list += [
+                f"--link-aicore-bitcode={get_libdevice()}"
+            ]
+        
         if _is_auto_map_parallel_blocks_enabled():
             _compile_option_list += ["--enable-auto-blockify-loop"]
         npu_compiler_path, env = _get_npucompiler_path()
@@ -755,6 +761,11 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
         return Path(bin_path).read_bytes()
 
 
+def get_libdevice():
+    current = os.path.dirname(__file__)
+    return os.path.join(current, "lib/libdevice.10.bc")
+
+
 @dataclass(frozen=True)
 class NPUOptions:
     debug: bool = False
@@ -792,7 +803,7 @@ class NPUOptions:
     allowed_dot_input_precisions: Tuple[str] = ("ieee", "hf32")
     max_num_imprecise_acc_default: int = 0
     extern_libs: dict = None
-    bisheng_options: str = None
+    bisheng_options: str = "-cce-link-aicore-ll-module " + get_libdevice()
 
     multibuffer: bool = not is_compile_on_910_95
     enable_ubuf_saving: bool = None
