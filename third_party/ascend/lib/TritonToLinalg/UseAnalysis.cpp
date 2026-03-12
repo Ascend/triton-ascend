@@ -24,6 +24,7 @@
 #include "ascend/include/Utils/Utils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "bishengir/Dialect/HIVM/IR/HIVM.h"
 
 #include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
@@ -147,6 +148,12 @@ void triton::UseAnalysis::visitOperation(Operation *op,
           propagateResults(getLatticeElement(init), {result});
         }
       })
+      .Case<hivm::FixpipeOp>([&](auto fixpipeOp) {
+        propagateUse(operands[0], UseType::DataUse);
+      })
+      .Case<hivm::CopyOp>([&](auto copyOp) {
+        propagateUse(operands[0], UseType::DataUse);
+      })
       .Default([&](Operation *op) {
         // this condition account for tt.addptr
         for (auto operand : operands) {
@@ -179,6 +186,35 @@ void setMixUseRecursively(Operation *rootOp, bool applyRoot = true) {
       LLVM_DEBUG({ op->setAttr("MixUse", UnitAttr::get(b.getContext())); });
       op->removeAttr("MetaUse");
     });
+}
+
+static void setMixUseFromValue(Value v)
+{
+  if (auto *defOp = v.getDefiningOp()) {
+    setMixUseRecursively(defOp);
+    return;
+  }
+
+  auto blockArg = dyn_cast<BlockArgument>(v);
+  if (!blockArg) {
+    return;
+  }
+
+  auto *parentOp = blockArg.getOwner()->getParentOp();
+  auto loopLikeOp = dyn_cast_or_null<LoopLikeOpInterface>(parentOp);
+  if (!loopLikeOp) {
+    return;
+  }
+
+  if (OpOperand *init = loopLikeOp.getTiedLoopInit(blockArg)) {
+    if (auto *initDefOp = init->get().getDefiningOp())
+      setMixUseRecursively(initDefOp);
+  }
+
+  if (OpOperand *yielded = loopLikeOp.getTiedLoopYieldedValue(blockArg)) {
+    if (auto *yieldDefOp = yielded->get().getDefiningOp())
+      setMixUseRecursively(yieldDefOp);
+  }
 }
 
 std::optional<bool> isIterArgMixUse(Value v, Value target, const DataFlowSolver &solver) {
@@ -477,8 +513,7 @@ LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
       if (!ifOp.getElseRegion().empty())
         yields.append(llvm::to_vector(ifOp.elseYield().getOperands()));
       for (auto yield : yields) {
-        if (auto *defOp = yield.getDefiningOp())
-          setMixUseRecursively(defOp);
+        setMixUseFromValue(yield);
       }
     } else if(auto atomicRmwOp = dyn_cast<triton::AtomicRMWOp>(op)) {
       auto mask = atomicRmwOp.getMask();
