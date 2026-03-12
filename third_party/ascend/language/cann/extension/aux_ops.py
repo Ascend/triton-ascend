@@ -159,4 +159,4 @@ def multibuffer(src: tensor, size, _builder=None):
     """
     buffer_size = _constexpr_to_value(size)
     assert isinstance(buffer_size, int) and buffer_size == 2, f"only support bufferize equals 2"
-    compile_hint_impl(src, "multi_buffer", buffer_size, _builder)
+    compile_hint_impl(src, "hivm.multi_buffer", buffer_size, _builder)
