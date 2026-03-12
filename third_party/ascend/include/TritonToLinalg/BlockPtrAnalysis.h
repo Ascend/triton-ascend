@@ -292,7 +292,8 @@ public:
 template <typename OpTy>
 void parseIndirectLoad(OpTy op, BlockData &data, const Location &loc,
                        ConversionPatternRewriter &rewriter,
-                       const llvm::SmallDenseMap<Value, BlockData> &known);
+                       const llvm::SmallDenseMap<Value, BlockData> &known,
+                       unsigned resultIdx = 0);
 
 } // namespace triton
 

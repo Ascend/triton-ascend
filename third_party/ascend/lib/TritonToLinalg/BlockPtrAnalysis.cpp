@@ -471,7 +471,10 @@ void BlockDataParser::parse(
                  operand.getDefiningOp<tensor::ExtractSliceOp>()) {
     parseExtractSlice(extractSliceOp, data, loc, rewriter, known);
   } else if (auto forOp = operand.getDefiningOp<scf::ForOp>()) {
-    parseIndirectLoad<scf::ForOp>(forOp, data, loc, rewriter, known);
+    auto opResult = dyn_cast<OpResult>(operand);
+    assert(opResult && "expected OpResult for scf.for result");
+    unsigned resultIdx = opResult.getResultNumber();
+    parseIndirectLoad<scf::ForOp>(forOp, data, loc, rewriter, known, resultIdx);
   } else if (auto tensorCastOp = operand.getDefiningOp<tensor::CastOp>()) {
     // Used for identity operation.
     parse(tensorCastOp.getSource(), data, loc, rewriter, known);
@@ -921,9 +924,12 @@ void BlockDataParser::parseReduce(
 template <typename OpTy>
 void parseIndirectLoad(OpTy op, BlockData &data, const Location &loc,
                        ConversionPatternRewriter &rewriter,
-                       const llvm::SmallDenseMap<Value, BlockData> &known) {
-  // FIXME: assume single result of operation
-  auto opRes = op->getResult(0);
+                       const llvm::SmallDenseMap<Value, BlockData> &known,
+                       unsigned resultIdx)
+{
+  assert(resultIdx < op->getNumResults() &&
+         "resultIdx out of range for parseIndirectLoad");
+  auto opRes = op->getResult(resultIdx);
   auto opResTy = opRes.getType();
   std::vector<int64_t> resShape;
   if (auto shapedResTy = dyn_cast<ShapedType>(opResTy)) {

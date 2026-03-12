@@ -978,7 +978,7 @@ void parseIf(scf::IfOp op, const Location &loc, RewriterBase &rewriter,
   dstStructured.resize(thenStructured.size());
   for (size_t i = 0; i < dstStructured.size(); i++)
     if (op.elseBlock())
-      dstStructured[i] = std::min(thenStructured[i], elseStructured[i]);
+      dstStructured[i] = PtrOffsetInfo::AxisInfo::unstructured;
     else
       dstStructured[i] = thenStructured[i];
   SmallVector<Value> dstOffsets(thenOffsetInfo.getOffsetsRef().size());
