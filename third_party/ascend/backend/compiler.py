@@ -174,14 +174,17 @@ def linalg_to_bc_by_triton_mlir_opt(linalg: str, metadata, opt):
         triton_mlir_opt_path = _get_triton_mlir_opt_path()
 
         # The --emit-bytecode flag ensures output is in BC format
-        subprocess.check_call(
+        subprocess.run(
             [
                 triton_mlir_opt_path,
                 ttadapter_path,
                 "--emit-bytecode",
                 "-o",
                 bc_path,
-            ]
+            ],
+            check=True,
+            capture_output=True,
+            text=True
         )
 
         # Read bytecode as binary before temp directory is cleaned up
@@ -215,14 +218,17 @@ def bc_to_linalg_by_bishengir_opt(bc_data: bytes, metadata, opt):
 
         bishengir_opt_path, env = _get_bishengir_opt_path()
 
-        subprocess.check_call(
+        subprocess.run(
             [
                 bishengir_opt_path,
                 bc_path,
                 "-o",
                 mlir_path,
             ],
-            env=env
+            env=env,
+            capture_output=True,
+            check=True,
+            text=True
         )
 
         # Read the generated MLIR text
