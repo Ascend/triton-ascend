@@ -22,6 +22,7 @@
 
 #include "AutoBlockify/AutoBlockify.h"
 #include "AutoBlockify/Utils.h"
+#include "Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "Utils/Utils.h"
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -104,7 +105,8 @@ PropagateUnrealizedCastDown::matchAndRewrite(UnrealizedConversionCastOp op,
       rewriteCondition(op, conditionOp, rewriter);
     } else if (user->hasTrait<OpTrait::Elementwise>() ||
                isa<triton::BroadcastOp, triton::DotOp, triton::JoinOp,
-                   triton::ReshapeOp>(user)) {
+                   triton::ReshapeOp, triton::PrintOp,
+                   triton::ascend::AnnotationOp>(user)) {
       rewriteGeneraleOp(op, user, rewriter);
     } else if (isa<triton::AtomicCASOp>(user)) {
       auto *newOp =
@@ -286,10 +288,11 @@ void AutoBlockifyPass::runOnOperation() {
     return;
   ModuleOp moduleOp = getOperation();
   if (autoBlockifySize <= 0) {
-    moduleOp->emitWarning("[AutoBlockify V2] AutoBlockifySize cannot be negative integer, skipping.");
+    moduleOp->emitWarning("[AutoBlockify V2] AutoBlockifySize cannot be "
+                          "negative integer, skipping.");
     return signalPassFailure();
   }
-  
+
   MLIRContext *ctx = &getContext();
 
   moduleOp.walk([&](triton::FuncOp func) {
