@@ -107,12 +107,9 @@ def pow(arg0, arg1, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0, arg1], {
             (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_powf", core.dtype("fp32")),
-            (core.dtype("fp16"), core.dtype("fp16")): ("__hmf_powf", core.dtype("fp16")),
-            (core.dtype("bf16"), core.dtype("bf16")): ("__hmf_powf", core.dtype("bf16")),
-            (core.dtype("int64"), core.dtype("int64")): ("__hmf_powi", core.dtype("int64")),
+            (core.dtype("fp16"), core.dtype("fp16")): ("__hmf_powDh", core.dtype("fp16")),
+            (core.dtype("bf16"), core.dtype("bf16")): ("__hmf_powDb", core.dtype("bf16")),
             (core.dtype("int32"), core.dtype("int32")): ("__hmf_powi", core.dtype("int32")),
-            (core.dtype("int16"), core.dtype("int16")): ("__hmf_powi", core.dtype("int16")),
-            (core.dtype("int8"), core.dtype("int8")): ("__hmf_powi", core.dtype("int8")),
         }, is_pure=True, _builder=_builder)
 
 @core.extern
