@@ -271,6 +271,10 @@ def _enable_print_ub_bits() -> bool:
     return os.getenv("ENABLE_PRINT_UB_BITS", "false").lower() in ("true", "1")
 
 
+def _enable_dump_memory_info() -> bool:
+    return os.getenv("TRITON_MEMORY_DISPLAY", "false").lower() in ("true", "1")
+
+
 def _get_cxx():
     cxx = os.environ.get("CC")
     if cxx is None:
