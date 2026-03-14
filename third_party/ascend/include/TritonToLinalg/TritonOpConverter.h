@@ -190,6 +190,15 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
+class UnsplatConverter : public OpConversionPattern<triton::UnsplatOp> {
+public:
+  using OpConversionPattern<triton::UnsplatOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::UnsplatOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
 class ReshapeConverter : public OpConversionPattern<triton::ReshapeOp> {
 public:
   using OpConversionPattern<triton::ReshapeOp>::OpConversionPattern;
