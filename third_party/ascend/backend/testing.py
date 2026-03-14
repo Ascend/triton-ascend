@@ -22,8 +22,13 @@ import builtins
 import multiprocessing
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import triton.runtime as runtime
+
+
+def get_home_dir():
+    return os.getenv("TRITON_HOME", Path.home())
 
 
 def do_bench_npu(funcs, warmup=5, active=30, clear_l2_cache=False, prof_dir=None, keep_res=False):
@@ -53,7 +58,7 @@ def do_bench_npu(funcs, warmup=5, active=30, clear_l2_cache=False, prof_dir=None
         process_name = process.name
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
         base_path = os.path.join(
-            runtime.cache.get_home_dir(), ".triton", "profile_results"
+            get_home_dir(), ".triton", "profile_results"
         )
         torch_path = os.path.join(base_path, f"prof_{timestamp}_{process_name}-{pid}")
 
