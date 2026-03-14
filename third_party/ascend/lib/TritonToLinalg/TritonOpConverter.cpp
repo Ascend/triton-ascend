@@ -686,6 +686,28 @@ SplatConverter::matchAndRewrite(triton::SplatOp op, OpAdaptor adaptor,
 }
 
 LogicalResult
+UnsplatConverter::matchAndRewrite(triton::UnsplatOp op, OpAdaptor adaptor,
+                                  ConversionPatternRewriter &rewriter) const {
+  auto loc = op.getLoc();
+  auto src = adaptor.getSrc();
+  auto srcType = cast<RankedTensorType>(src.getType());
+  auto shape = srcType.getShape();
+  
+  // Create index constants for all dimensions (all zeros since we're extracting the single element)
+  SmallVector<Value> indices;
+  for (int64_t dim : shape) {
+    indices.push_back(rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getIndexAttr(0)));
+  }
+  
+  // Extract the scalar element from the tensor
+  auto elementType = srcType.getElementType();
+  auto extractOp = rewriter.create<tensor::ExtractOp>(loc, elementType, src, indices);
+  rewriter.replaceOp(op, extractOp.getResult());
+  return success();
+}
+
+LogicalResult
 ReshapeConverter::matchAndRewrite(triton::ReshapeOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const {
   auto loc = op.getLoc();
