@@ -13,7 +13,7 @@ The Triton-Ascend compilation framework removes the barriers between Triton and 
 - #### Latest Updates
 Current version: [Triton-Ascend 3.2.0](https://pypi.org/project/triton-ascend/)
 CANN version: [Ascend CANN Community Edition 8.5.0](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.5.0)
-Version plan for 2026: Upgrade to Triton 3.4.
+Version plan for 2026: Upgrade to Triton 3.5.
 - #### Milestones
 | Milestone| Important Update| Status|
 |------|------|------|

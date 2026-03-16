@@ -543,7 +543,7 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             cmd_list += [f"--enable-vf-merge-level={vf_merge_level}"]
 
         if opt.debug:
-            print(f"[DEBUG] cmd_list: {cmd_list}")
+            print(f"[DEBUG] cmd_list: {' '.join(cmd_list)}")
 
         try:
             ret = subprocess.run(
@@ -701,13 +701,13 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
         if disable_auto_inject_block_sync is not None:
             _compile_option_list += \
                 [f"--disable-auto-inject-block-sync={disable_auto_inject_block_sync}"]
-        
+
         enable_libdevice = os.getenv("TRITON_ENABLE_LIBDEVICE", False)
         if (enable_libdevice):
             _compile_option_list += [
                 f"--link-aicore-bitcode={get_libdevice()}"
             ]
-        
+
         if _is_auto_map_parallel_blocks_enabled():
             _compile_option_list += ["--enable-auto-blockify-loop"]
         npu_compiler_path, env = _get_npucompiler_path()
@@ -726,7 +726,7 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             + ["-o", bin_file]
         )
         if opt.debug:
-            print(f"[DEBUG] cmd_list: {cmd_list}")
+            print(f"[DEBUG] cmd_list: {' '.join(cmd_list)}")
 
         try:
             ret = subprocess.run(
