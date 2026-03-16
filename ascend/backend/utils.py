@@ -333,12 +333,12 @@ def _precompile_npu_ext(header_path, gch_path):
 
     cc_cmd += ["-std=c++17", "-shared", "-fPIC", "-o", gch_path]
 
-    ret = subprocess.check_call(cc_cmd)
+    result = subprocess.run(cc_cmd, capture_output=True, text=True)
 
-    if ret != 0:
-        print(f"Unable to precompile header file, ret is: {ret}")
-
-    return header_path
+    if result.returncode == 0:
+        return header_path
+    else: 
+        raise RuntimeError(f"Failed to compile {gch_path}, error: {result.stderr}, cmd={cc_cmd}")
 
 def _build_npu_ext(obj_name: str, header_path, src_path, *, kernel_launcher="torch", precompile=False) -> str:
     suffix = sysconfig.get_config_var("EXT_SUFFIX")
@@ -412,7 +412,7 @@ def _build_npu_ext(obj_name: str, header_path, src_path, *, kernel_launcher="tor
             # only for clang++, when precompile invalid, fallback to normal compile
             return _build_npu_ext(obj_name, header_path, src_path, precompile=False)
         else:
-            raise RuntimeError(f"Failed to compile {src_path}, error: {result.stderr}")
+            raise RuntimeError(f"Failed to compile {src_path}, error: {result.stderr}, cmd={cc_cmd}")
 
 
 def _get_kernel_target(metadata: dict):
