@@ -59,7 +59,31 @@ using namespace mlir;
 using namespace triton;
 
 static const llvm::SmallVector<llvm::StringRef> libdeviceOps = {
-    "__hmf_div_rz", "__hmf_fmod", "__hmf_float_as_int", "__hmf_trunc"
+    // Basic operations
+    "__hmf_div_rz_fp32",
+    "__hmf_fmod_fp32",
+    "__hmf_float_as_int_fp32",
+    "__hmf_trunc_fp32", "__hmf_trunc_fp16",
+    "__hmf_nearbyint_fp32",
+    "__hmf_signbit_fp32", "__hmf_signbit_fp16",
+    "__hmf_copysign_fp32",
+    "__hmf_log10_fp32",
+    // Trigonometric operations
+    "__hmf_asin_fp32", "__hmf_asin_fp16",
+    "__hmf_acos_fp32", "__hmf_acos_fp16",
+    "__hmf_atan2_fp32", "__hmf_atan2_fp16",
+    "__hmf_sinh_fp32", "__hmf_sinh_fp16",
+    "__hmf_cosh_fp32", "__hmf_cosh_fp16",
+    "__hmf_asinh_fp32", "__hmf_asinh_fp16",
+    "__hmf_acosh_fp32", "__hmf_acosh_fp16",
+    "__hmf_atanh_fp32", "__hmf_atanh_fp16",
+    // Other operations
+    "__hmf_expm1_fp32", "__hmf_expm1_fp16",
+    "__hmf_nextafter_fp32", "__hmf_nextafter_fp16",
+    "__hmf_hypot_fp32", "__hmf_hypot_fp16",
+    "__hmf_cyl_bessel_i0_fp32", "__hmf_cyl_bessel_i0_fp16",
+    "__hmf_erfinv_fp32",
+    "__hmf_lgamma_fp32",
 };
 
 /**
