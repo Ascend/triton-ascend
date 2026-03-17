@@ -916,8 +916,12 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
     }
   }}
 
-  if (launch_enter_hook != Py_None && !PyObject_CallObject(launch_enter_hook, args)) {{
-    return NULL;
+  if (launch_enter_hook != Py_None){{
+    PyObject* args = Py_BuildValue("(O)", launch_metadata);
+    PyObject* ret = PyObject_CallObject(launch_enter_hook, args);
+    Py_DECREF(args);
+    if (!ret)
+      return NULL;
   }}
 
   // get kernel_name
@@ -940,8 +944,12 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   if (PyErr_Occurred()) {{
     return NULL;
   }}
-  if (launch_exit_hook != Py_None && !PyObject_CallObject(launch_exit_hook, args)) {{
-    return NULL;
+  if(launch_exit_hook != Py_None){{
+    PyObject* args = Py_BuildValue("(O)", launch_metadata);
+    PyObject* ret = PyObject_CallObject(launch_exit_hook, args);
+    Py_DECREF(args);
+    if (!ret)
+      return NULL;
   }}
   Py_RETURN_NONE;
 }}
