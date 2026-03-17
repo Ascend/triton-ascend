@@ -2520,7 +2520,7 @@ def inline_asm_elementwise(asm: str, constraints: str, args: Sequence, dtype: Un
 
     if not has_multiple_outputs:
         return tensor(call.get_result(0), res_tys[0])
-    return tuple(tensor(call.get_result(i), ty) for i, ty in enumerate(res_tys))
+    return builtins.tuple(tensor(call.get_result(i), ty) for i, ty in enumerate(res_tys))
 
 
 # -----------------------
