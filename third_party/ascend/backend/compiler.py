@@ -707,6 +707,11 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += [
                 f"--link-aicore-bitcode={get_libdevice()}"
             ]
+        
+        disable_size_align_for_cast = metadata["disable_size_align_for_cast"]
+        if disable_size_align_for_cast is not None:
+            _compile_option_list += \
+                [f"--disable-size-align-for-cast={disable_size_align_for_cast}"]
 
         if _is_auto_map_parallel_blocks_enabled():
             _compile_option_list += ["--enable-auto-blockify-loop"]
@@ -823,6 +828,7 @@ class NPUOptions:
     enable_auto_vectorize_v2: bool = None
     inject_barrier_all: bool = None
     inject_block_all: bool = None
+    disable_size_align_for_cast: bool = None
     limit_auto_multi_buffer_only_for_local_buffer: bool = None
     limit_auto_multi_buffer_of_local_buffer: str = None
     set_workspace_multibuffer: int = None
