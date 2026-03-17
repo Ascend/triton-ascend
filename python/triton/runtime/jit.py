@@ -739,7 +739,7 @@ class JITFunction(KernelInterface[T]):
             for key, value in deserialized_obj['constants'].items()
         }
         signature = dict(deserialized_obj['signature'].items())
-        src = ASTSource(self, signature, constants, AttrsDescriptor.from_dict(deserialized_obj['attrs']))
+
         options = {
             key: tuple(value) if isinstance(value, list) else value
             for key, value in deserialized_obj['options'].items()
@@ -747,6 +747,7 @@ class JITFunction(KernelInterface[T]):
         key = deserialized_obj['key']
         target = driver.active.get_current_target()
         backend = make_backend(target)
+        options = backend.parse_options(options)
         attrs = AttrsDescriptor.from_dict(deserialized_obj['attrs'])
         return self._do_compile(
             key,
