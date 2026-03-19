@@ -368,7 +368,6 @@ class CMakeExtension(Extension):
 
 
 class CMakeBuild(build_ext):
-
     user_options = build_ext.user_options + \
         [('base-dir=', None, 'base directory of Triton')]
 
@@ -378,6 +377,63 @@ class CMakeBuild(build_ext):
 
     def finalize_options(self):
         build_ext.finalize_options(self)
+
+    def setup_coverage_env(self):
+        """Setting environment variables required for the hitest coverage tool"""
+        # To enable the hitest cov tool, you need to set the following three environment variables.
+        hitest_home = os.getenv('HITEST_HOME', '/opt/hitest/linux_avatar_x86_64')
+        hitest_user_account = os.getenv('HITEST_USER_ACCOUNT', 'a00000000')
+        lltcov_rootpath = os.getenv('LLTCOV_ROOTPATH', '/opt/covdata')  # Path to the output coverage binary file
+
+        # hitest default environment variables
+        coverage_env_vars = {
+            'HitestHome': hitest_home,
+            'isOverlappedCompile': '0',
+            'PlatformToken': 'BOARD',
+            'gcovmode': '0',
+            'TimerPolicy': '1',
+            'TimeInterval': '60',
+            'SignalPolicy': '1',
+            'SignalNUM': '34',
+            'lltwrapper_cfg': '0',
+            'HITEST_AGENT_INSIDE': '1',
+            'USE_HLLT_COVERAGE': '1',
+            'USE_HLLT_TESTCASE': '0',
+            'simplemode': '0',
+            'ncs_coverage_stub_mold': '1',
+            'HITEST_ENABLE_SOKCET': '0',
+            'hitest_disable_cfg': '0',
+            'hitest_disable_dfg': '1',
+            'hitest_disable_ir': '1',
+            'HITEST_DISABLE_MACRO': '0',
+            'HITEST_REMOVE_INCLUDE_DIR': '0',
+            'HITEST_AGENT_SET_THREADNAME_PRCTL': '1',
+            'HITEST_INST_HEADER_FILE': '0',
+            'HITEST_USER_ACCOUNT': hitest_user_account,
+            'lltcovRootpath': lltcov_rootpath,
+            'HITEST_COVSTUB_ROOT_DIR': f'{hitest_home}/apache-tomcat-8.0.39/webapps/datasource/Container_Default/base',
+            'HITEST_EXEC_CMD_WITH_FILE': '1',
+            'HITEST_PRINT_LOG_ENABLE': '1',
+        }
+
+        for key, value in coverage_env_vars.items():
+            os.environ[key] = value
+
+        current_path = os.environ.get('PATH', '')
+        os.environ['PATH'] = f'{hitest_home}:{current_path}'
+
+        current_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+        os.environ['LD_LIBRARY_PATH'] = f'{hitest_home}:{current_ld_path}'
+
+        print(f"The currently set environment variables for the hitest coverage tool are read.")
+        print(f"  HitestHome: {hitest_home} (environment variables HITEST_HOME)")
+        print(f"  HITEST_USER_ACCOUNT: {hitest_user_account} (environment variables HITEST_USER_ACCOUNT)")
+        print(f"  lltcovRootpath: {lltcov_rootpath} (environment variables LLTCOV_ROOTPATH)")
+
+        current_path = os.environ.get('PATH', '')
+        os.environ['PATH'] = f'{hitest_home}:{current_path}'
+        current_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+        os.environ['LD_LIBRARY_PATH'] = f'{hitest_home}:{current_ld_path}'
 
     def run(self):
         try:
@@ -390,6 +446,21 @@ class CMakeBuild(build_ext):
         cmake_major, cmake_minor = int(match.group("major")), int(match.group("minor"))
         if (cmake_major, cmake_minor) < (3, 18):
             raise RuntimeError("CMake >= 3.18.0 is required")
+
+        # To enable the hitest coverage tool, you need to set the environment variable TRITON_ENABLE_COVERAGE_HITEST=1
+        enable_hitest = os.getenv('TRITON_ENABLE_COVERAGE_HITEST', '0').lower() in ('1', 'on', 'true')
+        if enable_hitest:
+            self.setup_coverage_env()
+            current_append = os.environ.get('TRITON_APPEND_CMAKE_ARGS', '')
+            if current_append:
+                os.environ['TRITON_APPEND_CMAKE_ARGS'] = current_append + " -DTRITON_ENABLE_COVERAGE_HITEST=ON"
+            else:
+                os.environ['TRITON_APPEND_CMAKE_ARGS'] = "-DTRITON_ENABLE_COVERAGE_HITEST=ON"
+        else:
+            # clean up existing HITEST_* environment variables to avoid pollution.
+            for key in list(os.environ.keys()):
+                if key.startswith('HITEST_') or key in ['HitestHome', 'lltcovRootpath']:
+                    del os.environ[key]
 
         for ext in self.extensions:
             self.build_extension(ext)
