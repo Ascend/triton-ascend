@@ -852,6 +852,8 @@ class NPUOptions:
     compile_mode: str = "simd"
     mix_mode: str = ""
     simt_stack_limit: int = None
+    # take effect on the reorder instruction pattern for SIMT. The pattern is disabled by default.
+    enable_simt_reorder_instruction: bool = False
 
     def __post_init__(self):
         # Parse compile_mode and set related fields
@@ -933,6 +935,8 @@ def ttir_to_npubin(mod, metadata, opt):
                 _compile_option_list += [f"--simt-stack-limit={opt.simt_stack_limit}"]
             if opt.shared_mem_dynamic_size is not None:
                 _compile_option_list += [f"--shared-mem-dynamic-size={opt.shared_mem_dynamic_size}"]
+            if opt.enable_simt_reorder_instruction:
+                _compile_option_list += ["--enable-simt-reorder-instruction=true"]
 
         npu_compiler_path, env = _get_npucompiler_path()
         cmd_list = (
