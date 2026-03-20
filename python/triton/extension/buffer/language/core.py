@@ -245,7 +245,7 @@ def to_tensor(
     """
     return semantic.to_tensor(memref, writable, _builder, target_shape=target_shape)
 
-
+  
 def check_subview(src, offsets, sizes, strides):
     """
     Check data of subview methods which the data length and the offset value must be 32-byte aligned.

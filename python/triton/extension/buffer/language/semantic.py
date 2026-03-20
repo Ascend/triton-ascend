@@ -83,7 +83,7 @@ def to_buffer(
     buffer_ty = bl.buffer_type(element_ty=tensor.dtype, shape=tensor.shape, space=address_space)
     return bl.buffer(handle, buffer_ty)
 
-
+        
 def to_tensor(
     memref: bl.buffer,
     writable: bool,

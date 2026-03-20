@@ -22,6 +22,7 @@
 #include "Utils/Utils.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include <memory>
 #include <optional>
 
 #include "TritonAffinityOpt/DAG.h"
@@ -38,7 +39,7 @@ using namespace mlir;
 using namespace hivm;
 using namespace AffinityDAG;
 
-llvm::DenseMap<Value, CoreType> *valueTypes;
+llvm::DenseMap<Value, CoreType>* valueTypes;
 // 修改类声明，将数据搬运逻辑集成到同步插入中
 namespace {
 struct DAGSyncPass : public mlir::triton::impl::DAGSyncBase<DAGSyncPass> {
@@ -46,51 +47,54 @@ struct DAGSyncPass : public mlir::triton::impl::DAGSyncBase<DAGSyncPass> {
 
 private:
     // 原有的辅助函数
-    CoreType getNodeDeviceType(Node *node, llvm::DenseMap<mlir::Value, CoreType> *valueTypes);
+    CoreType getNodeDeviceType(OpNode *node, llvm::DenseMap<mlir::Value, CoreType> *valueTypes);
     bool needVectorCubeSync(CoreType src, CoreType dst);
-    
+
     // 修改后的同步插入函数，包含数据搬运
-    void insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation *dstOp, 
+    void insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation *dstOp,
                                CoreType srcType, CoreType dstType,
-                               mlir::OpBuilder &builder, int flag, llvm::DenseMap<Value, CoreType>* valueMap);
-    
+                               mlir::OpBuilder &builder, int flag, llvm::DenseMap<Value, CoreType>* valueMap, Graph &mainGraph);
+
     // 新增：处理跨 block 的同步和数据搬运
-    void insertSyncAndMovementForCrossBlock(mlir::Operation *srcOp, mlir::Operation *dstOp, 
+    void insertSyncAndMovementForCrossBlock(mlir::Operation *srcOp, mlir::Operation *dstOp,
                                            CoreType srcType, CoreType dstType,
                                            mlir::OpBuilder &builder, int flag,
-                                           bool dstIsInnerBlock, llvm::DenseMap<Value, CoreType>* valueMap);
-    
+                                           bool dstIsInnerBlock, llvm::DenseMap<Value, CoreType>* valueMap, Graph &mainGraph);
+
     // 新增：处理 scf.for 循环迭代参数的同步
-    void processScfForSync(mlir::scf::ForOp forOp, 
+    void processScfForSync(mlir::scf::ForOp forOp,
                           Node* forNode,
                           llvm::DenseMap<mlir::Value, CoreType> *valueTypes,
                           mlir::OpBuilder &builder,
                           int &flag);
-    
+
     // 数据搬运相关的辅助函数
     void insertCubeToVectorDataMovement(mlir::Operation *srcOp, mlir::Operation *dstOp,
                                        mlir::Value srcResult, mlir::OpBuilder &builder,
                                        mlir::Location loc, mlir::Value iterArgs);
-    
-    void insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::Operation *dstOp,
+
+    void insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::Operation *dstOp, Operation * posOp,
                                        mlir::Value srcResult, mlir::OpBuilder &builder,
                                        mlir::Location loc, llvm::DenseMap<Value, CoreType>* valueMap);
-    
+
     // 获取或创建合适的 memref.alloc
-    mlir::Value getOrCreateAllocation(mlir::Operation *op, mlir::Type tensorType, 
+    mlir::Value getOrCreateAllocation(mlir::Operation *op, mlir::Type tensorType,
                                       hivm::AddressSpace addressSpace,
                                       mlir::OpBuilder &builder, mlir::Location loc);
-    
+
     // 获取 tensor 的形状和元素类型
     mlir::RankedTensorType getTensorType(mlir::Value tensorValue);
-    
+
     // 替换 dstOp 中使用 srcResult 的操作数
-    void replaceOperandWithNewValue(mlir::Operation *dstOp, mlir::Value oldValue, 
+    void replaceOperandWithNewValue(mlir::Operation *dstOp, mlir::Value oldValue,
                                     mlir::Value newValue);
+
+    // Find sync position
+    Operation* FindLastestPosition(Operation* srcOp, Graph &mainGraph, OpBuilder &builder);
 };
 }  // namespace
 
-void DAGSyncPass::processScfForSync(mlir::scf::ForOp forOp, 
+void DAGSyncPass::processScfForSync(mlir::scf::ForOp forOp,
                                    Node* forNode,
                                    llvm::DenseMap<mlir::Value, CoreType> *valueTypes,
                                    mlir::OpBuilder &builder,
@@ -110,13 +114,13 @@ void DAGSyncPass::processScfForSync(mlir::scf::ForOp forOp,
         mlir::BlockArgument iterArg = loopBody->getArgument(i+1);
         // 找到首次使用
         mlir::Operation* firstUser = nullptr;
-        
+
         for (mlir::Operation &op : *loopBody) {
             // 跳过 yield 操作
             if (mlir::isa<mlir::scf::YieldOp>(&op)) {
                 continue;
             }
-            
+
             // 检查是否使用该迭代参数
             bool usesIterArg = false;
             for (mlir::Value operand : op.getOperands()) {
@@ -125,7 +129,7 @@ void DAGSyncPass::processScfForSync(mlir::scf::ForOp forOp,
                     break;
                 }
             }
-            
+
             if (usesIterArg) {
                 firstUser = &op;
                 break;
@@ -135,27 +139,27 @@ void DAGSyncPass::processScfForSync(mlir::scf::ForOp forOp,
         if (!firstUser) {
             continue;
         }
-        CoreType iterType = CoreType::SCALAR;
+        CoreType iterType = CoreType::CUBE_AND_VECTOR;
         if (valueTypes->find(firstUser->getResult(0)) != valueTypes->end()) {
             iterType = valueTypes->find(firstUser->getResult(0))->second;
         }
 
         // 获取对应yield
         mlir::Value yieldOperand = yieldOp->getOperand(i);
-        CoreType yieldType = CoreType::SCALAR;
+        CoreType yieldType = CoreType::CUBE_AND_VECTOR;
         if (valueTypes->find(yieldOperand) != valueTypes->end()) {
             yieldType = valueTypes->find(yieldOperand)->second;
         }
         mlir::Operation* yieldDefiningOp = yieldOperand.getDefiningOp();
 
-    if (yieldType == CoreType::CUBE && iterType == CoreType::VECTOR) {
-        
+    if (yieldType == CoreType::CUBE_ONLY && iterType == CoreType::VECTOR_ONLY) {
+
         // 2. 插入同步指令
         auto coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::CUBE);
         auto setPipe = PipeAttr::get(builder.getContext(), hivm::PIPE::PIPE_FIX);
         auto waitPipe = PipeAttr::get(builder.getContext(), hivm::PIPE::PIPE_V);
         auto flagId = builder.getIntegerAttr(builder.getI64Type(), flag);
-        
+
         // set 在 yieldDefiningOp 后
         builder.setInsertionPointAfter(yieldDefiningOp);
         builder.create<SyncBlockSetOp>(loc, coreAttr, setPipe, waitPipe, flagId);
@@ -164,45 +168,45 @@ void DAGSyncPass::processScfForSync(mlir::scf::ForOp forOp,
 
         // // 1. 插入数据搬运
         insertCubeToVectorDataMovement(yieldDefiningOp, firstUser, srcResult, builder, loc, iterArg);
-        
+
         // wait 在 firstUser 前
         builder.setInsertionPoint(firstUser);
         coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR);
         builder.create<SyncBlockWaitOp>(loc, coreAttr, setPipe, waitPipe, flagId);
-        llvm::outs() << "yieldOp" << yieldDefiningOp << "iterargs" << firstUser << "\n";
-        llvm::outs() << "Inserted CUBE->VECTOR sync and data movement (flag=" << flag << ")\n";
+        // llvm::outs() << "yieldOp" << yieldDefiningOp << "iterargs" << firstUser << "\n";
+        // llvm::outs() << "Inserted CUBE->VECTOR sync and data movement (flag=" << flag << ")\n";
     }
     // VECTOR -> CUBE
-    else if (yieldType == CoreType::VECTOR && iterType == CoreType::CUBE) {
-        
+    else if (yieldType == CoreType::VECTOR_ONLY && iterType == CoreType::CUBE_ONLY) {
+
         // 2. 插入同步指令
         auto coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR);
         auto setPipe = PipeAttr::get(builder.getContext(), hivm::PIPE::PIPE_MTE3);
         auto waitPipe = PipeAttr::get(builder.getContext(), hivm::PIPE::PIPE_MTE1);
         auto flagId = builder.getIntegerAttr(builder.getI64Type(), flag);
-        
+
         // set 在 yieldDefiningOp 后
         builder.setInsertionPointAfter(yieldDefiningOp);
         builder.create<SyncBlockSetOp>(loc, coreAttr, setPipe, waitPipe, flagId);
 
         // 1. 插入数据搬运
         // insertVectorToCubeDataMovement(yieldDefiningOp, firstUser, srcResult, builder, loc, iterArg);
-        
+
         // wait 在 firstUser 前
         builder.setInsertionPoint(firstUser);
         coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::CUBE);
         builder.create<SyncBlockWaitOp>(loc, coreAttr, setPipe, waitPipe, flagId);
-        llvm::outs() << "yieldOp" << yieldDefiningOp << "iterargs" << firstUser << "\n";
-        llvm::outs() << "Inserted VECTOR->CUBE sync and data movement (flag=" << flag << ")\n";
+        // llvm::outs() << "yieldOp" << yieldDefiningOp << "iterargs" << firstUser << "\n";
+        // llvm::outs() << "Inserted VECTOR->CUBE sync and data movement (flag=" << flag << ")\n";
     }
     }
 }
 
 // 获取节点的设备类型
-CoreType DAGSyncPass::getNodeDeviceType(Node *node, llvm::DenseMap<mlir::Value, CoreType> *valueTypes)
+CoreType DAGSyncPass::getNodeDeviceType(OpNode *node, llvm::DenseMap<mlir::Value, CoreType> *valueTypes)
 {
     if (!node || !node->op) {
-        return CoreType::SCALAR;
+        return CoreType::CUBE_AND_VECTOR;
     }
 
     // 尝试从节点的结果中获取设备类型
@@ -223,14 +227,14 @@ CoreType DAGSyncPass::getNodeDeviceType(Node *node, llvm::DenseMap<mlir::Value, 
     //     }
     // }
 
-    return CoreType::SCALAR;  // 默认
+    return CoreType::CUBE_AND_VECTOR;  // 默认
 }
 
 // 判断是否需要vector<->cube同步
 bool DAGSyncPass::needVectorCubeSync(CoreType src, CoreType dst)
 {
-    return (src == CoreType::VECTOR && dst == CoreType::CUBE) ||
-           (src == CoreType::CUBE && dst == CoreType::VECTOR);
+    return (src == CoreType::VECTOR_ONLY && dst == CoreType::CUBE_ONLY) ||
+           (src == CoreType::CUBE_ONLY && dst == CoreType::VECTOR_ONLY);
 }
 
 // 获取 tensor 类型
@@ -242,34 +246,34 @@ mlir::RankedTensorType DAGSyncPass::getTensorType(mlir::Value tensorValue) {
 }
 
 // 替换操作数
-void DAGSyncPass::replaceOperandWithNewValue(mlir::Operation *dstOp, mlir::Value oldValue, 
+void DAGSyncPass::replaceOperandWithNewValue(mlir::Operation *dstOp, mlir::Value oldValue,
                                             mlir::Value newValue) {
     for (unsigned i = 0; i < dstOp->getNumOperands(); ++i) {
         if (dstOp->getOperand(i) == oldValue) {
             dstOp->setOperand(i, newValue);
-            llvm::outs() << "Replaced operand " << i << " of " << dstOp->getName().getStringRef()
-                        << " with new value\n";
+            // llvm::outs() << "Replaced operand " << i << " of " << dstOp->getName().getStringRef()
+            //             << " with new value\n";
         }
     }
 }
 
 // 修改 getOrCreateAllocation 函数，将 alloc 提到函数最外层
-mlir::Value DAGSyncPass::getOrCreateAllocation(mlir::Operation *op, mlir::Type tensorType, 
+mlir::Value DAGSyncPass::getOrCreateAllocation(mlir::Operation *op, mlir::Type tensorType,
                                                hivm::AddressSpace addressSpace,
                                                mlir::OpBuilder &builder, mlir::Location loc) {
     auto rankedTensorType = cast<mlir::RankedTensorType>(tensorType);
     auto elementType = rankedTensorType.getElementType();
     auto shape = rankedTensorType.getShape();
-    
+
     auto addressSpaceAttr = hivm::AddressSpaceAttr::get(builder.getContext(), addressSpace);
     auto memrefType = mlir::MemRefType::get(shape, elementType, /*layout=*/nullptr, addressSpaceAttr);
-    
+
     // 查找是否已经存在相同类型的 allocation（在函数的 entry block 中）
     mlir::Operation* funcOp = op;
     while (funcOp && !mlir::isa<mlir::triton::FuncOp>(funcOp)) {
         funcOp = funcOp->getParentOp();
     }
-    
+
     if (auto func = mlir::dyn_cast<mlir::triton::FuncOp>(funcOp)) {
         // 在函数的 entry block 中查找现有的 allocation
         mlir::Block& entryBlock = func.getBody().front();
@@ -282,12 +286,12 @@ mlir::Value DAGSyncPass::getOrCreateAllocation(mlir::Operation *op, mlir::Type t
         //         }
         //     }
         // }
-        
+
         // 没有找到现有的 allocation，在函数开头创建新的
         builder.setInsertionPointToStart(&entryBlock);
         return builder.create<memref::AllocOp>(loc, memrefType);
     }
-    
+
     // 如果没有找到函数，回退到原逻辑
     builder.setInsertionPoint(op);
     return builder.create<memref::AllocOp>(loc, memrefType);
@@ -301,18 +305,18 @@ void DAGSyncPass::insertCubeToVectorDataMovement(mlir::Operation *srcOp, mlir::O
     if (!srcTensorType) {
         return;
     }
-    
+
     // 1. 在 srcOp 之后创建 UB 空间的 memref.alloc
     builder.setInsertionPointAfter(srcOp);
-    mlir::Value ubAlloc = getOrCreateAllocation(srcOp, srcTensorType, 
+    mlir::Value ubAlloc = getOrCreateAllocation(srcOp, srcTensorType,
                                                 hivm::AddressSpace::UB, builder, loc);
-    
+
     // 2. 创建 fixpipe 指令
     builder.setInsertionPointAfter(srcOp);
     FixpipeDMAModeAttr dmaModeAttr = FixpipeDMAModeAttr::get(builder.getContext(), FixpipeDMAMode::NZ2ND);
-    
+
     auto fixpipeOp = builder.create<hivm::FixpipeOp>(
-        loc, 
+        loc,
         mlir::TypeRange{}, // 没有返回值
         srcResult,         // src
         ubAlloc,           // dst
@@ -329,17 +333,17 @@ void DAGSyncPass::insertCubeToVectorDataMovement(mlir::Operation *srcOp, mlir::O
     
     // 3. 在 dstOp 前创建 memory_space_cast 和 to_tensor
     builder.setInsertionPoint(dstOp);
-    
+
     // memory_space_cast（如果需要）
     mlir::Value plainMemref = ubAlloc;
     auto memrefType = cast<mlir::MemRefType>(ubAlloc.getType());
     if (memrefType.getMemorySpace()) {
-        auto plainMemrefType = mlir::MemRefType::get(memrefType.getShape(), 
+        auto plainMemrefType = mlir::MemRefType::get(memrefType.getShape(),
                                                      memrefType.getElementType());
         plainMemref = builder.create<memref::MemorySpaceCastOp>(loc, plainMemrefType, ubAlloc);
-        (*valueTypes)[plainMemref] = CoreType::VECTOR;
+        (*valueTypes)[plainMemref] = CoreType::VECTOR_ONLY;
     }
-    
+
     // 4. 创建 to_tensor
     auto toTensorOp = builder.create<bufferization::ToTensorOp>(
         loc,
@@ -348,14 +352,38 @@ void DAGSyncPass::insertCubeToVectorDataMovement(mlir::Operation *srcOp, mlir::O
         /*restrict=*/true,
         /*writable=*/true
     );
-    (*valueTypes)[toTensorOp.getResult()] = CoreType::VECTOR;
-    
+    (*valueTypes)[toTensorOp.getResult()] = CoreType::VECTOR_ONLY;
+
     // 5. 替换 dstOp 的操作数
     if (!iterArgs) {
         replaceOperandWithNewValue(dstOp, srcResult, toTensorOp.getResult());
     } else {
         replaceOperandWithNewValue(dstOp, iterArgs, toTensorOp.getResult());
     }
+}
+
+static uint64_t getElemBytesForAlign(Type t) {
+  if (auto ft = dyn_cast<FloatType>(t))
+    return (uint64_t)((ft.getWidth() + 7) / 8);
+  if (auto it = dyn_cast<IntegerType>(t))
+    return (uint64_t)((it.getWidth() + 7) / 8);
+  if (isa<IndexType>(t))
+    return 8ULL;
+  if (auto ct = dyn_cast<ComplexType>(t))
+    return 2ULL * getElemBytesForAlign(ct.getElementType());
+  return 0ULL;
+}
+
+static FailureOr<uint64_t> getBlockElemsFor32BAlign(Type elemType) {
+  constexpr uint64_t kAlignBytes = 32;
+  uint64_t elemBytes = getElemBytesForAlign(elemType);
+  if (elemBytes <= 0)
+    return failure();
+  if (elemBytes >= kAlignBytes)
+    return 1;
+  if (kAlignBytes % elemBytes != 0)
+    return failure();
+  return kAlignBytes / elemBytes;
 }
 
 static std::optional<SmallVector<int64_t, 4>> newCbubAllocShape(memref::AllocOp allocOp) {
@@ -367,21 +395,23 @@ static std::optional<SmallVector<int64_t, 4>> newCbubAllocShape(memref::AllocOp 
   auto shape = type.getShape();
   int64_t M = shape[0];
   int64_t N = shape[1];
-
+  auto elemType = type.getElementType();
+  auto blkOr = getBlockElemsFor32BAlign(elemType);
+  int64_t blk = (int64_t)*blkOr;
   // 必须是静态且 16 对齐
   if (ShapedType::isDynamic(M) || ShapedType::isDynamic(N))
     return std::nullopt;
-  if (M % 16 != 0 || N % 16 != 0)
+  if (M % 16 != 0)
     return std::nullopt;
 
   // 新 shape: (N/16, M/16, 16, 16)
-  SmallVector<int64_t, 4> newShape = {N / 16, M / 16, 16, 16};
+  SmallVector<int64_t, 4> newShape = {N / blk, M / 16, 16, blk};
 
   return newShape;
 }
 
 // 修改 VECTOR->CUBE 数据搬运函数
-void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::Operation *dstOp,
+void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::Operation *dstOp, Operation* posOp,
                                                 mlir::Value srcResult, mlir::OpBuilder &builder,
                                                 mlir::Location loc, llvm::DenseMap<Value, CoreType>* valueMap) {
     auto srcTensorType = getTensorType(srcResult);
@@ -391,26 +421,27 @@ void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::O
     if (isa<scf::ForOp>(srcOp) && isa<scf::ForOp>(dstOp)) {
         return;
     }
-    
+
     // 1. 在 srcOp 之后创建 UB 空间的 memref.alloc（用于 to_memref）
     builder.setInsertionPointAfter(srcOp);
-    
+
     // 首先创建 UB 空间的 memref type
     auto ubSpaceAttr = hivm::AddressSpaceAttr::get(builder.getContext(), hivm::AddressSpace::UB);
-    auto ubMemrefType = mlir::MemRefType::get(srcTensorType.getShape(), 
-                                              srcTensorType.getElementType(), 
-                                              /*layout=*/nullptr, 
+    auto ubMemrefType = mlir::MemRefType::get(srcTensorType.getShape(),
+                                              srcTensorType.getElementType(),
+                                              /*layout=*/nullptr,
                                               ubSpaceAttr);
-    
+
     // 创建 bufferization.to_memref
+    builder.setInsertionPoint(posOp);
     auto toMemrefOp = builder.create<bufferization::ToMemrefOp>(
         loc,
         ubMemrefType,
         srcResult
     );
-    
+
     // 2. 创建 CBUF 空间的 memref.alloc（用于 copy 的目标）
-    mlir::Value cbufAllocOld = getOrCreateAllocation(srcOp, srcTensorType, 
+    mlir::Value cbufAllocOld = getOrCreateAllocation(srcOp, srcTensorType,
                                                     hivm::AddressSpace::L1, builder, loc);
     auto cbufShape = *newCbubAllocShape(dyn_cast<memref::AllocOp>(cbufAllocOld.getDefiningOp()));
     // 获取旧的memref类型并创建新的类型
@@ -447,7 +478,7 @@ void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::O
     builder.setInsertionPoint(cbufAllocOld.getDefiningOp());
     // 创建新的alloc操作
     auto cbufAlloc = builder.create<memref::AllocOp>(
-        cbufAllocOld.getDefiningOp()->getLoc(), 
+        cbufAllocOld.getDefiningOp()->getLoc(),
         newAllocType
     );
 
@@ -459,10 +490,10 @@ void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::O
         toMemrefOp.getResult(),  // src (memref in UB)
         cbufAlloc                // dst (memref in CBUF)
     );
-    
-    llvm::outs() << "Inserted copy after " << srcOp->getName().getStringRef() 
-                 << " for VECTOR->CUBE data movement\n";
-    
+
+    // llvm::outs() << "Inserted copy after " << srcOp->getName().getStringRef()
+    //              << " for VECTOR->CUBE data movement\n";
+
     // 4. 在 dstOp 前创建 convert_layout
     builder.setInsertionPoint(dstOp);
     auto ndLayout = hivm::DataLayoutAttr::get(builder.getContext(), hivm::DataLayout::ND);
@@ -474,20 +505,20 @@ void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::O
         ndLayout,  // srcLayout
         ndLayout   // dstLayout
     );
-    (*valueTypes)[convertLayoutOp.getResult()] = CoreType::CUBE;
-    
+    (*valueTypes)[convertLayoutOp.getResult()] = CoreType::CUBE_ONLY;
+
     // 5. 创建 memory_space_cast
     auto cbufMemrefType = cast<mlir::MemRefType>(convertLayoutOp.getType());
-    auto plainMemrefType = mlir::MemRefType::get(cbufMemrefType.getShape(), 
+    auto plainMemrefType = mlir::MemRefType::get(cbufMemrefType.getShape(),
                                                  cbufMemrefType.getElementType());
-    
+
     auto memspaceCastOp = builder.create<memref::MemorySpaceCastOp>(
         loc,
         plainMemrefType,
         convertLayoutOp.getResult()
     );
-    (*valueTypes)[memspaceCastOp.getResult()] = CoreType::CUBE;
-    
+    (*valueTypes)[memspaceCastOp.getResult()] = CoreType::CUBE_ONLY;
+
     // 6. 创建 to_tensor
     auto toTensorOp = builder.create<bufferization::ToTensorOp>(
         loc,
@@ -496,26 +527,64 @@ void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::O
         /*restrict=*/true,
         /*writable=*/true
     );
-    (*valueTypes)[toTensorOp.getResult()] = CoreType::CUBE;
-    
+    (*valueTypes)[toTensorOp.getResult()] = CoreType::CUBE_ONLY;
+
     // 7. 替换 dstOp 的操作数
     replaceOperandWithNewValue(dstOp, srcResult, toTensorOp.getResult());
 }
 
+Operation* DAGSyncPass::FindLastestPosition(Operation* srcOp, Graph &mainGraph, OpBuilder &builder) {
+    auto insertPos = srcOp;
+    auto opMap = mainGraph.getOpMapLegacy();
+    auto valueTypes = &mainGraph.getValueTypes();
+    // Find the first cube-dependent vector core operation.
+    for(auto nextOp = srcOp->getNextNode();nextOp!=nullptr; nextOp=nextOp->getNextNode()) {
+        auto nextType = getNodeDeviceType(opMap[nextOp], valueTypes);
+        if(nextType == CoreType::CUBE_ONLY) continue;
+        // No memref ops in IR yet; directly tracing operands
+        for(auto operand: nextOp->getOperands()) {
+            auto defOp = operand.getDefiningOp();
+            auto defType = getNodeDeviceType(opMap[defOp], valueTypes);
+            if(defType == CoreType::CUBE_ONLY) {
+                //To prevent UB overflow, we need to break the dependency at the point where the result shape is minimized 
+                // — i.e., trace upward to find the first broadcast.
+                for(auto prevOp = nextOp->getPrevNode(); prevOp != nullptr && prevOp != srcOp; prevOp = prevOp->getPrevNode()) {
+                    if(isa<triton::BroadcastOp>(prevOp)) {
+                        if(prevOp->getPrevNode() && isa<triton::ExpandDimsOp>(prevOp->getPrevNode())) {
+                            return prevOp->getPrevNode();
+                        }
+                        return prevOp;
+                    }
+                }
+                // Can't find the result shape is minimized
+                return nextOp;
+            }
+        }
+        
+        // Once meet SyncBlockWaitOp, return now!
+        if(auto waitOp = dyn_cast<hivm::SyncBlockWaitOp>(nextOp)) {
+            if(waitOp.getTcoreType() == hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR)) {
+                return insertPos;
+            }
+        }
+        insertPos = nextOp;
+    }
+    return insertPos; 
+}
+
 // 主要的同步和数据搬运插入函数
-void DAGSyncPass::insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation *dstOp, 
+void DAGSyncPass::insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation *dstOp,
                                        CoreType srcType, CoreType dstType,
-                                       mlir::OpBuilder &builder, int flag, llvm::DenseMap<Value, CoreType>* valueMap) {
+                                       mlir::OpBuilder &builder, int flag, llvm::DenseMap<Value, CoreType>* valueMap, Graph &mainGraph) {
     mlir::Location loc = srcOp->getLoc();
-    
     // 保存当前的插入点
     mlir::OpBuilder::InsertionGuard guard(builder);
-    
+
     // 检查是否是跨 block
     mlir::Block *srcBlock = srcOp->getBlock();
     mlir::Block *dstBlock = dstOp->getBlock();
     bool sameBlock = (srcBlock == dstBlock);
-    
+
     if (!sameBlock) {
         // 检查是否是外层到内层的依赖
         bool dstIsInnerBlock = false;
@@ -531,23 +600,23 @@ void DAGSyncPass::insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation 
                 break;
             }
         }
-        
+
         if (dstIsInnerBlock) {
-            insertSyncAndMovementForCrossBlock(srcOp, dstOp, srcType, dstType, builder, flag, true, valueMap);
+            insertSyncAndMovementForCrossBlock(srcOp, dstOp, srcType, dstType, builder, flag, true, valueMap, mainGraph);
             return;
         }
     }
-    
+
     // 同一 block 内的处理
     // 获取 srcOp 的输出（假设第一个结果）
     if (srcOp->getNumResults() == 0) {
         return;
     }
     mlir::Value srcResult = srcOp->getResult(0);
-    
+
     // CUBE -> VECTOR
-    if (srcType == CoreType::CUBE && dstType == CoreType::VECTOR) {
-        
+    if (srcType == CoreType::CUBE_ONLY && dstType == CoreType::VECTOR_ONLY) {
+
         // 2. 插入同步指令
         auto coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::CUBE);
         auto setPipe = PipeAttr::get(builder.getContext(), hivm::PIPE::PIPE_FIX);
@@ -557,7 +626,7 @@ void DAGSyncPass::insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation 
         auto flagId = builder.getIntegerAttr(builder.getI64Type(), flag);
         auto flagAddId = builder.getIntegerAttr(builder.getI64Type(), flag * 2);
         auto lastFlagAddId = builder.getIntegerAttr(builder.getI64Type(), (flag - 1) * 2);
-        
+
         // set 在 srcOp 后
         builder.setInsertionPointAfter(srcOp);
         builder.create<SyncBlockSetOp>(loc, coreAttr, setPipe, waitPipe, flagId);
@@ -569,12 +638,12 @@ void DAGSyncPass::insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation 
 
         // 1. 插入数据搬运
         insertCubeToVectorDataMovement(srcOp, dstOp, srcResult, builder, loc, nullptr);
-        
-        llvm::outs() << "Inserted CUBE->VECTOR sync and data movement (flag=" << flag << ")\n";
+
+        // llvm::outs() << "Inserted CUBE->VECTOR sync and data movement (flag=" << flag << ")\n";
     }
     // VECTOR -> CUBE
-    else if (srcType == CoreType::VECTOR && dstType == CoreType::CUBE) {
-        
+    else if (srcType == CoreType::VECTOR_ONLY && dstType == CoreType::CUBE_ONLY) {
+
         // 2. 插入同步指令
         auto coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR);
         auto setPipe = PipeAttr::get(builder.getContext(), hivm::PIPE::PIPE_MTE3);
@@ -586,31 +655,33 @@ void DAGSyncPass::insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation 
         auto lastFlagAddId = builder.getIntegerAttr(builder.getI64Type(), (flag - 1) * 2);
 
         // set 在 srcOp 后
-        builder.setInsertionPointAfter(srcOp);
-        builder.create<SyncBlockSetOp>(loc, coreAttr, setPipe, waitPipe, flagId);
+        // builder.setInsertionPointAfter(srcOp);
+        auto posOp = FindLastestPosition(srcOp, mainGraph, builder);
+        builder.setInsertionPoint(posOp);
+        auto setOp = builder.create<SyncBlockSetOp>(loc, coreAttr, setPipe, waitPipe, flagId);
 
         // wait 在 dstOp 前
         builder.setInsertionPoint(dstOp);
         coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::CUBE);
         builder.create<SyncBlockWaitOp>(loc, coreAttr, setPipe, waitPipe, flagId);
-        
+
         // 1. 插入数据搬运
-        insertVectorToCubeDataMovement(srcOp, dstOp, srcResult, builder, loc, valueMap);
-        
-        llvm::outs() << "Inserted VECTOR->CUBE sync and data movement (flag=" << flag << ")\n";
+        insertVectorToCubeDataMovement(srcOp, dstOp, setOp, srcResult, builder, loc, valueMap);
+
+        // llvm::outs() << "Inserted VECTOR->CUBE sync and data movement (flag=" << flag << ")\n";
     }
 }
 
 // 跨 block 的同步和数据搬运
-void DAGSyncPass::insertSyncAndMovementForCrossBlock(mlir::Operation *srcOp, mlir::Operation *dstOp, 
+void DAGSyncPass::insertSyncAndMovementForCrossBlock(mlir::Operation *srcOp, mlir::Operation *dstOp,
                                                     CoreType srcType, CoreType dstType,
                                                     mlir::OpBuilder &builder, int flag,
-                                                    bool dstIsInnerBlock, llvm::DenseMap<Value, CoreType>* valueMap) {
+                                                    bool dstIsInnerBlock, llvm::DenseMap<Value, CoreType>* valueMap, Graph &mainGraph) {
     if (!dstIsInnerBlock) {
-        insertSyncAndMovement(srcOp, dstOp, srcType, dstType, builder, flag, valueMap);
+        insertSyncAndMovement(srcOp, dstOp, srcType, dstType, builder, flag, valueMap, mainGraph);
         return;
     }
-    
+
     mlir::Location loc = srcOp->getLoc();
     mlir::Block *dstBlock = dstOp->getBlock();
 
@@ -619,27 +690,27 @@ void DAGSyncPass::insertSyncAndMovementForCrossBlock(mlir::Operation *srcOp, mli
         return;
     }
     mlir::Value srcResult = srcOp->getResult(0);
-    
+
     // CUBE -> VECTOR
-    if (srcType == CoreType::CUBE && dstType == CoreType::VECTOR) {
-        
+    if (srcType == CoreType::CUBE_ONLY && dstType == CoreType::VECTOR_ONLY) {
+
         // 2. 插入同步指令（跨 block 特殊处理）
         auto coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::CUBE);
         auto setPipe = PipeAttr::get(builder.getContext(), hivm::PIPE::PIPE_FIX);
         auto waitPipe = PipeAttr::get(builder.getContext(), hivm::PIPE::PIPE_V);
         auto flagId = builder.getIntegerAttr(builder.getI64Type(), flag);
-        
+
         // set 在 srcOp 后（外层）
         builder.setInsertionPointAfter(srcOp);
         builder.create<SyncBlockSetOp>(loc, coreAttr, setPipe, waitPipe, flagId);
 
         // 1. 插入数据搬运（同 block 内逻辑）
         insertCubeToVectorDataMovement(srcOp, dstOp, srcResult, builder, loc, nullptr);
-        
+
         // wait 在内层 block 入口前
         mlir::Operation *parentOp = dstBlock->getParentOp();
         while (srcOp->getBlock() != parentOp->getBlock()) {
-            llvm::outs() << "******** get parentOp\n";
+            // llvm::outs() << "******** get parentOp\n";
             parentOp = parentOp->getBlock()->getParentOp();
         }
         if (parentOp) {
@@ -651,25 +722,25 @@ void DAGSyncPass::insertSyncAndMovementForCrossBlock(mlir::Operation *srcOp, mli
             coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR);
             builder.create<SyncBlockWaitOp>(loc, coreAttr, setPipe, waitPipe, flagId);
         }
-        
-        llvm::outs() << "Inserted cross-block CUBE->VECTOR sync and data movement (flag=" << flag << ")\n";
+
+        // llvm::outs() << "Inserted cross-block CUBE->VECTOR sync and data movement (flag=" << flag << ")\n";
     }
     // VECTOR -> CUBE
-    else if (srcType == CoreType::VECTOR && dstType == CoreType::CUBE) {
-        
+    else if (srcType == CoreType::VECTOR_ONLY && dstType == CoreType::CUBE_ONLY) {
+
         // 2. 插入同步指令（跨 block 特殊处理）
         auto coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR);
         auto setPipe = PipeAttr::get(builder.getContext(), hivm::PIPE::PIPE_MTE3);
         auto waitPipe = PipeAttr::get(builder.getContext(), hivm::PIPE::PIPE_MTE1);
         auto flagId = builder.getIntegerAttr(builder.getI64Type(), flag);
-        
+
         // set 在 srcOp 后（外层）
         builder.setInsertionPointAfter(srcOp);
         builder.create<SyncBlockSetOp>(loc, coreAttr, setPipe, waitPipe, flagId);
 
         // 1. 插入数据搬运（同 block 内逻辑）
-        insertVectorToCubeDataMovement(srcOp, dstOp, srcResult, builder, loc, valueMap);
-        
+        insertVectorToCubeDataMovement(srcOp, dstOp, srcOp, srcResult, builder, loc, valueMap);
+
         // wait 在内层 block 入口前
         mlir::Operation *parentOp = dstBlock->getParentOp();
         if (parentOp) {
@@ -681,8 +752,8 @@ void DAGSyncPass::insertSyncAndMovementForCrossBlock(mlir::Operation *srcOp, mli
             coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::CUBE);
             builder.create<SyncBlockWaitOp>(loc, coreAttr, setPipe, waitPipe, flagId);
         }
-        
-        llvm::outs() << "Inserted cross-block VECTOR->CUBE sync and data movement (flag=" << flag << ")\n";
+
+        // llvm::outs() << "Inserted cross-block VECTOR->CUBE sync and data movement (flag=" << flag << ")\n";
     }
 }
 
@@ -693,10 +764,10 @@ void LegalizeDot(triton::FuncOp funcOp) {
       Value a = dotOp.getOperands()[0];
       Value b = dotOp.getOperands()[1];
       Value c = dotOp.getOperands()[2];  // 累加器参数
-      
+
       // 检查累加器是否为全零常量
       bool isZeroAccumulator = false;
-      
+
       // 检查是否直接是arith.constant 0
       if (auto constantOp = c.getDefiningOp<arith::ConstantOp>()) {
         if (auto denseAttr = dyn_cast<DenseElementsAttr>(constantOp.getValue())) {
@@ -710,7 +781,7 @@ void LegalizeDot(triton::FuncOp funcOp) {
         // 创建新的零累加器
         Location loc = dotOp.getLoc();
         auto resultType = dotOp.getResult().getType();
-        
+
         Value originalResult = dotOp.getResult();
         builder.setInsertionPoint(dotOp);
         // 创建全零张量
@@ -718,23 +789,23 @@ void LegalizeDot(triton::FuncOp funcOp) {
             dyn_cast<RankedTensorType>(resultType),
             APFloat(0.0f));
         auto zeroConstant = builder.create<arith::ConstantOp>(loc, zeroAttr);
-        
+
         // 创建新的dot操作，使用零作为累加器
         auto newDot = builder.create<triton::DotOp>(
             loc, resultType, a, b, zeroConstant);
-        
+
         // 创建加法操作，将新的dot结果与原来的累加器c相加
         auto addOp = builder.create<arith::AddFOp>(loc, newDot, c);
-        
+
         // 用addOp替换原来的dotOp
         originalResult.replaceAllUsesWith(addOp.getResult());
-            
+
         // 删除原dotOp（如果它没有其他用途）
         if (dotOp.use_empty()) {
             dotOp.erase();
         }
       }
-      
+
     });
 }
 
@@ -754,38 +825,56 @@ static void rewriteCopyChainForCbub(
   if (!inputTensorType || inputTensorType.getRank() != 2)
     return;
 
-  // 中间 reshape 形状：[M/16, 16, N/16, 16]
+  // blk = 32/位宽
+  // 中间 reshape 形状：[M/16, 16, N/ blk, blk]
   int64_t M = inputTensorType.getShape()[0];
   int64_t N = inputTensorType.getShape()[1];
-  SmallVector<int64_t, 4> intermediateShape = {M / 16, 16, N / 16, 16};
-
+  auto elemType = inputTensorType.getElementType();
+  auto blkOr = getBlockElemsFor32BAlign(elemType);
+  int64_t blk = (int64_t)*blkOr;
+  SmallVector<int64_t, 3> intermediateShape3D = {M, N / blk, blk};
+  SmallVector<int64_t, 3> intermediateShapetrans = {N / blk, M, blk};
   auto elementType = inputTensorType.getElementType();
-  auto interTensorType = RankedTensorType::get(intermediateShape, elementType);
+  auto interTensor3DType = RankedTensorType::get(intermediateShape3D, elementType);
+  auto interTensortransType = RankedTensorType::get(intermediateShapetrans, elementType);
+
   auto finalTensorType = RankedTensorType::get(newShape, elementType);
 
   auto loc = inputTensor.getLoc();
 
   // Set insertion point before copyOp (or toMemRefOp)
-  builder.setInsertionPoint(toMemRefOp);
+  auto tensorOp = inputTensor.getDefiningOp();
+  builder.setInsertionPointAfter(tensorOp);
 
-  // 插入 triton.reshape 将 2D tensor 展开为 4D
-  auto reshapeOp = builder.create<triton::ReshapeOp>(
-      loc, interTensorType, inputTensor);
-  (*valueTypes)[reshapeOp.getResult()] = CoreType::VECTOR;
+  // 插入 triton.reshape 将 2D tensor 展开为 3D
+  auto reshape3DOp = builder.create<triton::ReshapeOp>(
+      loc, interTensor3DType, inputTensor);
+  (*valueTypes)[reshape3DOp.getResult()] = CoreType::VECTOR_ONLY;
 
-  // 插入 triton.trans 调整维度顺序 Insert tt.trans {order = [2, 0, 1, 3]}
-  SmallVector<int32_t, 4> order = {2, 0, 1, 3};
+  // 插入 triton.trans 调整维度顺序 Insert tt.trans {order = [1, 0, 2]}
+  SmallVector<int32_t, 4> order = {1, 0, 2};
   auto orderAttr = builder.getDenseI32ArrayAttr(order);  // OpBuilder supports this
   auto transOp = builder.create<triton::TransOp>(
-      loc, finalTensorType, reshapeOp.getResult(), orderAttr);
-  (*valueTypes)[transOp.getResult()] = CoreType::VECTOR;
+      loc, interTensortransType, reshape3DOp.getResult(), orderAttr);
+  (*valueTypes)[transOp.getResult()] = CoreType::VECTOR_ONLY;
+
+  // 插入 triton.reshape 将 3D tensor 展开为 4D
+  auto reshape4DOp = builder.create<triton::ReshapeOp>(
+      loc, finalTensorType, transOp.getResult());
+  (*valueTypes)[reshape4DOp.getResult()] = CoreType::VECTOR_ONLY;
 
   // Create new to_memref
+  builder.setInsertionPoint(toMemRefOp);
   auto newMemRefType = MemRefType::get(
-      newShape, elementType, mlir::AffineMap{}, toMemRefOp.getType().getMemorySpace());
+      newShape, 
+      elementType, 
+      mlir::AffineMap{}, 
+      toMemRefOp.getType().getMemorySpace());
   auto newToMemRefOp = builder.create<bufferization::ToMemrefOp>(
-      toMemRefOp.getLoc(), newMemRefType, transOp.getResult());
-  (*valueTypes)[newToMemRefOp.getResult()] = CoreType::VECTOR;
+      toMemRefOp.getLoc(), 
+      newMemRefType,
+      reshape4DOp.getResult());
+  (*valueTypes)[newToMemRefOp.getResult()] = CoreType::VECTOR_ONLY;
 
   // Create NEW copyOp (replacing the old one)
   builder.setInsertionPoint(copyOp);
@@ -793,7 +882,7 @@ static void rewriteCopyChainForCbub(
   auto newCopyOp = builder.create<hivm::CopyOp>(
       copyOp.getLoc(),
       resultTypes,                      // TypeRange
-      newToMemRefOp.getResult(),        // src (ins)
+      reshape4DOp.getResult(),        // src (ins)
       copyOp.getOperands()[1]           // dst (outs)
   );
 
@@ -818,35 +907,35 @@ void DAGSyncPass::runOnOperation()
             continue;
         }
 
-        llvm::outs() << "\n====================================\n";
-        llvm::outs() << "处理函数: " << funcOp.getName() << "\n";
-        llvm::outs() << "====================================\n";
+        // llvm::outs() << "\n====================================\n";
+        // llvm::outs() << "处理函数: " << funcOp.getName() << "\n";
+        // llvm::outs() << "====================================\n";
 
-        auto [shared_graph, _] = Graph::fromMultiBlockFunc(funcOp);
+        auto unique_graph = Graph::fromMultiBlockFunc(funcOp);
+        std::shared_ptr<Graph> shared_graph = std::move(unique_graph);
         auto& main_graph = *shared_graph;
 
         auto funcName = funcOp.getName();
-        // 2. 标记设备类型
-        main_graph.markCore();
 
         // 获取 DAG 图的映射
-        auto *opMap = main_graph.opMap;
-        valueTypes = main_graph.valueTypes;
+        auto opMapRaw = main_graph.getOpMapLegacy();
+        valueTypes = &main_graph.getValueTypes();
+        auto *opMap = &opMapRaw;
         for (const auto& pair : *opMap) {
             Operation* op = pair.first;  // 键：Operation 指针
             Node* node = pair.second;    // 值：Node 指针
-            
+
             // 打印指针地址（最直接的方式）
-            llvm::outs() << "Operation*: " << *op 
-                         << "\n";
+            // llvm::outs() << "Operation*: " << *op
+            //              << "\n";
             for (auto res : op->getResults()) {
-                 llvm::outs() << "Value: " << (*valueTypes)[res] 
+                 llvm::outs() << "Value: " << (*valueTypes)[res]
                          << "\n";
             }
-            
+
         }
 
-        if (!opMap || !valueTypes) {
+        if (!opMap) {
             llvm::errs() << "Warning: Failed to create DAG graph for function " << funcOp.getName() << "\n";
             continue;
         }
@@ -865,31 +954,35 @@ void DAGSyncPass::runOnOperation()
                 return;
             }
 
-            Node *currentNode = nodeIt->second;
+            OpNode *currentNode = nodeIt->second;
 
             // 检查是否是 scf.for 操作
             if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
                 // 处理 scf.for 循环的特殊同步逻辑
-                processScfForSync(forOp, currentNode, valueTypes, builder, syncFlag);
+                int temp = syncFlag % 14;
+                processScfForSync(forOp, currentNode, valueTypes, builder, temp);
             }
 
             // 获取当前节点的设备类型
             CoreType currentType = getNodeDeviceType(currentNode, valueTypes);
-            
+
             // 打印操作信息（可选）
-            if (!llvm::isa<scf::SCFDialect>(op->getDialect())) {
-                llvm::outs() << "操作: " << *op 
-                         << " 设备类型: " 
-                         << (currentType == CoreType::VECTOR ? "VECTOR" : 
-                             currentType == CoreType::CUBE ? "CUBE" : "SCALAR")
-                         << "\n";
-            }
+            // if (!llvm::isa<scf::SCFDialect>(op->getDialect())) {
+            //     llvm::outs() << "操作: " << *op
+            //              << " 设备类型: "
+            //              << (currentType == CoreType::VECTOR_ONLY ? "VECTOR" :
+            //                  currentType == CoreType::CUBE_ONLY ? "CUBE" : "SCALAR")
+            //              << "\n";
+            // }
 
             // 4. 遍历当前节点的所有输入节点
-            for (Node *inputNode : currentNode->ins) {
-                if (!inputNode || !inputNode->op) {
+            for (ValueNode *inputValNode : currentNode->getInputs()) {
+                auto inputOp = inputValNode->value.getDefiningOp();
+                if (!inputOp && opMap->contains(inputOp)) {
                     continue;
                 }
+
+                auto inputNode = (*opMap)[inputOp];
 
                 // 获取输入节点的设备类型
                 CoreType inputType = getNodeDeviceType(inputNode, valueTypes);
@@ -897,23 +990,23 @@ void DAGSyncPass::runOnOperation()
                 // 5. 判断是否需要插入同步和数据搬运
                 if (needVectorCubeSync(inputType, currentType)) {
                     // 检查是否已经处理过这对操作
-                    auto opPair = std::make_pair(inputNode->op, op);
+                    auto opPair = std::make_pair(inputOp, op);
                     if (processedPairs.insert(opPair).second) {
                         // 插入同步和数据搬运指令
                         // 检查是否是跨 block 的依赖
-                        mlir::Block *srcBlock = inputNode->op->getBlock();
+                        mlir::Block *srcBlock = inputOp->getBlock();
                         mlir::Block *dstBlock = op->getBlock();
-                        
+
                         if (srcBlock == dstBlock) {
                             // 同一 block 内
-                            insertSyncAndMovement(inputNode->op, op, inputType, currentType, builder, syncFlag, valueTypes);
+                            insertSyncAndMovement(inputOp, op, inputType, currentType, builder, syncFlag % 14, valueTypes, main_graph);
                             syncFlag ++;
                         } else {
                             // 跨 block，判断是否是外层到内层
                             llvm::outs() << "#########\n";
                             bool dstIsInnerBlock = false;
                             mlir::Operation *dstParentOp = dstBlock->getParentOp();
-                            
+
                             // 向上查找，看 dstBlock 是否在 srcBlock 的区域内
                             while (dstParentOp) {
                                 if (dstParentOp->getBlock() == srcBlock) {
@@ -927,9 +1020,9 @@ void DAGSyncPass::runOnOperation()
                                 }
                             }
                             if (dstIsInnerBlock) {
-                            
-                                insertSyncAndMovementForCrossBlock(inputNode->op, op, inputType, currentType, 
-                                                              builder, syncFlag, dstIsInnerBlock, valueTypes);
+
+                                insertSyncAndMovementForCrossBlock(inputOp, op, inputType, currentType,
+                                                              builder, syncFlag % 14, dstIsInnerBlock, valueTypes, main_graph);
                                 syncFlag ++;
                             }
                         }
@@ -938,8 +1031,8 @@ void DAGSyncPass::runOnOperation()
             }
         });
 
-        llvm::outs() << "\n函数 " << funcOp.getName() << " 统计:\n";
-        llvm::outs() << "  - 插入的总同步操作数: " << syncFlag << "\n";
+        // llvm::outs() << "\n函数 " << funcOp.getName() << " 统计:\n";
+        // llvm::outs() << "  - 插入的总同步操作数: " << syncFlag << "\n";
         funcOp.walk([&](hivm::CopyOp copyOp) {
             llvm::outs()<<copyOp<<"  sss\n\n\n\n";
             rewriteCopyChainForCbub(copyOp, dyn_cast<MemRefType>(copyOp.getOperands()[1].getType()).getShape(), builder);

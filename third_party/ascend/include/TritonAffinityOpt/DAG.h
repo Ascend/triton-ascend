@@ -5,32 +5,41 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TinyPtrVector.h"
+#include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include <cassert>
 #include <cstddef>
 #include <memory>
+#include <mutex>
+#include <optional>
 
 namespace mlir { namespace AffinityDAG {
 
-/**
-  * @brief Mark the type of device of a certain Op or result
-  *
-  * This enum is reused for both values and operations
-*/
-enum CoreType {
-  VECTOR = 1 << 0,
-  CUBE = 1 << 1,
-  SCALAR = VECTOR | CUBE,
-  UNDETERMINED = 0,
-  // UNDETERMINED = 0,
-  // VECTOR = 1 << 0,
-  // CUBE = 1 << 1,
-  // SCALAR = VECTOR | CUBE,
+enum class OpAbility {
+  PREFER_VECTOR = 1 << 0,
+  CUBE_ONLY = 1 << 1,
+  CUBE_AND_VECTOR = PREFER_VECTOR | CUBE_ONLY
+
 };
+
+enum CoreType {
+  UNDETERMINED = 0,
+  VECTOR_ONLY = 1 << 0,
+  CUBE_ONLY = 1 << 1,
+  CUBE_AND_VECTOR = VECTOR_ONLY | CUBE_ONLY
+};
+
+inline constexpr CoreType toCoreType(OpAbility ct) {
+  using U = std::underlying_type_t<OpAbility>;
+  return static_cast<CoreType>(static_cast<U>(ct));
+}
 
 constexpr inline CoreType operator| (CoreType lhs, CoreType rhs) {
   return enumOp(std::bit_or<>(), lhs, rhs);
@@ -41,124 +50,207 @@ inline CoreType operator& (CoreType lhs, CoreType rhs) {
 }
 
 inline bool intersects(CoreType lhs, CoreType rhs) {
-  return (lhs & rhs) != UNDETERMINED;
+  return (lhs & rhs) != CoreType::UNDETERMINED;
+}
+
+inline CoreType operator& (OpAbility lhs, CoreType rhs) {
+  return toCoreType(lhs) & rhs;
+}
+
+inline bool intersects(OpAbility lhs, CoreType rhs) {
+  return (lhs & rhs) != CoreType::UNDETERMINED;
+}
+
+inline bool exactlyOneType(CoreType ct) {
+  return (ct == CUBE_ONLY) || (ct == VECTOR_ONLY);
 }
 
 const char* literalCoreType(CoreType ct);
 
-class Node;
+class MoveOnly {
+protected:
+  MoveOnly() = default;
+  ~MoveOnly() = default;
 
-class Graph {
-  friend class Node;
+  MoveOnly(const MoveOnly &) = delete;
+  MoveOnly &operator=(const MoveOnly &) = delete;
 
-public:
-  using OpMapRaw = llvm::DenseMap<Operation*, Node*>;
-  using ValueTypesRaw = llvm::DenseMap<Value, CoreType>;
-  using OpMap = OpMapRaw*;
-  using ValueTypes = ValueTypesRaw*;
-  Block* block;
-  OpMap opMap;
-  ValueTypes valueTypes;
-  Node* terminator = nullptr;
-  Graph* parentGraph = nullptr;
-  llvm::DenseSet<Operation*> markedAsCube;
-
-  explicit Graph(Block* blk, Graph* parentGraph = nullptr,
-        OpMap defaultOpMap = nullptr,
-        ValueTypes defaultValueTypes = nullptr,
-        bool noDependencies = false);
-
-  static Graph* inheritConstructFrom(Block* blk, Graph* parentGraph) {
-    return new Graph(
-      blk, parentGraph,
-      parentGraph->opMap,
-      parentGraph->valueTypes
-    );
-  };
-
-  ~Graph() {}
-
-  Node* insertOp(Operation* op, std::optional<Operation*> positionPos = std::nullopt);
-
-  void markCore();
-  const char* getCoreTypeStrOf(Value value);
-
-  /**
-   * @brief Initialise a dummy graph with a single dummy Node that contains all blocks of the function as subgraphs
-   */
-  static std::tuple<
-    std::shared_ptr<Graph>,
-    // std::unique_ptr<Node>,
-    // std::unique_ptr<OpMapRaw>,
-    // std::unique_ptr<ValueTypesRaw>
-    Node*
-  > fromMultiBlockFunc(triton::FuncOp func);
-
-private:
-  void updateDependencies(Node* node);
-  void markAsCoreType(Operation* op, CoreType ct);
-
-  void markDotUpstream(Operation* op);
-  void markCubeLoadUpstream(Operation* op);
-
-  // CoreType diffuseFromUpstream(OpResult result);
-  // bool diffuseAcross(Operation* op);
-  // bool updateValueType(Value value, CoreType newCoreType);
-  // CoreType diffusedYieldValueFromIterArgs(scf::YieldOp yieldOp);
-
-  // /**
-  //  * @brief Try to diffuse the core types of current graph and the subgraphs, single pass
-  //  * @return Whether this iteration has changed any valueTypes
-  //  */
-  // bool markCoreSingleStep();
+  MoveOnly(MoveOnly &&) = default;
+  MoveOnly &operator=(MoveOnly &&) = default;
 };
 
-class Node {
-  friend class Graph;
+class Node;
+class OpNode;
+class ValueNode;
+
+class Graph : MoveOnly {
 public:
-  enum NodeType {
-    NT_Default,
-    NT_Sync,
-  };
-  const NodeType nodeType;
+  using OpMapRaw = llvm::DenseMap<Operation*, std::unique_ptr<OpNode>>;
+  using ValueMapRaw = llvm::DenseMap<Value, std::unique_ptr<ValueNode>>;
+  using OpMap = std::shared_ptr<OpMapRaw>;
+  using ValueMap = std::shared_ptr<ValueMapRaw>;
 
-  Operation* op;
-  Graph* graph; // 所属图
-  llvm::SmallPtrSet<Node*, 4> ins;
-  llvm::SmallPtrSet<Node*, 2> outs;
+  Graph(
+    Block* block,
+    Graph* parent = nullptr,
+    OpMap opMap = nullptr,
+    ValueMap valueMap = nullptr,
+    bool inheritParent = true
+  );
 
-  llvm::TinyPtrVector<Graph*> subgraphs;
+  static std::unique_ptr<Graph> fromMultiBlockFunc(triton::FuncOp funcOp);
 
-  Graph* getSubGraph(size_t index = 0) {
-    return index >= subgraphs.size() ? nullptr : subgraphs[index];
+  OpMapRaw& getOpMap() const {
+    return *opMap;
   }
 
-  bool hasSubGraph() const { return !subgraphs.empty(); }
-  void convertToSubGraph();
-  void flattenSubGraph(size_t index = 0);
+  ValueMapRaw& getValueMap() const {
+    return *valueMap;
+  }
 
-  /**
-    * @brief Initialize a default node directly under the graph, together with its ins.
-    */
-  Node(Operation* const op, Graph* const graph);
+  // [DEBUG] start
+  std::unique_ptr<llvm::DenseMap<Operation*, OpNode*>> legacyOpMap = nullptr;
+  std::unique_ptr<llvm::DenseMap<Value, CoreType>> legacyValueTypes = nullptr;
 
-  /**
-   * @brief Initialize a pair of sync node directly under the graph, handling syncronising scross cores.
-   */
-  // static std::pair<Node*, Node*> SyncNode(
-  //   Operation* const send,
-  //   Operation* const receive,
-  //   Graph* const sendGraph,
-  //   Graph* const receiveGraph
-  // );
+  inline llvm::DenseMap<Operation*, OpNode*>& getOpMapLegacy() {
+    if (!legacyOpMap) {
+      legacyOpMap = std::move(std::make_unique<llvm::DenseMap<Operation*, OpNode*>>());
+      for(auto& [key, val] : *opMap) {
+        (*legacyOpMap)[key] = val.get();
+      }
+    }
+
+    return *legacyOpMap;
+  }
+
+  llvm::DenseMap<Value, CoreType>& getValueTypes() ;
+
+  // [DEBUG] end
 
 private:
-  /**
-  * @brief Initialize a node with the specified node type, without handling dependencies
-  */
-  Node(Operation* const op, Graph* const graph, NodeType nt) : op(op), graph(graph), nodeType(nt) {};
+  friend class Node;
+  friend class OpNode;
+  OpMap opMap;
+  ValueMap valueMap;
+  Block* block;
+  Graph* parent;
+  OpNode* terminator = nullptr;
+  size_t opCount = 0;
+  llvm::SmallVector<ValueNode*, 4> blockArgs;
 };
 
+class Node : MoveOnly {
+protected:
+  friend class Graph;
+  friend class ValueNode;
+  bool isUpstreamOfCubeMem = false;
+  virtual CoreType absorbImpl() = 0;
+  llvm::SmallVector<Node*, 4> outputs;
+
+public:
+  CoreType isOnPrivate = UNDETERMINED;
+
+  enum NodeKind {
+    NK_Op,
+    NK_Value
+  };
+
+  inline CoreType isOn() const {
+    return isOnPrivate;
+  }
+
+  bool absorb() {
+    auto newCoreType = absorbImpl();
+    auto changed = newCoreType != isOnPrivate;
+    isOnPrivate = newCoreType;
+
+    return changed;
+  };
+
+  virtual llvm::SmallVector<Node*, 4> getAffected() const = 0;
+  virtual OpNode* getSourceOpNode() = 0;
+
+  ArrayRef<Node*> getOutputs() const {
+    return outputs;
+  }
+
+  CoreType absorbCommon();
+
+private:
+  const NodeKind kind;
+
+public:
+  NodeKind getKind() const {
+    return kind;
+  }
+
+protected:
+  Node(NodeKind kind) : kind(kind) {}
+};
+
+class OpNode : public Node {
+  friend class Graph;
+  friend class ValueNode;
+  llvm::SmallVector<ValueNode*, 4> inputs;
+  llvm::SmallVector<Graph, 2> subgraphs;
+  virtual CoreType absorbImpl() override;
+
+public:
+  Operation* op;
+
+  OpNode(Operation* op, Graph* graph);
+  OpAbility canRunOn() const;
+  inline ArrayRef<ValueNode*> getInputs() const {
+    return inputs;
+  }
+
+  static bool classof(const Node* node) {
+    return node->getKind() == NK_Op;
+  }
+
+  virtual llvm::SmallVector<Node*, 4> getAffected() const override {
+    llvm::SmallVector<Node*, 4> result(inputs.begin(), inputs.end());
+    result.append(outputs.begin(), outputs.end());
+
+    return result;
+  }
+
+  virtual OpNode* getSourceOpNode() override {
+    return this;
+  }
+};
+
+class ValueNode : public Node {
+  friend class Graph;
+  friend class OpNode;
+  virtual CoreType absorbImpl() override;
+public:
+
+  Node* source = nullptr;
+  Value value;
+  // ValueNode(OpResult value);
+  // ValueNode(BlockArgument value);
+
+  ValueNode(Value value) : Node(NK_Value), value(value) {};
+  virtual OpNode* getSourceOpNode() override {
+    if (!source) {
+      return nullptr;
+    }
+
+    return source->getSourceOpNode();
+  }
+  static bool classof(const Node* node) {
+    return node->getKind() == NK_Value;
+  }
+
+  virtual llvm::SmallVector<Node*, 4> getAffected() const override {
+    llvm::SmallVector<Node*, 4> result(outputs.begin(), outputs.end());
+    if (source)
+      result.push_back(source);
+
+    return result;
+  }
+};
 
 class GraphManager {
 private:
@@ -183,6 +275,22 @@ public:
     graphs.erase(funcName);
   }
 };
+
+
+inline llvm::DenseMap<Value, CoreType>& Graph::getValueTypes() {
+  static std::mutex mtx;
+  std::lock_guard<std::mutex> lock(mtx);
+  if (!legacyValueTypes) {
+    legacyValueTypes = std::move(std::make_unique<llvm::DenseMap<Value, CoreType>>());
+    for(auto& [key, val] : *valueMap) {
+      llvm::dbgs() << key << "\n";
+      llvm::dbgs().flush();
+      (*legacyValueTypes)[key] = val.get()->isOn();
+    }
+  }
+
+  return *legacyValueTypes;
+}
 
 } }
 #endif
