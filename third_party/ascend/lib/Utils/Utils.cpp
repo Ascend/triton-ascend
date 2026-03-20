@@ -919,8 +919,8 @@ OpFoldResult maxOpFoldResult(const OpFoldResult &lhs, const OpFoldResult &rhs,
   if (rhsInt) {
     rhsValue = createConstIndexValueOp(loc, b, rhsInt.value());
   } else {
-    lhsValue = convertToIndexIfNeeded(lhsValue, loc, b);
-    assert(isa<IndexType>(lhsValue.getType()));
+    rhsValue = convertToIndexIfNeeded(rhsValue, loc, b);
+    assert(isa<IndexType>(rhsValue.getType()));
   }
 
   return b.create<arith::MaxSIOp>(loc, lhsValue, rhsValue).getResult();

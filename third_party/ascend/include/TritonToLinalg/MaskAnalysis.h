@@ -40,6 +40,13 @@ class OpBuilder;
 namespace triton {
 // use to decode the pattern in a mask used for load and store
 
+enum class MaskPosition {
+  Head,
+  Tail,
+  Middle,
+  Unknown
+};
+
 class MaskState {
 public:
   OpFoldResult start;
@@ -53,6 +60,47 @@ public:
     return dims.size();
   }
 
+  MaskPosition getMaskPosition(llvm::ArrayRef<int64_t> &tensorShape)
+  {
+    if (getRank() != tensorShape.size()) {
+      return MaskPosition::Unknown;
+    }
+
+    bool isHead = true;
+    size_t dynIndex = -1;
+
+    for (size_t i = 0; i < getRank(); ++i) {
+      auto offsetVal = mlir::getConstantIntValue(offsets[i]);
+      auto dimVal = mlir::getConstantIntValue(dims[i]);
+
+      if (!offsetVal.has_value() || offsetVal.value() != 0) {
+        isHead = false;
+        if (dynIndex == -1) {
+          dynIndex = i;
+        } else { // temporarily support only one dyn dim
+          return MaskPosition::Unknown;
+        }
+      }
+    }
+
+    if (isHead) {
+      return MaskPosition::Head;
+    }
+
+    for (size_t i = 0; i < getRank(); ++i) {
+      auto offsetVal = mlir::getConstantIntValue(offsets[i]);
+      auto dimVal = mlir::getConstantIntValue(dims[i]);
+      int64_t shapeVal = tensorShape[i];
+      if (i == dynIndex) {
+        continue;
+      }
+      if (!dimVal.has_value() || dimVal.value() != shapeVal) {
+        return MaskPosition::Unknown;
+      }
+    }
+    return MaskPosition::Middle;
+  }
+
   bool isEmpty() const { return getRank() == 0 && !scalar && !start && !end; }
 
   bool isMask() const {
@@ -64,10 +112,21 @@ public:
 
   tensor::ExtractSliceOp getExtractSlice(Value source, const Location &loc,
                                          OpBuilder &builder) const;
+  
+  tensor::ExtractSliceOp getExtractSlice(Value source, const Location &loc,
+                                        OpBuilder &builder,
+                                        SmallVector<OpFoldResult> offsets,
+                                        SmallVector<OpFoldResult> dims) const;
 
   tensor::InsertSliceOp getInsertSlice(Value source, Value dest,
                                        const Location &loc,
                                        OpBuilder &builder) const;
+
+  tensor::InsertSliceOp getInsertSlice(Value source, Value dest,
+                                       const Location &loc,
+                                       OpBuilder &builder,
+                                       SmallVector<OpFoldResult> offsets,
+                                       SmallVector<OpFoldResult> dims) const;
 
   memref::SubViewOp getSubview(Value source, const Location &loc,
                                OpBuilder &builder) const;

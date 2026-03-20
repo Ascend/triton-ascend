@@ -129,9 +129,36 @@ tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
                                                 dims, strides);
 }
 
+tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
+                                                  const Location &loc,
+                                                  OpBuilder &builder,
+                                                  SmallVector<OpFoldResult> offsets,
+                                                  SmallVector<OpFoldResult> dims) const
+{
+  auto sourceRType = cast<RankedTensorType>(source.getType());
+  SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
+
+  auto dstRType = tensor::ExtractSliceOp::inferResultType(sourceRType, offsets,
+                                                          dims, strides);
+  return builder.create<tensor::ExtractSliceOp>(loc, dstRType, source, offsets,
+                                                dims, strides);
+}
+
+// insertSlice
 tensor::InsertSliceOp MaskState::getInsertSlice(Value source, Value dest,
                                                 const Location &loc,
                                                 OpBuilder &builder) const {
+  SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
+  return builder.create<tensor::InsertSliceOp>(loc, source, dest, offsets, dims,
+                                               strides);
+}
+
+tensor::InsertSliceOp MaskState::getInsertSlice(Value source, Value dest,
+                                                const Location &loc,
+                                                OpBuilder &builder,
+                                                SmallVector<OpFoldResult> offsets,
+                                                SmallVector<OpFoldResult> dims) const
+{
   SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
   return builder.create<tensor::InsertSliceOp>(loc, source, dest, offsets, dims,
                                                strides);
@@ -488,6 +515,7 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location &loc,
     break;
   }
   case arith::CmpIPredicate::eq: {
+    return failure(); // temporarily disable parse eq
     auto newOffset =
         subOpFoldResult(rhsState.scalar, lhsState.start, loc, builder);
     auto newDim = builder.getIndexAttr(1);
