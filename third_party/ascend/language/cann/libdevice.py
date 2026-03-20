@@ -109,7 +109,6 @@ def pow(arg0, arg1, _builder=None):
             (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_powf", core.dtype("fp32")),
             (core.dtype("fp16"), core.dtype("fp16")): ("__hmf_powDh", core.dtype("fp16")),
             (core.dtype("bf16"), core.dtype("bf16")): ("__hmf_powDb", core.dtype("bf16")),
-            (core.dtype("int32"), core.dtype("int32")): ("__hmf_powi", core.dtype("int32")),
         }, is_pure=True, _builder=_builder)
 
 @core.extern
