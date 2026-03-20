@@ -313,6 +313,9 @@ def _parse_linalg_metadata(linalg: str, metadata: dict):
     # Example: %arg1: memref<?xf32> {tt.divisibility = 16 : i32, tt.tensor_kind = 0 : i32} -> ('1', '0')
     TENSOR_KIND_REGEX = r'%arg(\d+):[^,)]*?\{[^}]*?tt\.tensor_kind\s*=\s*([^:\s}]+)\s*:[^}]*?\}'
 
+    # Example: bitcode = "a.bc"
+    BITCODES_REGEX = r'bitcode\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|(\w+))'
+
     # Note: Compiled Kernel requires to estimate size of shared memory to occupy
     # Currently, NPU backend does not limit on shared memory
     metadata["shared"] = 1
@@ -329,6 +332,10 @@ def _parse_linalg_metadata(linalg: str, metadata: dict):
     metadata["tensor_kinds"] = [int(kind) for _, kind in re.findall(TENSOR_KIND_REGEX, linalg)]
     # init the ub bits of triton kernel for inductor autotune using
     metadata["required_ub_bits"] = 0
+
+    # Parse all bitcode paths
+    bitcodes = re.findall(BITCODES_REGEX, linalg)
+    metadata["bitcodes"] = [val for group in bitcodes for val in group if val]
     return linalg, metadata
 
 
@@ -512,6 +519,12 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         if disable_auto_inject_block_sync is not None:
             _compile_option_list += \
                 [f"--disable-auto-inject-block-sync={disable_auto_inject_block_sync}"]
+
+        bitcodes = metadata["bitcodes"]
+        if bitcodes is not None:
+            for bitcode in bitcodes:
+                _compile_option_list += \
+                    [f"--link-aicore-bitcode={bitcode}"]
 
         if _is_auto_map_parallel_blocks_enabled():
             _compile_option_list += ["--enable-auto-blockify-loop"]
@@ -701,6 +714,12 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
         if disable_auto_inject_block_sync is not None:
             _compile_option_list += \
                 [f"--disable-auto-inject-block-sync={disable_auto_inject_block_sync}"]
+
+        bitcodes = metadata["bitcodes"]
+        if bitcodes is not None:
+            for bitcode in bitcodes:
+                _compile_option_list += \
+                    [f"--link-aicore-bitcode={bitcode}"]
 
         enable_libdevice = os.getenv("TRITON_ENABLE_LIBDEVICE", False)
         if (enable_libdevice):

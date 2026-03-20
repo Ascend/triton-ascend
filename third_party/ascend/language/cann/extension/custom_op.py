@@ -157,12 +157,30 @@ def _add_optional_attr(op, name, builder, attrs):
         attrs[name] = builder.get_str_attr(getattr(op, name))
 
 
+def _add_bitcode_attr(op, builder, attrs):
+    if not hasattr(op, 'bitcode'):
+        return
+
+    from pathlib import Path
+    bitcode = Path(getattr(op, 'bitcode'))
+    assert bitcode.exists(), f"Provided bitcode ({bitcode}) not exist"
+    attrs['bitcode'] = builder.get_str_attr(str(bitcode.absolute()))
+
+
 def _make_attrs(op, builder):
     attrs = {
         'hivm.tcore_type': builder.get_core_type_attr(op.core.value),
         'hivm.pipe': builder.get_pipe_attr(op.pipe.value),
         'hivm.vf_mode': builder.get_vf_mode_attr(op.mode.value),
     }
+
+    if not op.name.startswith('__builtin_'):
+        assert hasattr(op, 'symbol'), f"Non builtin custom op, symbol is required."
+        assert hasattr(op, 'bitcode'), f"Non builtin custom op, bitcode path is required."
+
+    # Add bit code path attribute, formalize to abosulte path.
+    _add_bitcode_attr(op, builder, attrs)
+
     _add_optional_attr(op, 'symbol', builder, attrs)
     _add_optional_attr(op, 'source', builder, attrs)
     _add_optional_attr(op, 'compile', builder, attrs)
@@ -228,6 +246,7 @@ def register_custom_op(op):
         setattr(op, 'name', op.__name__)
     # The op name should not be used.
     assert op.name not in _custom_op_registry, f"Custom op name '{op.name}' already used."
+
     # Check required core, pipe, mode fields.
     assert hasattr(op, 'core'), "'core' field is required."
     assert hasattr(op, 'pipe'), "'pipe' field is required."
