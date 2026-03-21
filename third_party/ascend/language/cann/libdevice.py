@@ -79,11 +79,18 @@ def atan(arg0, _builder=None):
 
 @core.extern
 def tanh(arg0, _builder=None):
-    return core.extern_elementwise(
-        "", "", [arg0], {
-            (core.dtype("fp32"), ): ("__hmf_tanhf", core.dtype("fp32")),
-            (core.dtype("fp16"), ): ("__hmf_tanhDh", core.dtype("fp16")),
-        }, is_pure=True, _builder=_builder)
+    enable_libdevice = triton_enable_libdevice()
+    if enable_libdevice:
+        return core.extern_elementwise(
+            "", "", [arg0], {
+                (core.dtype("fp32"), ): ("__hmf_tanh_fp32", core.dtype("fp32")),
+            }, is_pure=True, _builder=_builder)
+    else:
+        return core.extern_elementwise(
+            "", "", [arg0], {
+                (core.dtype("fp32"), ): ("__hmf_tanhf", core.dtype("fp32")),
+                (core.dtype("fp16"), ): ("__hmf_tanhDh", core.dtype("fp16")),
+            }, is_pure=True, _builder=_builder)
 
 @core.extern
 def ilogb(arg0, _builder=None):
@@ -104,12 +111,19 @@ def ldexp(arg0, arg1, _builder=None):
 
 @core.extern
 def pow(arg0, arg1, _builder=None):
-    return core.extern_elementwise(
-        "", "", [arg0, arg1], {
-            (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_powf", core.dtype("fp32")),
-            (core.dtype("fp16"), core.dtype("fp16")): ("__hmf_powDh", core.dtype("fp16")),
-            (core.dtype("bf16"), core.dtype("bf16")): ("__hmf_powDb", core.dtype("bf16")),
-        }, is_pure=True, _builder=_builder)
+    enable_libdevice = triton_enable_libdevice()
+    if enable_libdevice:
+        return core.extern_elementwise(
+            "", "", [arg0, arg1], {
+                (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_pow_fp32", core.dtype("fp32")),
+            }, is_pure=True, _builder=_builder)
+    else:
+        return core.extern_elementwise(
+            "", "", [arg0, arg1], {
+                (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_powf", core.dtype("fp32")),
+                (core.dtype("fp16"), core.dtype("fp16")): ("__hmf_powDh", core.dtype("fp16")),
+                (core.dtype("bf16"), core.dtype("bf16")): ("__hmf_powDb", core.dtype("bf16")),
+            }, is_pure=True, _builder=_builder)
 
 @core.extern
 def isnan(arg0, _builder=None):

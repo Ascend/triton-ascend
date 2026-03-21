@@ -60,6 +60,7 @@ using namespace triton;
 
 static const llvm::SmallVector<llvm::StringRef> libdeviceOps = {
     // Basic operations
+    "__hmf_pow_fp32",
     "__hmf_div_rz_fp32",
     "__hmf_fmod_fp32",
     "__hmf_float_as_int_fp32",
@@ -69,6 +70,7 @@ static const llvm::SmallVector<llvm::StringRef> libdeviceOps = {
     "__hmf_copysign_fp32",
     "__hmf_log10_fp32",
     // Trigonometric operations
+    "__hmf_tanh_fp32",
     "__hmf_asin_fp32", "__hmf_asin_fp16",
     "__hmf_acos_fp32", "__hmf_acos_fp16",
     "__hmf_atan2_fp32", "__hmf_atan2_fp16",
