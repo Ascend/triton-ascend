@@ -91,6 +91,7 @@ private:
 
     // Find sync position
     Operation* FindLastestPosition(Operation* srcOp, Graph &mainGraph, OpBuilder &builder);
+    Operation* FindEarliestPosition(Operation* dstOp, Graph &mainGraph, OpBuilder &builder);
 };
 }  // namespace
 
@@ -572,6 +573,24 @@ Operation* DAGSyncPass::FindLastestPosition(Operation* srcOp, Graph &mainGraph, 
     return insertPos; 
 }
 
+Operation* DAGSyncPass::FindEarliestPosition(Operation* dstOp, Graph &mainGraph, OpBuilder &builder) 
+{
+    auto insertPos = dstOp;   
+    auto opMap = mainGraph.getOpMapLegacy();
+    auto valueTypes = &mainGraph.getValueTypes();
+    for (auto prevOp = dstOp->getPrevNode(); prevOp != nullptr; prevOp = prevOp->getPrevNode()) {
+        if (dstOp->getBlock() != prevOp->getBlock()) continue;
+        // Once meet SyncBlockSetOp, return now!
+        if (auto waitOp = dyn_cast<hivm::SyncBlockSetOp>(prevOp)) {
+            if (waitOp.getTcoreType() == hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR)) {
+                return insertPos;
+            }
+        }
+        insertPos = prevOp;
+    }
+    return insertPos; 
+}
+
 // 主要的同步和数据搬运插入函数
 void DAGSyncPass::insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation *dstOp,
                                        CoreType srcType, CoreType dstType,
@@ -632,7 +651,9 @@ void DAGSyncPass::insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation 
         builder.create<SyncBlockSetOp>(loc, coreAttr, setPipe, waitPipe, flagId);
 
         // wait 在 dstOp 前
-        builder.setInsertionPoint(dstOp);
+
+        auto posOp = FindEarliestPosition(dstOp, mainGraph, builder);
+        builder.setInsertionPoint(posOp);
         coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR);
         builder.create<SyncBlockWaitOp>(loc, coreAttr, setPipe, waitPipe, flagId);
 
