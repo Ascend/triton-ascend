@@ -1023,28 +1023,7 @@ StoreConverter::matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
   auto loc = op.getLoc();
   auto ptr = adaptor.getPtr();
   auto val = adaptor.getValue();
-
-  if (op->hasAttr(ConverterUtils::discreteAttrName)) {
-    Operation *loop = op->getParentOp();
-    int extractedLoopCount = 1;
-    for (auto parentOp = loop->getParentOp();
-         parentOp->hasAttr("ExtractedLoadOrStore");
-         parentOp = parentOp->getParentOp()) {
-      loop = parentOp;
-      extractedLoopCount++;
-    }
-
-    auto valType = dyn_cast<RankedTensorType>(val.getType());
-    if (valType) {
-      auto valShape = valType.getShape();
-      bool isIndexPutScenario = (extractedLoopCount == 1) && (valShape.size() > 1u);
-      if (isIndexPutScenario) {
-        auto loopOp = cast<scf::ForOp>(loop);
-        loopOp->setAttr("hivm.parallel_loop", rewriter.getUnitAttr());
-      }
-    }
-  }
-
+  
   // 1. boundary size check
   auto boundaryCheck = op.getBoundaryCheck();
   if (!boundaryCheck.empty()) {
