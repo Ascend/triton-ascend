@@ -514,6 +514,14 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         if enable_auto_vectorize_v2 is not None:
             _compile_option_list += \
                 [f"--enable-auto-vectorize-v2={enable_auto_vectorize_v2}"]
+        auto_vectorize_v2_max_fused_ops_num = metadata["auto_vectorize_v2_max_fused_ops_num"]
+        if auto_vectorize_v2_max_fused_ops_num is not None:
+            _compile_option_list += \
+                [f"--hfusion-max-fused-ops-in-auto-vectorize-v2={auto_vectorize_v2_max_fused_ops_num}"]
+        prevec_max_fused_ops_num = metadata["prevec_max_fused_ops_num"]
+        if prevec_max_fused_ops_num is not None:
+            _compile_option_list += \
+                [f"--hfusion-max-fused-elementwise-ops={prevec_max_fused_ops_num}"]
 
         disable_auto_inject_block_sync = metadata["disable_auto_inject_block_sync"]
         if disable_auto_inject_block_sync is not None:
@@ -845,6 +853,8 @@ class NPUOptions:
     enable_drop_unit_dims: bool = None
     enable_flatten: bool = None
     enable_auto_vectorize_v2: bool = None
+    auto_vectorize_v2_max_fused_ops_num: int = None
+    prevec_max_fused_ops_num: int = None
     inject_barrier_all: bool = None
     inject_block_all: bool = None
     disable_size_align_for_cast: bool = None
