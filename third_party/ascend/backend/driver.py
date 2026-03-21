@@ -804,7 +804,7 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
     uint32_t nodeBasicBlockDim = (mixBlockNumRation << 16) + blockNum;
 
     {'cce::internal::DebugTunnelData *DTData = cce::internal::DebugTunnel::Open(blockNum);' if enable_device_print else ''}
-    rtError_t ret;
+    rtError_t ret = RT_ERROR_NONE;
     {'void *ffts_addr = NULL; uint32_t ffts_len; ret = rtGetC2cCtrlAddr((uint64_t*)&ffts_addr, &ffts_len);' if target_support_ffts else ''}
     {'if (ret != RT_ERROR_NONE) return ret;' if (target_support_ffts and enable_taskqueue) else 'if (ret != RT_ERROR_NONE) return;' if (target_support_ffts and (not enable_taskqueue)) else ''}
     // stub argument for workspace
