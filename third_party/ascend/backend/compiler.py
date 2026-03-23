@@ -460,6 +460,11 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--enable-hivm-inject-barrier-all-sync={inject_barrier_all}"]
 
+        inject_block_all = metadata["inject_block_all"]
+        if inject_block_all is not None:
+            _compile_option_list += \
+                [f"--enable-hivm-inject-block-all-sync={inject_block_all}"]
+
         limit_auto_multi_buffer_only_for_local_buffer = metadata["limit_auto_multi_buffer_only_for_local_buffer"]
         if limit_auto_multi_buffer_only_for_local_buffer is not None:
             _compile_option_list += \
