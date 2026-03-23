@@ -411,7 +411,6 @@ class Config:
         res.append(f"set_workspace_multibuffer: {self.set_workspace_multibuffer}")
         res.append(f"tile_mix_vector_loop: {self.tile_mix_vector_loop}")
         res.append(f"tile_mix_cube_loop: {self.tile_mix_cube_loop}")
-        res.append(f"force_simt_template: {self.force_simt_template}")
         return ", ".join(res)
 
 
