@@ -34,9 +34,6 @@
 #define GEN_PASS_DEF_DISCRETEMASKACCESSCONVERSION
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h.inc"
 
-extern bool compileOn91095Flag;
-extern bool forceSimtTemplateFlag;
-
 namespace mlir {
 namespace triton {
 
