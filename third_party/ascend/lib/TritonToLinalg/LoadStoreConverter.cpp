@@ -86,8 +86,9 @@ AddPtrConverter::matchAndRewrite(triton::AddPtrOp op, OpAdaptor adaptor,
 LogicalResult LoadConverter::toTensorAndReplace(
     triton::LoadOp &op, RankedTensorType &tensorType, Value localMem,
     bool mayImplicitTransposeWithLastAxis, const Location &loc, ConversionPatternRewriter &rewriter) const {
-  Value loadedTensor = rewriter.create<bufferization::ToTensorOp>(
-      loc, tensorType, localMem, true, true);
+  Value loadedTensor = rewriter.create<bufferization::ToTensorOp>(loc, tensorType, localMem, true, true);
+  propagateWasBoolToInt8Attr(op.getOperation(), loadedTensor.getDefiningOp(), rewriter);
+
   if(mayImplicitTransposeWithLastAxis){
     auto markOp = rewriter.create<annotation::MarkOp>(loc, loadedTensor);
     markOp->setAttr(MayImplicitTransposeWithLastAxisTAG, UnitAttr::get(rewriter.getContext()));
@@ -119,6 +120,15 @@ LoadConverter::checkModifiedByAddPtrConverter(triton::LoadOp &op) const {
   return success();
 }
 
+void LoadConverter::propagateWasBoolToInt8Attr(Operation *srcLoadOp, Operation *dstOp, PatternRewriter &rewriter) const
+{
+  const std::string WasBoolToInt8TAG = "was_bool_to_int8";
+  if (!srcLoadOp || !dstOp) return;
+  if (srcLoadOp->hasAttr(WasBoolToInt8TAG)) {
+    dstOp->setAttr(WasBoolToInt8TAG, rewriter.getBoolAttr(true));
+  }
+}
+
 /// @brief Continue to modify the triton::LoadOp from the state modified by the
 /// AddPtrConverter.
 /// @param op The triton::LoadOp operation to be processed.
@@ -144,6 +154,7 @@ LogicalResult LoadConverter::continueModifyFromAddPtrConverter(
       rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
   Value loadVal =
       rewriter.create<memref::LoadOp>(loc, castVal, ValueRange{idxZero});
+  propagateWasBoolToInt8Attr(op.getOperation(), loadVal.getDefiningOp(), rewriter);
   Value insertedVal =
       rewriter.create<tensor::InsertOp>(loc, loadVal, iterArg, ValueRange{ivs});
   // a yield op is already created by AddPtrConverter.
@@ -234,6 +245,7 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
         rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
     auto loadedValue = rewriter.create<memref::LoadOp>(loc, resTy, scalarMemref,
                                                   idxZero.getResult()).getResult();
+    propagateWasBoolToInt8Attr(op.getOperation(), loadedValue.getDefiningOp(), rewriter);
     if (mask && other) {
       mask = rewriter.create<triton::SplatOp>(loc, RankedTensorType::get({1}, mask.getType()), mask);
       loadedValue = rewriter.create<triton::SplatOp>(loc, RankedTensorType::get({1}, loadedValue.getType()), loadedValue);
@@ -381,7 +393,8 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
         mlir::ConverterUtils::makeSubViewOp(ptr, srcOffsets, boundarySizes, loc, rewriter);
     auto dstSubview = mlir::ConverterUtils::makeSubViewOp(
         allocOp, dstOffsets, boundarySizes, loc, rewriter);
-    rewriter.create<memref::CopyOp>(loc, srcSubView, dstSubview);
+    auto copyOp = rewriter.create<memref::CopyOp>(loc, srcSubView, dstSubview);
+    propagateWasBoolToInt8Attr(op.getOperation(), copyOp.getOperation(), rewriter);
     if (mayImplicitTransposeWithLastAxis) {
       auto markOp = rewriter.create<annotation::MarkOp>(loc, dstSubview);
       markOp->setAttr(MayImplicitTransposeWithLastAxisTAG, UnitAttr::get(rewriter.getContext()));
@@ -405,7 +418,8 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
               .succeeded()) {
         return success();
       }
-      rewriter.create<memref::CopyOp>(loc, ptr, allocOp);
+      auto copyOp = rewriter.create<memref::CopyOp>(loc, ptr, allocOp);
+      propagateWasBoolToInt8Attr(op.getOperation(), copyOp.getOperation(), rewriter);
       if (mayImplicitTransposeWithLastAxis && allocOp.getDefiningOp<memref::AllocOp>()) {
         auto markOp = rewriter.create<annotation::MarkOp>(loc, allocOp);
         markOp->setAttr(MayImplicitTransposeWithLastAxisTAG, UnitAttr::get(rewriter.getContext()));
@@ -471,7 +485,8 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
       makeStridedLinearLayoutMap(srcStrides, srcOffset, rewriter.getContext())
     );
     auto castOp = rewriter.create<memref::CastOp>(loc, castType, dstSubView);
-    rewriter.create<memref::CopyOp>(loc, srcSubView, castOp);
+    auto copyOp = rewriter.create<memref::CopyOp>(loc, srcSubView, castOp);
+    propagateWasBoolToInt8Attr(op.getOperation(), copyOp.getOperation(), rewriter);
 
     if (mayImplicitTransposeWithLastAxis && allocOp.getDefiningOp<memref::AllocOp>()) {
       auto markOp = rewriter.create<annotation::MarkOp>(loc, allocOp);

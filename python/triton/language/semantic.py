@@ -1177,11 +1177,16 @@ def _load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_
 
     # Build IR
     if mask is None:
-        ret = tl.tensor(builder.create_load(ptr.handle, cache, eviction, is_volatile), dst_ty)
+        load_handle = builder.create_load(ptr.handle, cache, eviction, is_volatile)
     else:
-        ret = tl.tensor(
-            builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache, eviction,
-                                       is_volatile), dst_ty)
+        load_handle = builder.create_masked_load(
+            ptr.handle, mask.handle, other.handle if other else None, cache, eviction, is_volatile
+        )
+
+    if is_bool:
+        load_handle.set_attr("was_bool_to_int8", builder.get_bool_attr(True))
+
+    ret = tl.tensor(load_handle, dst_ty)
     # Do not cast back to int1 when is_bool=true. We directly use the int8 tensor given by tl.load
     if is_bool:
         ret.was_bool_to_int8 = True
