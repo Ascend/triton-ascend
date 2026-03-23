@@ -75,7 +75,7 @@ class NPUUtils(object):
         env_arch = get_ascend_arch_from_env()
 
     def load_binary(self, name, kernel, shared, device):
-        fnname, mix_mode = name.split()
+        fnname, mix_mode = name.rsplit("_", 1)
         return self.npu_utils_mod.load_kernel_binary(fnname, kernel, shared, device, mix_mode)
 
     @functools.lru_cache()
