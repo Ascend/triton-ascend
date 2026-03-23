@@ -43,6 +43,83 @@ namespace triton {
 using namespace mlir;
 using namespace hivm;
 
+LogicalResult isDiscreteMask(Operation *op, Value mask,
+                             PatternRewriter &rewriter)
+{
+  if (!mask) {
+    return failure();
+  }
+
+  MaskState mstate;
+  auto isContMask = mstate.parse(mask, op->getLoc(), rewriter);
+  if (!isContMask.failed()) {
+    mstate.eraseInsertedOps(op, rewriter);
+    return failure();
+  }
+  return success();
+}
+
+// Recursively collect all leaf operands of a nested arith::AndIOp tree.
+static void collectAndLeaves(Value mask, SmallVectorImpl<Value> &leaves)
+{
+  if (auto andOp = mask.getDefiningOp<arith::AndIOp>()) {
+    collectAndLeaves(andOp.getLhs(), leaves);
+    collectAndLeaves(andOp.getRhs(), leaves);
+  } else {
+    leaves.push_back(mask);
+  }
+}
+
+struct MaskDecomposition {
+  // AND of all leaves that MaskState::parse() can analyze as a rectangle mask.
+  // nullptr when no such leaves exist.
+  Value contMask;
+  // AND of all leaves that MaskState::parse() cannot analyze (discrete/runtime).
+  // nullptr when no such leaves exist.
+  Value discMask;
+};
+
+// Decompose an AND-tree mask into its continuous and discrete leaf components
+// so that we can use contMask to bound GM accesses while discMask still drives
+// the per-element selection.
+static MaskDecomposition decomposeAndMask(Operation *op, Value mask,
+                                          const Location &loc,
+                                          PatternRewriter &rewriter)
+{
+  SmallVector<Value> leaves;
+  collectAndLeaves(mask, leaves);
+
+  SmallVector<Value> contLeaves;
+  SmallVector<Value> discLeaves;
+  for (Value leaf : leaves) {
+    MaskState st;
+    if (st.parse(leaf, loc, rewriter).succeeded()) {
+      // Always clean up any ops that parse() inserted as intermediate results.
+      st.eraseInsertedOps(op, rewriter);
+      if (st.isMask())
+        contLeaves.push_back(leaf);
+      else
+        discLeaves.push_back(leaf);
+    } else {
+      discLeaves.push_back(leaf);
+    }
+  }
+
+  Value contMask = nullptr;
+  for (Value v : contLeaves)
+    contMask = contMask
+                   ? rewriter.create<arith::AndIOp>(loc, contMask, v).getResult()
+                   : v;
+
+  Value discMask = nullptr;
+  for (Value v : discLeaves)
+    discMask = discMask
+                   ? rewriter.create<arith::AndIOp>(loc, discMask, v).getResult()
+                   : v;
+
+  return {contMask, discMask};
+}
+
 struct DiscreteMaskStoreConversion
     : OpRewritePattern<triton::StoreOp> {
   using OpRewritePattern<triton::StoreOp>::OpRewritePattern;
@@ -54,16 +131,27 @@ LogicalResult matchAndRewrite(triton::StoreOp op,
   auto dst = op.getPtr();
   auto src = op.getValue();
 
-  if (!mask)
-    return failure();
-  
-  MaskState mstate;
-  auto isContMask = mstate.parse(mask, loc, rewriter);
-  if (!isContMask.failed()) {
-    mstate.eraseInsertedOps(op, rewriter);
+  if (failed(isDiscreteMask(op, mask, rewriter))) {
     return failure();
   }
 
+  // When mask = contMask & discMask, use contMask to bound GM accesses and
+  // discMask to select the final per-element value. This prevents the
+  // unguarded full-load from reading past the tail-block boundary.
+  auto [contMask, discMask] = decomposeAndMask(op, mask, loc, rewriter);
+  if (contMask && discMask) {
+    auto safeLoad = rewriter.create<triton::LoadOp>(
+        loc, dst, contMask, op.getCache(), op.getEvict(), false);
+    auto selOp = rewriter.create<arith::SelectOp>(
+        loc, discMask, src, safeLoad.getResult());
+    auto newStore = rewriter.create<triton::StoreOp>(
+        loc, dst, selOp, contMask, op.getCache(), op.getEvict());
+    newStore->setAttr(ConverterUtils::discreteMaskAttrName, UnitAttr::get(rewriter.getContext()));
+    rewriter.replaceOp(op, newStore);
+    return success();
+  }
+
+  // Fallback: original full load + select (contMask absent, pure discrete).
   auto loadFromDstOp = rewriter.create<triton::LoadOp>(
       loc, dst, op.getCache(), op.getEvict(), false);
 
@@ -87,20 +175,40 @@ LogicalResult matchAndRewrite(triton::LoadOp op,
   auto mask = op.getMask();
   auto ptr = op.getPtr();
 
-  if (!mask)
+  if (failed(isDiscreteMask(op, mask, rewriter))) {
     return failure();
-  
-  MaskState mstate;
-  auto isContMask = mstate.parse(mask, loc, rewriter);
-  if (!isContMask.failed()) {
-    mstate.eraseInsertedOps(op, rewriter);
+  }
+  if (compileOn91095Flag && forceSimtTemplateFlag) {
     return failure();
   }
 
-  if (compileOn91095Flag && forceSimtTemplateFlag){
-    return failure();
+  // When mask = contMask & discMask, load only the safe range defined by
+  // contMask and use discMask for the per-element select, avoiding OOB reads.
+  auto [contMask, discMask] = decomposeAndMask(op, mask, loc, rewriter);
+  if (contMask && discMask) {
+    if (!other) {
+      auto ptrType = ptr.getType();
+      auto elementType = getElementTypeOrSelf(ptrType);
+      if (auto intType = dyn_cast<IntegerType>(ptrType)) {
+        other = rewriter.create<arith::ConstantOp>(
+                        loc, elementType, rewriter.getIntegerAttr(elementType, 0));
+      } else if (auto floatType = dyn_cast<FloatType>(ptrType)) {
+        other = rewriter.create<arith::ConstantOp>(
+                        loc, elementType, rewriter.getFloatAttr(elementType, 0.0));
+      } else {
+        llvm_unreachable("Unsupported type for constant creation");
+      }
+    }
+    auto safeLoad = rewriter.create<triton::LoadOp>(
+        loc, ptr, contMask, op.getCache(), op.getEvict(), op.getIsVolatile());
+    // Use full mask to select the result, avoid the uninitialized memory access.
+    auto discreteMaskOp =
+        rewriter.create<arith::SelectOp>(loc, mask, safeLoad.getResult(), other);
+    rewriter.replaceOp(op, discreteMaskOp);
+    return success();
   }
 
+  // Fallback: original full load + select (contMask absent, pure discrete).
   if (!other) {
     auto ptrType = ptr.getType();
     auto elementType = getElementTypeOrSelf(ptrType); 
@@ -133,14 +241,7 @@ LogicalResult matchAndRewrite(triton::AtomicRMWOp op, PatternRewriter &rewriter)
   auto ptr = op.getPtr();
   auto value = op.getVal();
   auto mask = op.getMask();
-
-  if (!mask)
-    return failure();
-
-  MaskState mstate;
-  auto isContMask = mstate.parse(mask, loc, rewriter);
-  if (!isContMask.failed()) {
-    mstate.eraseInsertedOps(op, rewriter);
+  if (failed(isDiscreteMask(op, mask, rewriter))) {
     return failure();
   }
 
