@@ -434,7 +434,9 @@ void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::O
                                               ubSpaceAttr);
 
     // 创建 bufferization.to_memref
-    builder.setInsertionPoint(posOp);
+    if (srcOp->getBlock() == dstOp->getBlock()) {
+        builder.setInsertionPoint(posOp);
+    }
     auto toMemrefOp = builder.create<bufferization::ToMemrefOp>(
         loc,
         ubMemrefType,
@@ -535,7 +537,7 @@ void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::O
 }
 
 Operation* DAGSyncPass::FindLastestPosition(Operation* srcOp, Graph &mainGraph, OpBuilder &builder) {
-    auto insertPos = srcOp;
+    Operation* insertPos = nullptr;
     auto opMap = mainGraph.getOpMapLegacy();
     auto valueTypes = &mainGraph.getValueTypes();
     // Find the first cube-dependent vector core operation.
@@ -565,7 +567,7 @@ Operation* DAGSyncPass::FindLastestPosition(Operation* srcOp, Graph &mainGraph, 
         // Once meet SyncBlockWaitOp, return now!
         if(auto waitOp = dyn_cast<hivm::SyncBlockWaitOp>(nextOp)) {
             if(waitOp.getTcoreType() == hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR)) {
-                return insertPos;
+                return nextOp;
             }
         }
         insertPos = nextOp;
@@ -678,7 +680,11 @@ void DAGSyncPass::insertSyncAndMovement(mlir::Operation *srcOp, mlir::Operation 
         // set 在 srcOp 后
         // builder.setInsertionPointAfter(srcOp);
         auto posOp = FindLastestPosition(srcOp, mainGraph, builder);
-        builder.setInsertionPoint(posOp);
+        if (posOp) {
+            builder.setInsertionPoint(posOp);
+        } else {
+            builder.setInsertionPointAfter(srcOp);
+        }
         auto setOp = builder.create<SyncBlockSetOp>(loc, coreAttr, setPipe, waitPipe, flagId);
 
         // wait 在 dstOp 前
