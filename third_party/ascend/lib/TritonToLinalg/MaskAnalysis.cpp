@@ -515,7 +515,6 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location &loc,
     break;
   }
   case arith::CmpIPredicate::eq: {
-    return failure(); // temporarily disable parse eq
     auto newOffset =
         subOpFoldResult(rhsState.scalar, lhsState.start, loc, builder);
     auto newDim = builder.getIndexAttr(1);

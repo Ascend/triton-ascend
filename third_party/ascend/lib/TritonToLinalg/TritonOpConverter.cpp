@@ -266,154 +266,109 @@ LogicalResult SelectCanonicalizer::matchAndRewrite(
   }
   auto trueTensor = op.getTrueValue();
   auto falseTensor = op.getFalseValue();
-  tensor::ExtractSliceOp extractSliceOp;
-  tensor::InsertSliceOp insertSliceOp;
 
   // 3. Slice and insert out the masked part
   if (maskPos == MaskPosition::Head) {
     // Slice out the masked part of true tensor
-    extractSliceOp = mstate.getExtractSlice(trueTensor, loc, rewriter);
+    auto extractSliceOp = mstate.getExtractSlice(trueTensor, loc, rewriter);
 
     // Insert out the sliced true tensor into false tensor
-    insertSliceOp =
+    auto insertSliceOp =
         mstate.getInsertSlice(extractSliceOp, falseTensor, loc, rewriter);
-  } else { // maskPos == MaskPosition::Tail or maskPos == MaskPosition::Middle
-    SmallVector<OpFoldResult> invertOffsets;
-    SmallVector<OpFoldResult> invertFalseDims;
-    SmallVector<OpFoldResult> invertTrueDims;
-    Value falseDimVal;
-    OpFoldResult trueDimOp;
-    size_t valDim = -1;
-    for (size_t i = 0; i< mstate.getRank(); ++i) {
-      const auto &offVal = mstate.offsets[i];
-      const auto &dimVal = mstate.dims[i];
-      auto constOffVal = getConstantIntValue(offVal);
-      invertOffsets.push_back(rewriter.getIndexAttr(0));
-      if (constOffVal.has_value() && constOffVal.value() == 0) {
-        invertFalseDims.push_back(dimVal);
-        invertTrueDims.push_back(dimVal);
-      } else {
-        valDim = i;
-        falseDimVal = offVal.get<Value>();
-        invertFalseDims.push_back(offVal);
-        trueDimOp = addOpFoldResult(offVal, dimVal, loc, rewriter);
-        invertTrueDims.push_back(trueDimOp);
-      }
-    }
 
-    // Slice out the invert first masked part of false tensor
-    auto falseExtractSliceOp = mstate.getExtractSlice(falseTensor, loc, rewriter,
-                                                      invertOffsets, invertFalseDims);
-    // Insert out the sliced false tensor into true tensor
-    auto trueInsertSliceOp = mstate.getInsertSlice(falseExtractSliceOp, trueTensor, loc, rewriter,
-                                                   invertOffsets, invertFalseDims);
-    
-    if (valDim != -1) {
-      rewriter.setInsertionPointAfter(trueInsertSliceOp);
-      Value zeroIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      Value isNegative = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
-                                                        falseDimVal, zeroIndex);
-
-      Value sizeIndex = rewriter.create<arith::ConstantIndexOp>(loc, tensorShape[valDim]);
-      Value isOutOfRange = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
-                                                          falseDimVal, sizeIndex);
-      auto orOp = rewriter.create<arith::OrIOp>(loc, isNegative, isOutOfRange);
-      auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{type}, orOp.getResult(), true, true);
-
-      Block *thenBlock = &ifOp.getThenRegion().front();
-      rewriter.setInsertionPointToStart(thenBlock);
-      rewriter.create<scf::YieldOp>(loc, ValueRange{trueTensor});
-
-      Block *elseBlock = &ifOp.getElseRegion().front();
-      falseExtractSliceOp->moveBefore(elseBlock, elseBlock->begin());
-      trueInsertSliceOp->moveBefore(elseBlock, elseBlock->end());
-      rewriter.setInsertionPointToStart(elseBlock);
-      {
-        rewriter.setInsertionPointAfter(trueInsertSliceOp);
-        rewriter.create<scf::YieldOp>(loc, ValueRange{trueInsertSliceOp.getResult()});
-      }
-
-      // Slice out the invert first masked and masked part of ifOp result
-      rewriter.setInsertionPointAfter(ifOp);
-      extractSliceOp = mstate.getExtractSlice(ifOp.getResult(0), loc, rewriter,
-                                              invertOffsets, invertTrueDims);
-    } else {
-      // Slice out the invert first masked and masked part of inserted true tensor
-      extractSliceOp = mstate.getExtractSlice(trueInsertSliceOp, loc, rewriter,
-                                              invertOffsets, invertTrueDims);
-    }
-    // Insert out the sliced true tensor into false tensor
-    insertSliceOp = mstate.getInsertSlice(extractSliceOp, falseTensor, loc, rewriter,
-                                          invertOffsets, invertTrueDims);
     LLVM_DEBUG({
-        llvm::dbgs()
-            << "  -> [invert] Created false tensor extractSlice: "
-            << *falseExtractSliceOp.getOperation() << "\n"
-            << "  -> [invert] Created true tensor insertSlice: "
-            << *trueInsertSliceOp.getOperation() << "\n";
-      });
-  }
-  LLVM_DEBUG({
-    llvm::dbgs()
-        << "  -> Created ExtractSlice: "
-        << *extractSliceOp.getOperation() << "\n"
-        << "  -> Created InsertSlice: "
-        << *insertSliceOp.getOperation() << "\n";
-  });
-  rewriter.replaceOp(op, insertSliceOp);
-  return success();
-
-  // 4. Fix if the offset is negative at runtime
-  rewriter.setInsertionPointAfter(insertSliceOp);
-  Value zeroIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  auto offsets = mstate.offsets;
-  SmallVector<Value> isInvalidVals;
-  for (size_t i = 0; i < offsets.size(); i++) {
-    auto &o = offsets[i];
-    if (o.is<Value>()) {
-      auto oVal = o.get<Value>();
-      int64_t dimSize = tensorShape[i];
-      Value sizeIndex = rewriter.create<arith::ConstantIndexOp>(loc, dimSize);
-      Value isNegative = rewriter.create<arith::CmpIOp>(
-          loc, arith::CmpIPredicate::slt, oVal, zeroIndex);
-      Value isOutOfRange = rewriter.create<arith::CmpIOp>(
-          loc, arith::CmpIPredicate::sge, oVal, sizeIndex);
-      isInvalidVals.push_back(isNegative);
-      isInvalidVals.push_back(isOutOfRange);
-    }
-  }
-
-  if (isInvalidVals.empty()) {
+      llvm::dbgs()
+          << "  -> Created ExtractSlice: "
+          << *extractSliceOp.getOperation() << "\n"
+          << "  -> Created InsertSlice: "
+          << *insertSliceOp.getOperation() << "\n";
+    });
     rewriter.replaceOp(op, insertSliceOp);
     return success();
   }
-  // At least one value
-  Value invalidVal = isInvalidVals[0];
-  if (isInvalidVals.size() > 1) {
-    for (int i = 1; i < isInvalidVals.size(); ++i) {
-      auto tmpOrOp = rewriter.create<arith::OrIOp>(loc, isInvalidVals[i], invalidVal);
-      invalidVal = tmpOrOp.getResult();
+
+  // For Tail or Middle positions, we need to compute inverted dimensions
+  // to handle the masking logic
+  SmallVector<OpFoldResult> invertOffsets;
+  SmallVector<OpFoldResult> invertFalseDims;
+  SmallVector<OpFoldResult> invertTrueDims;
+  OpFoldResult falseDimOp;
+  OpFoldResult trueDimOp;
+  int valDim = -1;
+  for (int i = 0; i< mstate.getRank(); ++i) {
+    const auto &offVal = mstate.offsets[i];
+    const auto &dimVal = mstate.dims[i];
+    auto constOffVal = getConstantIntValue(offVal);
+    invertOffsets.push_back(rewriter.getIndexAttr(0));
+    if (constOffVal.has_value() && constOffVal.value() == 0) {
+      invertFalseDims.push_back(dimVal);
+      invertTrueDims.push_back(dimVal);
+    } else {
+      assert(valDim == -1 && "The offset in only one dimension can be not zero.");
+      if (!constOffVal.has_value()) {
+        valDim = i;
+        falseDimOp = offVal;
+      }
+
+      invertFalseDims.push_back(offVal);
+      trueDimOp = addOpFoldResult(offVal, dimVal, loc, rewriter);
+      invertTrueDims.push_back(trueDimOp);
     }
   }
-  // else: what if the number of negative value checks is > 1?
-  auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{falseTensor.getType()},
-                                         invalidVal, true /* addThenBlock */,
-                                         true /* addElseBlock */);
-  // thenBuilder
-  rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-  rewriter.create<scf::YieldOp>(loc, ValueRange{falseTensor});
-  // elseBuilder
-  Block *elseBlock = &ifOp.getElseRegion().front();
-  extractSliceOp->moveBefore(elseBlock, elseBlock->begin());
-  insertSliceOp->moveBefore(elseBlock, elseBlock->end());
-  rewriter.setInsertionPointToStart(elseBlock);
-  {
+
+  // Slice out the invert first masked part of false tensor
+  auto falseExtractSliceOp = mstate.getExtractSlice(falseTensor, loc, rewriter,
+                                                    invertOffsets, invertFalseDims);
+  // Insert out the sliced false tensor into true tensor
+  auto trueInsertSliceOp = mstate.getInsertSlice(falseExtractSliceOp, trueTensor, loc, rewriter,
+                                                 invertOffsets, invertFalseDims);
+  // Slice out the invert first masked and masked part of inserted true tensor
+  auto extractSliceOp = mstate.getExtractSlice(trueInsertSliceOp, loc, rewriter,
+                                               invertOffsets, invertTrueDims);
+  // Insert out the sliced true tensor into false tensor
+  auto insertSliceOp = mstate.getInsertSlice(extractSliceOp, falseTensor, loc, rewriter,
+                                             invertOffsets, invertTrueDims);
+  if (valDim != -1) {
+    rewriter.setInsertionPointAfter(trueInsertSliceOp);
+    assert(falseDimOp.is<Value>() && "Expected to be a runtime Value for dynamic dimension check.");
+    Value zeroIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value isNegative = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
+                                                      falseDimOp.get<Value>(), zeroIndex);
+
+    Value sizeIndex = rewriter.create<arith::ConstantIndexOp>(loc, tensorShape[valDim]);
+    Value isOutOfRange = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                                        falseDimOp.get<Value>(), sizeIndex);
+    auto orOp = rewriter.create<arith::OrIOp>(loc, isNegative, isOutOfRange);
+    auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{type}, orOp.getResult(), true, true);
+
+    Block *thenBlock = &ifOp.getThenRegion().front();
+    rewriter.setInsertionPointToStart(thenBlock);
+    rewriter.create<scf::YieldOp>(loc, ValueRange{falseTensor});
+
+    Block *elseBlock = &ifOp.getElseRegion().front();
+    rewriter.setInsertionPointToStart(elseBlock);
+    falseExtractSliceOp->moveBefore(elseBlock, elseBlock->begin());
+    trueInsertSliceOp->moveAfter(falseExtractSliceOp);
+    extractSliceOp->moveAfter(trueInsertSliceOp);
+    insertSliceOp->moveAfter(extractSliceOp);
+
     rewriter.setInsertionPointAfter(insertSliceOp);
     rewriter.create<scf::YieldOp>(loc, ValueRange{insertSliceOp.getResult()});
+    rewriter.replaceOp(op, ifOp);
+  } else { // static offsets
+    rewriter.replaceOp(op, insertSliceOp);
   }
-
-  rewriter.replaceOp(op, ifOp);
-
+  LLVM_DEBUG({
+    llvm::dbgs()
+      << "  -> [invert] Created false tensor extractSlice: "
+      << *falseExtractSliceOp.getOperation() << "\n"
+      << "  -> [invert] Created true tensor insertSlice: "
+      << *trueInsertSliceOp.getOperation() << "\n"
+      << "  -> [invert] Created ExtractSlice: "
+      << *extractSliceOp.getOperation() << "\n"
+      << "  -> [invert] Created InsertSlice: "
+      << *insertSliceOp.getOperation() << "\n";
+  });
   return success();
 }
 
