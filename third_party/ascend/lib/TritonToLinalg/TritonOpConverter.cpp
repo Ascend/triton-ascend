@@ -262,6 +262,7 @@ LogicalResult SelectCanonicalizer::matchAndRewrite(
   });
 
   if (maskPos == MaskPosition::Unknown) {
+    mstate.eraseInsertedOps(op, rewriter);
     return failure();
   }
   auto trueTensor = op.getTrueValue();
