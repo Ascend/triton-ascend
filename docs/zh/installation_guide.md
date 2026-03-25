@@ -1,10 +1,13 @@
 # 安装指南
+
 请根据需要，选择不同的安装方式，跳转至对应步骤：
+
 - **基于pip安装**：直接尝试使用TA的pip包选择此项。请先前往下一步<a href="#env-prepare">环境准备</a>完成前置配置，再进行pip安装操作；
 - **基于源码安装**：基于TA的开发者选择此项。请先前往下一步<a href="#env-prepare">环境准备</a>完成前置配置，再选择<a href="#auto-code-base">快速安装</a>或<a href="#hand-code-base">手动安装</a>其中一种方式操作；
 - **基于Docker安装**：无需环境准备，可直接跳转至<a href="#docker-build">基于Docker构建</a>进行操作
 
 <a id="env-prepare"></a>
+
 ## 环境准备
 
 ### Python版本要求
@@ -19,6 +22,7 @@
 您可以访问昇腾社区官网，根据其提供的[社区软件安装指引](https://www.hiascend.com/cann/download)完成 CANN 的安装与配置。开发者选择CANN版本、产品系列、CPU架构、操作系统和安装方式便可找到对应的安装命令。
 
 在安装过程中，CANN 版本“**{version}**”请选择如下版本之一。建议下载安装 8.5.0 版本:
+
 - 注：如果用户未指定安装路径，则软件会安装到默认路径下，默认安装路径如下。root用户：`/usr/local/Ascend`，非root用户：`${HOME}/Ascend`，`${HOME}`为当前用户目录。
 上述环境变量配置只在当前窗口生效，用户可以按需将```source ${HOME}/Ascend/ascend-toolkit/set_env.sh```命令写入环境变量配置文件（如.bashrc文件）。
 
@@ -38,7 +42,6 @@
 | 3.2.0             | CANN 8.5.0           | 2026/01/16         |
 | 3.2.0rc4          | CANN 8.3.RC2<br>CANN 8.5.0.alpha001<br>CANN 8.3.RC1         | 2025/11/20<br>2025/11/12<br>2025/10/30         |
 
-
 ### 安装torch_npu
 
 当前配套的torch_npu版本为2.7.1版本。
@@ -48,13 +51,17 @@ pip install torch_npu==2.7.1
 ```
 
 注：如果出现报错`ERROR: No matching distribution found for torch==2.7.1+cpu`，可以尝试手动安装torch后再安装torch_npu。
+
 ```bash
 pip install torch==2.7.1+cpu --index-url https://download.pytorch.org/whl/cpu
 ```
+
 <a id="pip-base"></a>
+
 ## 通过pip安装Triton-Ascend
 
 ### 最新稳定版本
+
 您可以通过pip安装Triton-Ascend的最新稳定版本。
 
 ```shell
@@ -70,16 +77,19 @@ pip install triton-ascend
 ```
 
 ### nightly build版本
+
 我们为用户提供了每日更新的nightly包，用户可通过以下命令进行安装。
 
 ```shell
 pip install -i https://test.pypi.org/simple/ "triton-ascend<3.2.0rc" --pre --no-cache-dir
 ```
+
 同时用户也能在 [历史列表](https://test.pypi.org/project/triton-ascend/#history) 中找到所有的nightly build包。
 
 注意，如果您在执行`pip install`时遇到ssl相关报错，可追加`--trusted-host test.pypi.org --trusted-host test-files.pythonhosted.org`选项解决。
 
 <a id="code-base"></a>
+
 ## 通过源码安装Triton-Ascend
 
 如果您需要对 Triton-Ascend 进行开发或自定义修改，则应采用源代码编译安装的方法。这种方式允许您根据项目需求调整源代码，并编译安装定制化的 Triton-Ascend 版本。
@@ -99,6 +109,7 @@ pip install -i https://test.pypi.org/simple/ "triton-ascend<3.2.0rc" --pre --no-
 | PyTorch2.10       | 13.3.1               | 2.28               |
 
 <a id="code-require"></a>
+
 ### 依赖
 
 #### 安装系统库依赖
@@ -127,9 +138,10 @@ sudo yum install -y zlib-devel
 pip install ninja cmake wheel pybind11 # build-time dependencies
 ```
 
-
 <a id="auto-code-base"></a>
+
 ### 快速安装
+
 ```bash
 git clone https://gitcode.com/Ascend/triton-ascend.git
 cd triton-ascend
@@ -141,11 +153,12 @@ pip install -e python
 ```
 
 <a id="hand-code-base"></a>
+
 ### 手动安装 - 基于LLVM构建
 
 Triton 使用 LLVM20 为 GPU 和 CPU 生成代码。同样，昇腾的毕昇编译器也依赖 LLVM 生成 NPU 代码，因此需要编译 LLVM 源码才能使用。请关注依赖的 LLVM 特定版本。LLVM的构建支持两种构建方式，**以下两种方式二选一即可**，无需重复执行。
 
-#### 代码准备: `git checkout` 检出指定版本的LLVM.
+#### 代码准备: `git checkout` 检出指定版本的LLVM
 
    ```bash
    git clone --no-checkout https://github.com/llvm/llvm-project.git
@@ -197,6 +210,7 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend
 ```
 
 #### 构建 Triton-Ascend
+
 - 步骤1：请确认已设置 [基于LLVM构建] 章节中，LLVM安装的目标路径 ${LLVM_INSTALL_PREFIX}
 - 步骤2：请确认已安装clang>=15，lld>=15，ccache
 
@@ -223,9 +237,10 @@ triton-ascend/CMakeLists.txt
 
   取消注释后重新构建项目即可解决该问题。
 
-
 <a id="docker-build"></a>
+
 ## 基于Docker安装
+
 我们提供了Dockerfile帮助您安装Docker环境镜像。安装过程将会自动从CANN官网中下载安装对应的CANN Toolkit和Kernel包，需要您通过`--build-arg`指定您机器需要安装的CANN相关参数。
 
 | 参数名称 | 默认值 | 可选值                                   |
@@ -241,6 +256,7 @@ triton-ascend/CMakeLists.txt
 | :---: |:-----------------:| :---: |:-----------------------------------:|:-------:|
 | 1 |       `A3`        | Atlas A3 训练系列产品 |        Atlas 900 A3 SuperPoD        |  910C   |
 | 2 |      `910b`       | Atlas A2 训练系列产品 |            Atlas800T A2             |   A2    |
+
 ```bash
 git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend
 docker build \
@@ -248,7 +264,9 @@ docker build \
 --build-arg CANN_VERSION=8.5.0 \
 -t triton-ascend-image:latest -f ./docker/Dockerfile .
 ```
+
 根据该镜像启动容器，可以参考下面的命令：
+
 ```bash
 docker run -u 0 -dit --shm-size=512g --name=triton-ascend_container --net=host --privileged \
 --security-opt seccomp=unconfined \
@@ -280,12 +298,15 @@ docker exec -u root -it triton-ascend_container /bin/bash
 ## 运行Triton示例
 
    安装运行时依赖，参考如下：
+
 ```bash
    # 拉取triton-ascend源码仓及用例（可选，非源码编译安装运行示例时需拉源码仓）
    git clone https://gitcode.com/Ascend/triton-ascend.git
    cd triton-ascend && pip install -r requirements.txt
 ```
+
    运行实例: [01-vector-add.py](../../third_party/ascend/tutorials/01-vector-add.py)
+
 ```bash
    # 设置CANN环境变量（以root用户默认安装路径`/usr/local/Ascend`为例）
    source /usr/local/Ascend/ascend-toolkit/set_env.sh
