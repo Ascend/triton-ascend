@@ -985,33 +985,85 @@ void BlockDataParser::parseFill(linalg::FillOp op, BlockData &data,
 void BlockDataParser::parseSelect(
     arith::SelectOp op, BlockData &data, const Location &loc,
     ConversionPatternRewriter &rewriter,
-    const llvm::SmallDenseMap<Value, BlockData> &known) {
+    const llvm::SmallDenseMap<Value, BlockData> &known)
+{
   assert(data.isEmpty());
+
   auto res = op.getResult();
-  auto resType = dyn_cast<ShapedType>(op.getResult().getType());
-
-  assert(llvm::all_of(resType.getShape(), [](int64_t dim) { return dim == 1; }));
+  auto resType = dyn_cast<ShapedType>(res.getType());
+  assert(resType && "arith.select result should be a ShapedType");
   assert(isa<IntegerType>(resType.getElementType()) ||
-        isa<IndexType>(resType.getElementType()));
+         isa<IndexType>(resType.getElementType()));
 
+  OpFoldResult indexOfr;
   size_t loopLimit = resType.getShape().size();
-  SmallVector<Value> indices;
 
-  for (auto i = 0; i < loopLimit; i++) {
-    indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
+  Value cond = op.getCondition();
+  bool condIsScalarI1 =
+      isa<IntegerType>(cond.getType()) &&
+      cast<IntegerType>(cond.getType()).getWidth() == 1 &&
+      !isa<ShapedType>(cond.getType());
+
+  auto trueConst = dyn_cast<arith::ConstantOp>(op.getTrueValue().getDefiningOp());
+  auto falseConst = dyn_cast<arith::ConstantOp>(op.getFalseValue().getDefiningOp());
+  auto trueDense =
+      trueConst ? dyn_cast<DenseElementsAttr>(trueConst.getValue()) : DenseElementsAttr();
+  auto falseDense =
+      falseConst ? dyn_cast<DenseElementsAttr>(falseConst.getValue()) : DenseElementsAttr();
+
+  bool denseConstCase = condIsScalarI1 && trueDense && falseDense;
+
+  if (denseConstCase) {
+    // if cond is scalar i1 and both true and false value are splat dense const,
+    // we can directly use the value of the dense const to create scalar select op.
+    Attribute trueFirst = *trueDense.value_begin<Attribute>();
+    Attribute falseFirst = *falseDense.value_begin<Attribute>();
+
+    Value trueScalar = nullptr;
+    Value falseScalar = nullptr;
+    if (auto tInt = dyn_cast<IntegerAttr>(trueFirst)) {
+        trueScalar = rewriter.create<arith::ConstantOp>(loc, tInt).getResult();
+    } else {
+        llvm_unreachable("unsupported true dense element attr in parseSelect");
+    }
+
+    if (auto fInt = dyn_cast<IntegerAttr>(falseFirst)) {
+        falseScalar = rewriter.create<arith::ConstantOp>(loc, fInt).getResult();
+    } else {
+        llvm_unreachable("unsupported false dense element attr in parseSelect");
+    }
+
+    assert(trueScalar.getType() == falseScalar.getType() &&
+           "scalarized true/false type mismatch");
+
+    auto scalarSelect = rewriter.create<arith::SelectOp>(
+        loc, trueScalar.getType(), cond, trueScalar, falseScalar);
+
+    indexOfr = getOpFoldResultOfLayoutInfo(scalarSelect.getResult(), rewriter);
+  } else {
+    assert(llvm::all_of(resType.getShape(), [](int64_t dim) { return dim == 1; }) &&
+           "parseSelect currently supports all-ones shape unless cond=i1 with dense constants");
+
+    SmallVector<Value> indices;
+    indices.reserve(loopLimit);
+    for (size_t i = 0; i < loopLimit; ++i) {
+      indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
+    }
+
+    auto extractOp = rewriter.create<tensor::ExtractOp>(loc, res, indices);
+    indexOfr = extractOp.getResult();
+    if (isa<IntegerType>(extractOp.getType())) {
+      indexOfr = getOpFoldResultOfLayoutInfo(extractOp.getResult(), rewriter);
+    }
   }
-  auto extractOp = rewriter.create<tensor::ExtractOp>(loc, res, indices);
-  OpFoldResult IndexOfr = extractOp.getResult();
-  if (isa<IntegerType>(extractOp.getType())) {
-    IndexOfr = getOpFoldResultOfLayoutInfo(extractOp.getResult(), rewriter);
-  }
+
   // Set scalar for mul state
-  data.setScalar(IndexOfr);
+  data.setScalar(indexOfr);
 
-  for (auto i = 0; i < loopLimit; i++) {
-    // Add original dense val to first dim offset for add state
+  for (size_t i = 0; i < loopLimit; ++i) {
+    // Add scalar to first dim offset for add state
     if (i == 0) {
-      data.getOffsetsRef().push_back(IndexOfr);
+      data.getOffsetsRef().push_back(indexOfr);
     } else {
       data.getOffsetsRef().push_back(rewriter.getIndexAttr(0));
     }

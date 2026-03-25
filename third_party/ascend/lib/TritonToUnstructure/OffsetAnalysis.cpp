@@ -799,7 +799,27 @@ void parseSelect(arith::SelectOp op, const Location &loc,
   auto dstType = dyn_cast<ShapedType>(dst.getType());
   if (!dstType)
     return;
-  offsetMap[dst].setUnstructured(dstType.getRank());
+
+  // recognize "all dims size == 1", which cannot be handled in linalg pass's rewrite loop right now
+  // fix rewrite loop in linalg pass and remove this special handling
+  bool dstAllDimsAreOne = false;
+  if (auto rankedDstType = dyn_cast<RankedTensorType>(dstType)) {
+    dstAllDimsAreOne = llvm::all_of(
+        rankedDstType.getShape(), [](int64_t dim) { return dim == 1; });
+  }
+
+  if (dstAllDimsAreOne) {
+    offsetMap[dst].setUnstructured(dstType.getRank());
+    return;
+  }
+
+  auto dstIsScalar = trueValueScalarLike && falseValueScalarLike && conditionScalarLike;
+  offsetMap[dst].setScalarLike(dstIsScalar);
+
+  auto &dstStructured = offsetMap[dst].getStructuredRef();
+  dstStructured.resize(trueValueStructured.size());
+  for (size_t i = 0; i < dstStructured.size(); i++)
+    dstStructured[i] = (dstIsScalar) ? PtrOffsetInfo::AxisInfo::scalarlike : PtrOffsetInfo::AxisInfo::unstructured;
 }
 
 void parseFPToSI(arith::FPToSIOp op, const Location &loc,
@@ -978,7 +998,7 @@ void parseIf(scf::IfOp op, const Location &loc, RewriterBase &rewriter,
   dstStructured.resize(thenStructured.size());
   for (size_t i = 0; i < dstStructured.size(); i++)
     if (op.elseBlock())
-      dstStructured[i] = PtrOffsetInfo::AxisInfo::unstructured;
+      dstStructured[i] = (dstIsScalar) ? PtrOffsetInfo::AxisInfo::scalarlike : PtrOffsetInfo::AxisInfo::unstructured;
     else
       dstStructured[i] = thenStructured[i];
   SmallVector<Value> dstOffsets(thenOffsetInfo.getOffsetsRef().size());

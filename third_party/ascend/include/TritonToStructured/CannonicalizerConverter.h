@@ -78,6 +78,37 @@ public:
                                   PatternRewriter &rewriter) const override;
 };
 
+class IfYieldAddHoistConverter : public OpRewritePattern<scf::IfOp> {
+public:
+    explicit IfYieldAddHoistConverter(MLIRContext *context)
+        : OpRewritePattern<scf::IfOp>(context) {}
+
+    LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                  PatternRewriter &rewriter) const override;
+
+private:
+    bool isSupportedTensorResultType(Type type) const;
+
+    bool isDefinedOutsideIf(Value value, scf::IfOp ifOp) const;
+
+    bool extractAddendFromAddExpr(Value maybeAddExpr, Value baseValue, Value &addendOut) const;
+
+    Value buildZeroTensorLikeType(Type laneType, Location loc, PatternRewriter &rewriter) const;
+
+    bool tryRewriteSingleLane(
+        unsigned laneIdx,
+        Value baseBranchYield,
+        Value addExprBranchYield,
+        bool baseInThenBranch,
+        Type laneType,
+        scf::IfOp ifOp,
+        PatternRewriter &rewriter,
+        SmallVectorImpl<Value> &updatedThenYieldOperands,
+        SmallVectorImpl<Value> &updatedElseYieldOperands,
+        SmallVectorImpl<Value> &hoistedBasePerLane,
+        SmallVectorImpl<bool> &laneRewrittenFlags) const;
+};
+
 class PromotePointerIterArgsPattern : public OpRewritePattern<scf::ForOp> {
 public:
     explicit PromotePointerIterArgsPattern(MLIRContext *context)

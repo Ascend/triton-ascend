@@ -41,6 +41,21 @@ def triton_if_load(in_ptr0, out_ptr0, XBLOCK: tl.constexpr):
     tl.store(out_ptr0 + index, tmp0, None)
 
 
+@triton.jit
+def triton_for_if_load(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexpr):
+    base1 = tl.arange(0, XBLOCK_SUB)
+    index = base1
+    loops = (XBLOCK + XBLOCK_SUB - 1) // XBLOCK_SUB
+    for i in range(loops):
+        base1 = base1 + i * XBLOCK_SUB
+        index = index + i * XBLOCK_SUB
+        if tl.program_id(0) != 0:
+            base1 = base1 + 1
+
+        tmp0 = tl.load(in_ptr0 + base1, base1 < XBLOCK, other=0.0)
+        tl.store(out_ptr0 + index, tmp0, None)
+
+
 @pytest.mark.parametrize('param_list',
                             [
                                 ['float32', (32,), 32],
@@ -52,4 +67,18 @@ def test_if_load(param_list):
 
     y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
     triton_if_load[(1,)](x0, y_cal, xblock)
+    test_common.validate_cmp(dtype, y_cal, y_ref)
+
+
+@pytest.mark.parametrize('param_list',
+                            [
+                                ['float32', (32,), 32, 16],
+                            ])
+def test_if_load(param_list):
+    dtype, shape, xblock, xblock_sub = param_list
+    x0 = test_common.generate_tensor(shape, dtype).npu()
+    y_ref = x0.clone()
+
+    y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
+    triton_for_if_load[(1,)](x0, y_cal, xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)

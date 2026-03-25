@@ -21,6 +21,7 @@
  */
 
 #include "TritonToUnstructure/UnstructureConversionPass.h"
+#include "TritonToStructured/CannonicalizerConverter.h"
 #include "TritonToLinalg/MaskAnalysis.h"
 #include "Utils/Utils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -49,7 +50,7 @@ bool forceSimtTemplateFlag = false;
 template <typename MemAccOpTy>
 bool UnstructuredMemAccessConverter<MemAccOpTy>::checkUnstructureAnnotated(
     MemAccOpTy op, PatternRewriter &rewriter) const {
-  return llvm::any_of(op->getUsers(), [&rewriter](Operation *user) {    
+  return llvm::any_of(op->getUsers(), [&rewriter](Operation *user) {
     auto annotationOp = dyn_cast<annotation::MarkOp>(user);
     if (annotationOp && annotationOp->hasAttr("mayDiscretememaccess")) {
       rewriter.eraseOp(annotationOp);
@@ -62,7 +63,7 @@ bool UnstructuredMemAccessConverter<MemAccOpTy>::checkUnstructureAnnotated(
 template <>
 bool UnstructuredMemAccessConverter<triton::StoreOp>::checkUnstructureAnnotated(
     triton::StoreOp op, PatternRewriter &rewriter) const {
-  return llvm::any_of(op.getValue().getUsers(), [&rewriter](Operation *user) {   
+  return llvm::any_of(op.getValue().getUsers(), [&rewriter](Operation *user) {
     auto annotationOp = dyn_cast<annotation::MarkOp>(user);
     if (annotationOp && annotationOp->hasAttr("mayDiscretememaccess")) {
       rewriter.eraseOp(annotationOp);
@@ -339,7 +340,7 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
   // Force scalarize if memory is not aligned
   if (sizeInByte % 32 != 0)
     ptrOffsetInfo.setUnstructured(ptrOffsetInfo.getRank());
-  
+
   LLVM_DEBUG({
     auto &os = llvm::dbgs();
     os << "UnStructured Flag check:\n";
@@ -347,7 +348,7 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
     os << "compileOn91095Flag: " << compileOn91095Flag << "\n";
     os << "forceSimtTemplateFlag: " << forceSimtTemplateFlag << "\n";
   });
-  
+
   // Fast path on A5: rewrite tt.load/store to tt.indirect_load/store directly.
   if (compileOn91095Flag && forceSimtTemplateFlag && ptrOffsetInfo.isUnstructuredOrScalarlike()) {
     if constexpr (std::is_same_v<MemAccOpTy, triton::LoadOp>) {
@@ -521,7 +522,7 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
     if (!isa<RankedTensorType>(value.getType()) &&
         (std::is_same_v<MemAccOpTy, triton::AtomicRMWOp> ||
         std::is_same_v<MemAccOpTy, triton::AtomicCASOp>)) {
-      value =	
+      value =
           rewriter.create<triton::SplatOp>(loc, extractedType, value);
     }
     if (!isa<RankedTensorType>(value.getType())) {
@@ -645,6 +646,17 @@ void TritonToUnstructurePass::runParse(MemAccOpTy op) {
   isFromTensorArg(op.getPtr(), fromTensorArg);
 }
 
+LogicalResult TritonToUnstructurePass::processIfYieldAddHoistOperations(ModuleOp moduleOp)
+{
+    mlir::RewritePatternSet patterns(&getContext());
+    patterns.add<CannonicalizerConverter::IfYieldAddHoistConverter>(patterns.getContext());
+    if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns)))) {
+        moduleOp.emitWarning("IfYieldAddHoist processing failed");
+        return failure();
+    }
+    return success();
+}
+
 TritonToUnstructurePass::TritonToUnstructurePass(
     const TritonToUnstructureOptions &options)
     : TritonToUnstructureBase(options) {}
@@ -667,6 +679,11 @@ void TritonToUnstructurePass::runOnOperation() {
     replacePtrArguments(funcOp, offsetMapForLoopArgs);
   });
   offsetMapForLoopArgs.clear();
+
+  if (failed(processIfYieldAddHoistOperations(moduleOp))) {
+    moduleOp.emitWarning("Failed to process IfYieldAddHoist operations");
+  }
+
   moduleOp->walk([this](LoopLikeOpInterface op) { runPreparse(op); });
   moduleOp->walk([this](Operation *op) {
     if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {

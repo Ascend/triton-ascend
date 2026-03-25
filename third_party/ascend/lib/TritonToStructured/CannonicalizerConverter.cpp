@@ -2290,4 +2290,247 @@ LogicalResult SimplifyTensorIterArgsPattern::rewriteForWithRelayCandidates(
     return success();
 }
 
+bool IfYieldAddHoistConverter::isSupportedTensorResultType(Type type) const
+{
+    auto tensorType = dyn_cast<RankedTensorType>(type);
+    return tensorType && !isa<triton::PointerType>(tensorType.getElementType());
+}
+
+bool IfYieldAddHoistConverter::isDefinedOutsideIf(Value value, scf::IfOp ifOp) const
+{
+    if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+        Block *owner = blockArg.getOwner();
+        return owner && owner->getParentOp() != ifOp.getOperation();
+    }
+
+    Operation *defOp = value.getDefiningOp();
+    return defOp && !ifOp->isAncestor(defOp);
+}
+
+bool IfYieldAddHoistConverter::extractAddendFromAddExpr(
+    Value maybeAddExpr, Value baseValue, Value &addendOut) const
+{
+    if (auto addi = maybeAddExpr.getDefiningOp<arith::AddIOp>()) {
+        if (addi.getLhs() == baseValue) {
+            addendOut = addi.getRhs();
+            return true;
+        }
+        if (addi.getRhs() == baseValue) {
+            addendOut = addi.getLhs();
+            return true;
+        }
+        return false;
+    }
+
+    if (auto addf = maybeAddExpr.getDefiningOp<arith::AddFOp>()) {
+        if (addf.getLhs() == baseValue) {
+            addendOut = addf.getRhs();
+            return true;
+        }
+        if (addf.getRhs() == baseValue) {
+            addendOut = addf.getLhs();
+            return true;
+        }
+        return false;
+    }
+
+    return false;
+}
+
+Value IfYieldAddHoistConverter::buildZeroTensorLikeType(
+    Type laneType, Location loc, PatternRewriter &rewriter) const
+{
+    auto tensorType = dyn_cast<RankedTensorType>(laneType);
+    if (!tensorType) return Value();
+
+    Type elemType = tensorType.getElementType();
+    Attribute zeroElemAttr;
+    if (isa<FloatType>(elemType)) {
+        zeroElemAttr = rewriter.getFloatAttr(elemType, 0.0);
+    } else if (elemType.isIntOrIndex()) {
+        zeroElemAttr = rewriter.getIntegerAttr(elemType, 0);
+    } else {
+        return Value();
+    }
+
+    auto zeroTensorAttr = DenseElementsAttr::get(tensorType, zeroElemAttr);
+    return rewriter.create<arith::ConstantOp>(loc, laneType, zeroTensorAttr);
+}
+
+bool IfYieldAddHoistConverter::tryRewriteSingleLane(
+    unsigned laneIdx,
+    Value baseBranchYield,
+    Value addExprBranchYield,
+    bool baseInThenBranch,
+    Type laneType,
+    scf::IfOp ifOp,
+    PatternRewriter &rewriter,
+    SmallVectorImpl<Value> &updatedThenYieldOperands,
+    SmallVectorImpl<Value> &updatedElseYieldOperands,
+    SmallVectorImpl<Value> &hoistedBasePerLane,
+    SmallVectorImpl<bool> &laneRewrittenFlags) const
+{
+    if (!isDefinedOutsideIf(baseBranchYield, ifOp)) return false;
+
+    Value addendValue;
+    if (!extractAddendFromAddExpr(addExprBranchYield, baseBranchYield, addendValue)) return false;
+    if (!addendValue || addendValue.getType() != laneType) return false;
+
+    Value zeroTensor = buildZeroTensorLikeType(laneType, ifOp.getLoc(), rewriter);
+    if (!zeroTensor) return false;
+
+    if (baseInThenBranch) {
+        updatedThenYieldOperands[laneIdx] = zeroTensor;
+        updatedElseYieldOperands[laneIdx] = addendValue;
+    } else {
+        updatedThenYieldOperands[laneIdx] = addendValue;
+        updatedElseYieldOperands[laneIdx] = zeroTensor;
+    }
+
+    hoistedBasePerLane[laneIdx] = baseBranchYield;
+    laneRewrittenFlags[laneIdx] = true;
+    return true;
+}
+
+// scf.if lane rewrite:
+// one branch yields A, the other yields A + B
+// => if yields 0 / B, then outside do A + if_result
+LogicalResult IfYieldAddHoistConverter::matchAndRewrite(scf::IfOp ifOp, PatternRewriter &rewriter) const
+{
+    if (ifOp.getNumResults() == 0) {
+        return failure();
+    }
+
+    // Robust guard for malformed / emptied regions.
+    Block *thenBlockPtr = ifOp.thenBlock();
+    Block *elseBlockPtr = ifOp.elseBlock();
+    if (!thenBlockPtr || !elseBlockPtr) {
+        return failure();
+    }
+    if (!thenBlockPtr->mightHaveTerminator() || !elseBlockPtr->mightHaveTerminator()) {
+        return failure();
+    }
+
+    auto thenYieldOp = dyn_cast<scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+    auto elseYieldOp = dyn_cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+    if (!thenYieldOp || !elseYieldOp) {
+        return failure();
+    }
+
+    Location loc = ifOp.getLoc();
+    bool anyLaneRewritten = false;
+
+    SmallVector<Value> updatedThenYieldOperands(
+        thenYieldOp.getOperands().begin(), thenYieldOp.getOperands().end());
+    SmallVector<Value> updatedElseYieldOperands(
+        elseYieldOp.getOperands().begin(), elseYieldOp.getOperands().end());
+
+    // for each lane, record whether we need post-if add with baseYield
+    SmallVector<Value> hoistedBasePerLane(ifOp.getNumResults(), Value());
+    SmallVector<bool> laneRewrittenFlags(ifOp.getNumResults(), false);
+
+    for (unsigned laneIdx = 0; laneIdx < ifOp.getNumResults(); ++laneIdx) {
+        Type laneType = ifOp.getResultTypes()[laneIdx];
+        if (!isSupportedTensorResultType(laneType)) {
+            continue;
+        }
+
+        Value thenYieldVal = thenYieldOp.getOperand(laneIdx);
+        Value elseYieldVal = elseYieldOp.getOperand(laneIdx);
+
+        // Assume that only one of the two branches can have the add pattern, and try both ways to find a rewrite opportunity.
+        bool rewritten =
+            tryRewriteSingleLane(
+                laneIdx, thenYieldVal, elseYieldVal, /* baseInThenBranch= */true,
+                laneType, ifOp, rewriter,
+                updatedThenYieldOperands, updatedElseYieldOperands,
+                hoistedBasePerLane, laneRewrittenFlags) ||
+            tryRewriteSingleLane(
+                laneIdx, elseYieldVal, thenYieldVal, /* baseInThenBranch= */false,
+                laneType, ifOp, rewriter,
+                updatedThenYieldOperands, updatedElseYieldOperands,
+                hoistedBasePerLane, laneRewrittenFlags);
+
+        anyLaneRewritten |= rewritten;
+    }
+
+    if (!anyLaneRewritten) {
+        return failure();
+    }
+
+    rewriter.setInsertionPoint(ifOp);
+    auto rewrittenIfOp = rewriter.create<scf::IfOp>(
+        loc, ifOp.getResultTypes(), ifOp.getCondition(), /* withElseRegion= */true);
+
+    {
+        IRMapping thenMapping;
+        Block *oldThenBlock = ifOp.thenBlock();
+        Block *newThenBlock = rewrittenIfOp.thenBlock();
+
+        rewriter.setInsertionPointToStart(newThenBlock);
+        for (Operation &op : oldThenBlock->without_terminator()) {
+            rewriter.clone(op, thenMapping);
+        }
+
+        SmallVector<Value> mappedThenYieldOperands;
+        mappedThenYieldOperands.reserve(updatedThenYieldOperands.size());
+        for (Value v : updatedThenYieldOperands) {
+            mappedThenYieldOperands.push_back(thenMapping.lookupOrDefault(v));
+        }
+
+        rewriter.create<scf::YieldOp>(loc, mappedThenYieldOperands);
+    }
+
+    {
+        IRMapping elseMapping;
+        Block *oldElseBlock = ifOp.elseBlock();
+        Block *newElseBlock = rewrittenIfOp.elseBlock();
+
+        rewriter.setInsertionPointToStart(newElseBlock);
+        for (Operation &op : oldElseBlock->without_terminator()) {
+            rewriter.clone(op, elseMapping);
+        }
+
+        SmallVector<Value> mappedElseYieldOperands;
+        mappedElseYieldOperands.reserve(updatedElseYieldOperands.size());
+        for (Value v : updatedElseYieldOperands) {
+            mappedElseYieldOperands.push_back(elseMapping.lookupOrDefault(v));
+        }
+
+        rewriter.create<scf::YieldOp>(loc, mappedElseYieldOperands);
+    }
+
+    rewriter.setInsertionPointAfter(rewrittenIfOp);
+    SmallVector<Value> finalResults;
+    finalResults.reserve(ifOp.getNumResults());
+
+    for (unsigned laneIdx = 0; laneIdx < ifOp.getNumResults(); ++laneIdx) {
+        if (!laneRewrittenFlags[laneIdx]) {
+            finalResults.push_back(rewrittenIfOp.getResult(laneIdx));
+            continue;
+        }
+
+        Value hoistedBase = hoistedBasePerLane[laneIdx];
+        Value laneDelta = rewrittenIfOp.getResult(laneIdx);
+
+        auto laneTensorType = dyn_cast<RankedTensorType>(laneDelta.getType());
+        if (!laneTensorType) return failure();
+
+        Type elemType = laneTensorType.getElementType();
+        Value reconstructedLane;
+        if (isa<FloatType>(elemType)) {
+            reconstructedLane = rewriter.create<arith::AddFOp>(loc, hoistedBase, laneDelta);
+        } else if (elemType.isIntOrIndex()) {
+            reconstructedLane = rewriter.create<arith::AddIOp>(loc, hoistedBase, laneDelta);
+        } else {
+            return failure();
+        }
+
+        finalResults.push_back(reconstructedLane);
+    }
+
+    rewriter.replaceOp(ifOp, finalResults);
+    return success();
+}
+
 }
