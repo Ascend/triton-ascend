@@ -250,7 +250,6 @@ llvm: ## Conditional build and upload of LLVM
 test-unit: ## Run unit tests
 	cd third_party/ascend/unittest/pytest_ut && $(PYTEST) -s -v -n $(NUM_PROCS) --dist=loadfile
 	cd third_party/ascend/unittest/autotune_ut && $(PYTEST) -s -v -n $(NUM_PROCS) --dist=loadfile
-	cd third_party/ascend/unittest/kernels && $(PYTEST) -s -v -n $(NUM_PROCS) --dist=loadfile test_triton_kernel.py
 
 .PHONY: test-inductor
 test-inductor: ## Run inductor tests

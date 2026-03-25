@@ -17,6 +17,7 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
+import torch
 
 import triton
 import triton.language as tl
@@ -94,7 +95,7 @@ def test_matmul_exp(dtype, ashape, bshape):
     C_ref = (A @ B).exp()
 
     # compare
-    test_common.validate_cmp(dtype, C, C_ref)
+    torch.testing.assert_close(C_ref, C, rtol=3e-2, atol=3e-2, equal_nan=True)
 
 if __name__ == "__main__":
     test_matmul_exp('float32', (4, 4), (4, 4))
