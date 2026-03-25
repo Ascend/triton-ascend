@@ -67,12 +67,10 @@ public:
     }
 
     bool isHead = true;
-    size_t dynIndex = -1;
+    int dynIndex = -1;
 
-    for (size_t i = 0; i < getRank(); ++i) {
+    for (int i = 0; i < getRank(); ++i) {
       auto offsetVal = mlir::getConstantIntValue(offsets[i]);
-      auto dimVal = mlir::getConstantIntValue(dims[i]);
-
       if (!offsetVal.has_value() || offsetVal.value() != 0) {
         isHead = false;
         if (dynIndex == -1) {
@@ -87,14 +85,12 @@ public:
       return MaskPosition::Head;
     }
 
-    for (size_t i = 0; i < getRank(); ++i) {
-      auto offsetVal = mlir::getConstantIntValue(offsets[i]);
+    for (int i = 0; i < getRank(); ++i) {
       auto dimVal = mlir::getConstantIntValue(dims[i]);
-      int64_t shapeVal = tensorShape[i];
       if (i == dynIndex) {
         continue;
       }
-      if (!dimVal.has_value() || dimVal.value() != shapeVal) {
+      if (!dimVal.has_value() || dimVal.value() != tensorShape[i]) {
         return MaskPosition::Unknown;
       }
     }
