@@ -372,10 +372,9 @@ scf::ForOp transformLoop(scf::ForOp forOp, OpBuilder &builder) {
     for (int i = 0; i < hasTargetOps; i++) {
         Location loc = forOp.getLoc();
         auto argType = originalLowerBound.getType();
-        counterInit = builder.create<arith::ConstantIntOp>(loc, 0, argType);
         
         // 添加到迭代参数列表
-        iterArgs.push_back(counterInit);
+        iterArgs.push_back(originalLowerBound);
     }
     // 2. 创建新的上界：originalUpperBound * 2
     Location loc = forOp.getLoc();
@@ -398,19 +397,38 @@ scf::ForOp transformLoop(scf::ForOp forOp, OpBuilder &builder) {
     }
     
     // 创建乘法：originalUpperBound * 2
-    auto newUpperBound = builder.create<arith::MulIOp>(
-        forOp.getLoc(), 
-        originalUpperBound, 
+    auto first = builder.create<arith::MulIOp>(
+        forOp.getLoc(),
+        originalUpperBound,
         two);
       
     // 创建乘法：originalUpperBound * 2
-    auto nowUpperBound = builder.create<arith::SubIOp>(
-        forOp.getLoc(), 
-        newUpperBound, 
+    auto second = builder.create<arith::SubIOp>(
+        forOp.getLoc(),
+        first,
         originalLowerBound
         );
     
-    // 3. 创建新的for循环
+    auto third = builder.create<arith::MulIOp>(
+        forOp.getLoc(),
+        originalStep,
+        two
+        );
+
+    // Create multiplication: originalUpperBound * 2
+    auto fourth = builder.create<arith::AddIOp>(
+        forOp.getLoc(),
+        third,
+        second
+        );
+
+    auto nowUpperBound = builder.create<arith::SubIOp>(
+        forOp.getLoc(),
+        fourth,
+        two
+        );
+
+    // 3. Create a new for loop
     auto newForOp = builder.create<scf::ForOp>(
         forOp.getLoc(),
         originalLowerBound,
@@ -478,8 +496,38 @@ scf::ForOp transformLoop(scf::ForOp forOp, OpBuilder &builder) {
     
 }
 
-SmallVector<bool> getWaitType(std::string CoreType, scf::ForOp forOp) {
-    SmallVector<bool> waitTypes;
+// Find the first occurrence of convert_layout or fixpipe operation after the specified operation
+Value findFirstTargetOpAfterWait(SyncBlockWaitOp waitOp)
+{
+    bool startSearching = false;
+    
+    for (Operation &op : waitOp->getBlock()->getOperations()) {
+        if (&op == waitOp) {
+            startSearching = true;
+            continue;
+        }
+        
+        if (startSearching) {
+            if (isa<hivm::ConvertLayoutOp>(op)) {
+                return op.getOperands()[0];
+            }
+            if (isa<hivm::FixpipeOp>(op)) {
+                return op.getOperands()[1];
+            }
+            if (isa<hivm::CopyOp>(op)) {
+                return op.getOperands()[1];
+            }
+            if (isa<memref::MemorySpaceCastOp>(op)) {
+                return op.getOperands()[0];
+            }
+        }
+    }
+    
+    return nullptr;
+}
+
+void getWaitType(std::string CoreType, scf::ForOp forOp, SmallVector<bool>& waitTypes, SmallVector<Value>& allocTypes)
+{
     auto scalarWaitPipe = PipeAttr::get(forOp.getContext(), hivm::PIPE::PIPE_S);
     auto cubeWaitPipe = PipeAttr::get(forOp.getContext(), hivm::PIPE::PIPE_FIX);
     auto vectorWaitPipe = PipeAttr::get(forOp.getContext(), hivm::PIPE::PIPE_MTE3);
@@ -491,16 +539,19 @@ SmallVector<bool> getWaitType(std::string CoreType, scf::ForOp forOp) {
                 if (forOp == ifOp->getParentOp()) {
                   auto waitPipe = waitOp.getPipe();
                   if ((waitPipe == cubeWaitPipe && CoreType == "cube") || (waitPipe == vectorWaitPipe && CoreType == "vector")) {
+                      auto allocOp = findFirstTargetOpAfterWait(waitOp);
                       waitTypes.push_back(0);
+                      allocTypes.push_back(allocOp);
                   }
                   else if (waitPipe != scalarWaitPipe) {
+                      auto allocOp = findFirstTargetOpAfterWait(waitOp);
                       waitTypes.push_back(1);
+                      allocTypes.push_back(allocOp);
                   }
                 }
             }
         }
     });
-    return waitTypes;
 }
 
 DenseMap<int, int> getCounterOffset(scf::ForOp forOp) {
@@ -529,7 +580,8 @@ DenseMap<int, int> getCounterOffset(scf::ForOp forOp) {
     return bufferMap;
 }
 
-SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, OpBuilder &builder) {
+SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, DenseMap<Value, int> VecBitMap, DenseMap<Value, int>CubeBitMap, OpBuilder &builder)
+{
     auto aiCAttr = hivm::TCoreTypeAttr::get(
             builder.getContext(),
             hivm::TCoreType::CUBE);
@@ -562,32 +614,48 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, O
     // 2. 提取并处理step值
     Value stepValue = forOp.getStep();
     builder.setInsertionPoint(forOp);
-    Value subLoopValue_pre2 = builder.create<arith::SubIOp>(
-        forOp.getLoc(), // 位置信息
-        endValue.getType(),        // 结果类型
-        endValue,       // 被除数（end）
-        startValue       // 除数（step）
-    );
-    Value subLoopValue_pre = builder.create<arith::DivSIOp>(
-        forOp.getLoc(), // 位置信息
-        stepValue.getType(),        // 结果类型
-        subLoopValue_pre2,       // 被除数（end）
-        stepValue       // 除数（step）
-    );
-    auto stepType = stepValue.getType();
-    auto subLoopConstAttr = mlir::IntegerAttr::get(stepType, 2);
-    auto subLoopValue_2 = builder.create<mlir::LLVM::ConstantOp>(
+    auto twoAttr = mlir::IntegerAttr::get(endValue.getType(), 2);
+    auto two = builder.create<mlir::LLVM::ConstantOp>(
         scopeOp->getLoc(),
-        stepType,
-        subLoopConstAttr);
+        endValue.getType(),
+        twoAttr);
+    auto first = builder.create<arith::AddIOp>(
+        forOp.getLoc(),
+        endValue.getType(),
+        endValue,
+        two
+    );
+
+    auto second = builder.create<arith::MulIOp>(
+        forOp.getLoc(),
+        endValue.getType(),
+        stepValue,
+        two
+    );
+
+    auto third = builder.create<arith::SubIOp>(
+        forOp.getLoc(),
+        endValue.getType(),
+        first,
+        second
+    );
+
+    auto fourth = builder.create<arith::AddIOp>(
+        forOp.getLoc(),
+        endValue.getType(),
+        third,
+        startValue
+    );
+        
     Value subLoopValue = builder.create<arith::DivSIOp>(
-        forOp.getLoc(), // 位置信息
-        subLoopValue_2.getType(),        // 结果类型
-        subLoopValue_pre,       // 被除数（end）
-        subLoopValue_2       // 除数（step）
+        forOp.getLoc(),
+        endValue.getType(),
+        fourth,
+        two
     );
 
     SmallVector<bool> WaitType;
+    SmallVector<Value> AllocType;
     SmallVector<Value> bufferPtrs;
     if (isAIC) {
         builder.setInsertionPointToStart(&forOp->getRegion(0).front());
@@ -623,10 +691,11 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, O
             forOp.getLoc(), builder.getI32Type(), ssb_vec1_ptr
         );
 
-        WaitType = getWaitType("cube", forOp);
+        getWaitType("cube", forOp, WaitType, AllocType);
 
         for (auto i = 0; i < WaitType.size(); i++) {
-            auto i32ConstAttr = mlir::IntegerAttr::get(builder.getI32Type(), 1 << i);
+            auto correnspondAlloc = CubeBitMap[AllocType[i]];
+            auto i32ConstAttr = mlir::IntegerAttr::get(builder.getI32Type(), 1 << correnspondAlloc);
             auto buf_constant_set = builder.create<mlir::LLVM::ConstantOp>(
                 scopeOp->getLoc(), builder.getI32Type(), i32ConstAttr);
             Value bufi_vec0_val = builder.create<arith::AndIOp>(
@@ -691,9 +760,10 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, O
             forOp.getLoc(), builder.getI32Type(), ssb_cube_ptr
         );
 
-        WaitType = getWaitType("vector", forOp);
+        getWaitType("vector", forOp, WaitType, AllocType);
         for (auto i = 0; i < WaitType.size(); i++) {
-            auto i32ConstAttr = mlir::IntegerAttr::get(builder.getI32Type(), 1 << i);
+            auto correnspondAlloc = VecBitMap[AllocType[i]];
+            auto i32ConstAttr = mlir::IntegerAttr::get(builder.getI32Type(), 1 << correnspondAlloc);
             auto buf_constant_set = builder.create<mlir::LLVM::ConstantOp>(
                 scopeOp->getLoc(), builder.getI32Type(), i32ConstAttr);
             Value bufi_cube_val = builder.create<arith::AndIOp>(
@@ -749,6 +819,10 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, O
     }
     int ifIndex = 0;
     int acc = 0;
+    int bufferBit = 0;
+    for (int i = 0; i < CubeBitMap.size(); i++) {
+        bufferBit += (1 << i);
+    }
     forOp.getBody()->walk([&](Operation* op) {
       auto ifOp = dyn_cast<scf::IfOp>(op);
       if (ifOp && ifOp->hasAttr("ssbuffer")) {
@@ -783,8 +857,9 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, O
                 Value buf_val_new_1 = status_v2_1;
                 auto bufferNum = bufferMap[ifIndex];
                 for (int i = 0; i < bufferNum; i++) {
-                    if (WaitType[ifIndex + i] == 0) {
-                        auto i32ConstAttr = mlir::IntegerAttr::get(builder.getI32Type(), 1 << (ifIndex + i));
+                    if (WaitType[acc + i] == 0) {
+                        auto correnspondAlloc = CubeBitMap[AllocType[acc + i]];
+                        auto i32ConstAttr = mlir::IntegerAttr::get(builder.getI32Type(), 1 << correnspondAlloc);
                         auto buf_constant_set = builder.create<mlir::LLVM::ConstantOp>(
                             scopeOp->getLoc(), builder.getI32Type(), i32ConstAttr);
                         buf_val_new_0 = builder.create<arith::OrIOp>(
@@ -794,13 +869,14 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, O
                         );
                         buf_val_new_1 = builder.create<arith::OrIOp>(
                             yieldOp->getLoc(),
-                            buf_val_new_0,
+                            buf_val_new_1,
                             buf_constant_set  // 假设buf3_clear已在作用域中定义
                         );
                     }
                     else {
-                        int bitPos = ifIndex + i;
-                        int basePattern = 0x7;
+                        auto correnspondAlloc = CubeBitMap[AllocType[acc + i]];
+                        int bitPos = correnspondAlloc;
+                        int basePattern = bufferBit;
                         int finalValue = basePattern ^ (1 << bitPos);
                         auto i32ConstAttr = mlir::IntegerAttr::get(builder.getI32Type(), finalValue);
                         auto buf_constant_set = builder.create<mlir::LLVM::ConstantOp>(
@@ -817,6 +893,7 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, O
                         );
                     }
                 }
+                acc += bufferNum;
                 builder.create<LLVM::StoreOp>(
                     yieldOp->getLoc(),
                     buf_val_new_0,
@@ -841,7 +918,8 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, O
                 auto bufferNum = bufferMap[ifIndex];
                 for (int i = 0; i < bufferNum; i++) {
                     if (WaitType[acc + i] == 0) {
-                        auto i32ConstAttr = mlir::IntegerAttr::get(builder.getI32Type(), 1 << (acc + i));
+                        auto correnspondAlloc = VecBitMap[AllocType[acc + i]];
+                        auto i32ConstAttr = mlir::IntegerAttr::get(builder.getI32Type(), 1 << correnspondAlloc);
                         auto buf_constant_set = builder.create<mlir::LLVM::ConstantOp>(
                             scopeOp->getLoc(), builder.getI32Type(), i32ConstAttr);
                         buf_val_new = builder.create<arith::OrIOp>(
@@ -851,8 +929,9 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, O
                         );
                     }
                     else {
-                        int bitPos = acc + i;
-                        int basePattern = 0x7;
+                        auto correnspondAlloc = VecBitMap[AllocType[acc + i]];
+                        int bitPos = correnspondAlloc;
+                        int basePattern = bufferBit;
                         int finalValue = basePattern ^ (1 << bitPos);
                         auto i32ConstAttr = mlir::IntegerAttr::get(builder.getI32Type(), finalValue);
                         auto buf_constant_set = builder.create<mlir::LLVM::ConstantOp>(
@@ -879,9 +958,11 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, O
     return if_conditions;
 }
 
-void ReplaceIf(scf::ForOp forOp, SmallVector<Value> conditions, SmallVector<Operation*>& opsToErase, OpBuilder &builder, ModuleOp moduleOp) {
+void ReplaceIf(scf::ForOp forOp, SmallVector<Value> conditions, SmallVector<Operation*>& opsToErase, DenseMap<scf::IfOp, Value>& ifArgMap, OpBuilder &builder, ModuleOp moduleOp)
+{
     SmallVector<scf::IfOp> ifToProcess;
     llvm::outs()<<"enter replaceif\n";
+    Value step = forOp.getStep();
     auto aiCAttr = hivm::TCoreTypeAttr::get(
             builder.getContext(),
             hivm::TCoreType::CUBE);
@@ -967,16 +1048,12 @@ void ReplaceIf(scf::ForOp forOp, SmallVector<Value> conditions, SmallVector<Oper
                 }
                 // 获取最后两个迭代参数
                 Value iterArgMinus = iterArgs[iterArgs.size() - (conditions.size() - i)];
-                auto iterType = iterArgMinus.getType();
-                auto c0i32ConstAttr = mlir::IntegerAttr::get(iterType, 1);
-                auto c0i32ConstOp = builder.create<mlir::LLVM::ConstantOp>(
-                    forOp->getLoc(), iterType, c0i32ConstAttr);
         
                 // %ssb_addr = arith.addi %ssb_addr_offset, %c32_i64 : i64
                 auto AddIOp = builder.create<mlir::arith::AddIOp>(
                     forOp->getLoc(),
                     iterArgMinus,
-                    c0i32ConstOp.getResult());
+                    step);
                 // 这里加个add1
                 mappedOperands.push_back(AddIOp);
                 builder.create<scf::YieldOp>(loc, mappedOperands);
@@ -1041,8 +1118,11 @@ void ReplaceIf(scf::ForOp forOp, SmallVector<Value> conditions, SmallVector<Oper
             }
         });
         
-        // // 删除原有的if操作
-        opsToErase.push_back(ifOp);
+          // // 删除原有的if操作
+          opsToErase.push_back(ifOp);
+          if (ifArgMap.find(newIfOp) == ifArgMap.end()) {
+                ifArgMap[newIfOp] = iterArgMinus;
+            }
         }
 }
 
@@ -1056,6 +1136,91 @@ int getNestingDepth(scf::ForOp forOp) {
         op = op->getParentOp();
     }
     return depth;
+}
+
+void printDenseMap(const mlir::DenseMap<mlir::Value, int>& Map)
+{
+    for (const auto& pair : Map) {
+        mlir::Value val = pair.first;
+        int bitValue = pair.second;
+        llvm::outs()<<val<<"  "<<bitValue<<"  allocmap\n\n\n";
+        llvm::outs().flush();
+    }
+    llvm::outs()<<"------------------------------\n\n\n";
+}
+
+void getAllocBit(ModuleOp module, DenseMap<Value, int>& VecBitMap, DenseMap<Value, int>& CubeBitMap, OpBuilder builder)
+{
+    auto aiCAttr = hivm::TCoreTypeAttr::get(
+        builder.getContext(),
+        hivm::TCoreType::CUBE);
+    auto scalarWaitPipe = PipeAttr::get(module.getContext(), hivm::PIPE::PIPE_S);
+    auto cubeWaitPipe = PipeAttr::get(module.getContext(), hivm::PIPE::PIPE_FIX);
+    auto vectorWaitPipe = PipeAttr::get(module.getContext(), hivm::PIPE::PIPE_MTE3);
+
+    int cubeAcc = 0;
+    int vecAcc = 0;
+    SmallVector<scope::ScopeOp> scopeOpToEdit;
+    module.walk([&](scope::ScopeOp scopeOp) {
+      scopeOpToEdit.push_back(scopeOp);
+    });
+    for (auto scopeOp : scopeOpToEdit) {
+      if (scopeOp->hasAttr("hivm.tcore_type")) {
+          auto attr = scopeOp->getAttr("hivm.tcore_type");
+          if (attr == aiCAttr) {
+              scopeOp.walk([&](SyncBlockWaitOp waitOp) {
+                    auto parentOp = waitOp->getParentOp();
+                    if (isa<scf::IfOp>(parentOp) && parentOp->hasAttr("ssbuffer")) {
+                        auto waitPipe = waitOp.getPipe();
+                        if (waitPipe != scalarWaitPipe) {
+                          auto allocOp = findFirstTargetOpAfterWait(waitOp);
+                          if (VecBitMap.find(allocOp) != VecBitMap.end()) {
+                              CubeBitMap[allocOp] = VecBitMap[allocOp];
+                          } else {
+                              CubeBitMap[allocOp] = cubeAcc;
+                              cubeAcc++;
+                          }
+                        }
+                    }
+              });
+          } else {
+              scopeOp.walk([&](SyncBlockWaitOp waitOp) {
+                    auto parentOp = waitOp->getParentOp();
+                    if (isa<scf::IfOp>(parentOp) && parentOp->hasAttr("ssbuffer")) {
+                        auto waitPipe = waitOp.getPipe();
+                        if (waitPipe != scalarWaitPipe) {
+                          auto allocOp = findFirstTargetOpAfterWait(waitOp);
+                          if (VecBitMap.find(allocOp) == VecBitMap.end()) {
+                              VecBitMap[allocOp] = vecAcc;
+                              vecAcc++;
+                          }
+                        }
+                    }
+              });
+          }
+      }
+    }
+}
+
+void modifyForIterargDeps(scf::ForOp forOp, DenseMap<scf::IfOp, Value> ifCounters)
+{
+  Value iterArg = forOp.getInductionVar();
+
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+      if (ifCounters.find(ifOp) != ifCounters.end()) {
+        Value counter = ifCounters[ifOp];
+
+        ifOp.walk([&](Operation* opInIf) {
+          for (auto [i, operand] : llvm::enumerate(opInIf->getOperands())) {
+            if (operand == iterArg) {
+                opInIf->setOperand(i, counter);
+            }
+          }
+        });
+      }
+    }
+  }
 }
 
 void FlowSssbuf(ModuleOp module) {
@@ -1120,17 +1285,32 @@ void FlowSssbuf(ModuleOp module) {
     llvm::sort(transformLoops, [](scf::ForOp a, scf::ForOp b) {
         return getNestingDepth(a) > getNestingDepth(b);
     });
-
+    DenseMap<Value, int> VecBitMap;
+    DenseMap<Value, int> CubeBitMap;
+    getAllocBit(module, VecBitMap, CubeBitMap, builder);
+    printDenseMap(CubeBitMap);
+    printDenseMap(VecBitMap);
     SmallVector<Operation*> opsToErase;
     for (scf::ForOp forOp : transformLoops) {
+        DenseMap<scf::IfOp, Value> ifArgMap;
         llvm::outs()<<"before replaceif\n";
-        auto bufvals = addBufValLoop(forOp, numBuffer, subLoop, builder);
-        ReplaceIf(forOp, bufvals, opsToErase, builder, module);
+        auto bufvals = addBufValLoop(forOp, numBuffer, subLoop, VecBitMap, CubeBitMap, builder);
+        ReplaceIf(forOp, bufvals, opsToErase, ifArgMap, builder, module);
         llvm::outs()<<"after replaceif\n";
+        for (const auto& pair : ifArgMap) {
+          auto val = pair.first;
+          auto bitValue = pair.second;
+          llvm::outs()<<val<<"  "<<bitValue<<"  ifargmrp\n\n\n";
+          llvm::outs().flush();
+        }
+
+        modifyForIterargDeps(forOp, ifArgMap);
     }
     for (auto op : opsToErase) {
       op->erase();
     }
+
+    
 }
 
 bool isTransOp(mlir::Operation *op) {
