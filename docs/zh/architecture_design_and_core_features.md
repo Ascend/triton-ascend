@@ -1,10 +1,12 @@
 # 架构设计与核心特性
 
 ## 1.逻辑架构
+
 ![图像](./figures/architectural_diagram.png)
 **Triton-Ascend 架构说明**
 
 **核心组件：**
+
 - **`Ascend language extension`**：适配 Ascend 的 Triton 语言扩展  
 - **`compiler`**：适配 Ascend 的 Triton 编译器  
 - **`driver`**：适配 Ascend 的设备驱动接口
@@ -16,16 +18,18 @@
 
 - **`compiler`**  
   接收来自上层 Triton compiler 生成的中间表示文件 `TTIR`（Triton IR），执行一系列适配昇腾硬件的转换。
-  ```
+
+  ```python
   Triton IR → Linalg IR → AscendNPU IR → triton_xxx_kernel.o
   ```
+
   Triton IR 转换为 Linalg IR，再经 BiSheng Compiler 生成面向 Ascend NPU 的可执行二进制文件  `triton_xxx_kernel.o`。
 
 - **`driver`**  
   提供 Triton 运行时与 Ascend 软件栈（CANN）之间的对接能力， 加载由 BiSheng Compiler 生成的设备侧可执行内核 `triton_xxx_kernel.o` 。
 
-
 ## 2.代码结构
+
 ### 2.1 代码结构原则
 
 本项目在标准 Triton 基础上，扩展支持华为 Ascend NPU（通过 CANN 软件栈）。整体设计遵循以下**代码原则**：
@@ -33,26 +37,27 @@
 > - **若修改与目标硬件无关**（target independent），应保留在 **Triton core** 部分（如language、runtime的通用修改）；  
 > - **若修改与 Ascend 硬件强相关**（target affinitive），应放在 **Triton-Ascend** 中。
 
-
 ### 2.2 目录结构与功能说明
 
 **`include/` 和 `lib/`**
+
 - **内容**：包含针对 Ascend NPU 的 **MLIR Passes**、**Dialects**（方言）以及相关工具。
 - **作用**：用于在 MLIR 编译流程中表达和优化 Ascend 特定的计算图。
 
 **`libdevice.py`**
+
 - **内容**：适配 Ascend NPU 的 `libdevice` 接口。
 - **作用**：提供适配 Ascend NPU 硬件的底层实现支持，供 Triton 算子调用。
 
-
 **`backend/compiler.py`**
+
 - **内容**：`triton-ascend` 编译器主入口。
 - **作用**：将 Triton 高层 DSL 代码编译为可在 Ascend NPU 上执行的**可执行二进制文件**（如 `.o`文件）。
 
 **`backend/driver.py`**
+
 - **内容**：`triton-ascend` 驱动模块。
 - **作用**：加载并启动已编译的可执行二进制。
-
 
 ## 3. Modules
 
@@ -65,7 +70,6 @@
 | 1    | `tl.insert_slice(full, src, offsets, sizes, strides)` | 按照指定的偏移量（offsets）、尺寸（sizes）和步幅（strides）参数，将一个张量插入到另一个张量中。<br>**返回值**：目标张量。<br>**full**：目标张量，源张量将被插入到此张量中。<br>**src**：源张量。<br>**offsets**：目标张量上的偏移量（整数元组）。<br>**sizes**：源张量上的尺寸（整数元组）。<br>**strides**：目标张量上的步幅（整数元组）。 |
 | 2    | `tl.extract_slice(full, offsets, sizes, strides)`     | 按照指定的偏移量（offsets）、尺寸（sizes）和步幅（strides）参数，从另一个张量中提取一个切片张量。<br>**返回值**：切片张量。<br>**full**：源张量，从此张量中提取切片。<br>**offsets**：源张量上的偏移量（整数元组）。<br>**sizes**：切片张量的尺寸（整数元组）。<br>**strides**：源张量上的步幅（整数元组）。                        |
 | 3    | `tl.get_element(source, offset)`                      | 读取一个具有维度的张量，并返回指定偏移量处的单个元素。<br>**source**：源张量。<br>**offset**：元素提取位置的偏移量（整数元组）。   |
-
 
 ## 3.2 Triton-Ascend
 
@@ -92,7 +96,6 @@
 | 17  | auto_blockify_size                            | NPU        | Autotune option: Enable or disable AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
 
 ### 3.2.2 SIMD compiler
-
 
 | 序号 | Pass                   | 目的                                                                   | IR 转换                 |
 | ------ | ---------------------- |----------------------------------------------------------------------| ----------------------- |
@@ -127,7 +130,6 @@
 | 2    | triton-to-unstructured           | 将经过`discrete-mask-access-conversion`识别出的、包含离散轴（Discrete Axes）的张量操作，转换为基于显式标量循环的标量访存。 |
 | 3    | bubble-up-operation                       | 主要对`extract op/extract_slice`顺序上移优化。这可以优化数据局部性，有些场景能消除转换后产生的不必要的循环，从而提升生成代码的执行效率。 |
 
-
 ##### 3.2.2.2.1 discrete-mask-access-conversion
 
 | 转换器名称                  | 描述|
@@ -146,7 +148,6 @@
 | UnstructuredMemAccessConverter\<triton::AtomicCASOp\> | 将AtomicCASOp转化为多重循环标量Atomic操作 |
 
 ##### 3.2.2.2.3 bubble-up-operation
-
 
 | 转换器名称 | 描述 |
 |---|---|
