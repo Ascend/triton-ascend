@@ -1,7 +1,7 @@
 #ifndef AffinityDAGDEF
 #define AffinityDAGDEF
 #include "Utils.hpp"
-#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -14,11 +14,13 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
 #include <cassert>
 #include <cstddef>
 #include <memory>
 #include <mutex>
-#include <optional>
+#include <sys/types.h>
+#include <type_traits>
 
 namespace mlir { namespace AffinityDAG {
 
@@ -57,6 +59,36 @@ inline CoreType operator& (OpAbility lhs, CoreType rhs) {
   return toCoreType(lhs) & rhs;
 }
 
+inline CoreType operator!(CoreType ct)
+{
+    CoreType newCt = UNDETERMINED;
+    if ((ct & CoreType::CUBE_ONLY) == UNDETERMINED) {
+        newCt = newCt | CoreType::CUBE_ONLY;
+    }
+
+    if ((ct & CoreType::VECTOR_ONLY) == UNDETERMINED) {
+        newCt = newCt | CoreType::VECTOR_ONLY;
+    }
+
+    return newCt;
+}
+
+inline hivm::TCoreType toHivm(CoreType ct)
+{
+    switch (ct) {
+        case UNDETERMINED:
+            return hivm::TCoreType::CUBE_OR_VECTOR;
+        case CUBE_ONLY:
+            return hivm::TCoreType::CUBE;
+        case VECTOR_ONLY:
+            return hivm::TCoreType::VECTOR;
+        case CUBE_AND_VECTOR:
+            return hivm::TCoreType::CUBE_AND_VECTOR;
+        default:
+            llvm_unreachable("Invalid CoreType that cannot convert to hivm");
+    }
+}
+
 inline bool intersects(OpAbility lhs, CoreType rhs) {
   return (lhs & rhs) != CoreType::UNDETERMINED;
 }
@@ -82,6 +114,8 @@ protected:
 class Node;
 class OpNode;
 class ValueNode;
+
+ValueNode *getDataSource(OpNode *op);
 
 class Graph : MoveOnly {
 public:

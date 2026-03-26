@@ -86,6 +86,11 @@ void ControlSsbufV2(ModuleOp module) {
 
     llvm::DenseSet<mlir::Operation*> processedScopes2;
     module->walk([&](SyncBlockWaitOp op) {
+        auto pipeS = hivm::PipeAttr::get(op->getContext(), hivm::PIPE::PIPE_S);
+        if (op.getTpipe() == pipeS || op.getPipe() == pipeS) {
+            return;
+        }
+
         // 向上查找父scope.scope操作
         mlir::Operation* parentOp = op->getParentOp();
         mlir::Operation* scopeOp = nullptr;
@@ -3547,13 +3552,18 @@ void MergeWaitSetRegions(SmallVector<WaitSetRegion> &regions,
 void GetBlockInfos(SmallVector<WaitSetRegion> &regions, Block &body) {
   for (auto it = body.begin(); it != body.end();) {
     Operation *op = &*it;
-    // llvm::outs() <<"op: "<< *op << "\n";
-    if (!isa<SyncBlockWaitOp>(op)) {
-      it++;
-      continue;
+
+    auto waitOp = dyn_cast<SyncBlockWaitOp>(op);
+    if (!waitOp) {
+        it++;
+        continue;
     }
 
-    Operation *waitOp = op;
+    auto pipeS = hivm::PipeAttr::get(op->getContext(), hivm::PIPE::PIPE_S);
+    if (waitOp.getTpipe() == pipeS || waitOp.getPipe() == pipeS) {
+        return;
+    }
+
     Operation *lastSetOp = nullptr;
 
     // 扫描到下一个 wait, 收集所有 set

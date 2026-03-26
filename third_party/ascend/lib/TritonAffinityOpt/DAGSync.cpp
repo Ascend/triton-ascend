@@ -1,27 +1,33 @@
 #include "TritonAffinityOpt/Passes.h"
 
-#include "bishengir/Dialect/Scope/IR/Scope.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "bishengir/Dialect/HIVM/IR/HIVMImpl.h"
-#include "bishengir/Dialect/HIVM/Transforms/Passes.h"
 #include "bishengir/Dialect/HIVM/IR/HIVMInterfaces.h"
+#include "bishengir/Dialect/HIVM/Transforms/Passes.h"
 #include "bishengir/Dialect/HIVM/Utils/Utils.h"
+#include "bishengir/Dialect/Scope/IR/Scope.h"
+#include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
+#include "mlir/Analysis/DataFlow/SparseAnalysis.h"
+#include "mlir/Analysis/DataFlowFramework.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Block.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/Dominance.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "triton/Analysis/Alias.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/Operation.h"
-#include "mlir/IR/Block.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "llvm/Support/Casting.h"
 
 #include "Utils/Utils.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/FormatVariadic.h"
 #include <memory>
 #include <optional>
 
@@ -328,10 +334,10 @@ void DAGSyncPass::insertCubeToVectorDataMovement(mlir::Operation *srcOp, mlir::O
         /*pre_relu=*/nullptr,
         /*channel_split=*/nullptr,
         /*unit_flag_mode=*/mlir::ArrayAttr{});
-    
-    llvm::outs() << "Inserted fixpipe after " << srcOp->getName().getStringRef() 
+
+    llvm::outs() << "Inserted fixpipe after " << srcOp->getName().getStringRef()
                  << " for CUBE->VECTOR data movement\n";
-    
+
     // 3. 在 dstOp 前创建 memory_space_cast 和 to_tensor
     builder.setInsertionPoint(dstOp);
 
@@ -549,7 +555,7 @@ Operation* DAGSyncPass::FindLastestPosition(Operation* srcOp, Graph &mainGraph, 
             auto defOp = operand.getDefiningOp();
             auto defType = getNodeDeviceType(opMap[defOp], valueTypes);
             if(defType == CoreType::CUBE_ONLY) {
-                //To prevent UB overflow, we need to break the dependency at the point where the result shape is minimized 
+                //To prevent UB overflow, we need to break the dependency at the point where the result shape is minimized
                 // — i.e., trace upward to find the first broadcast.
                 for(auto prevOp = nextOp->getPrevNode(); prevOp != nullptr && prevOp != srcOp; prevOp = prevOp->getPrevNode()) {
                     if(isa<triton::BroadcastOp>(prevOp)) {
@@ -563,7 +569,7 @@ Operation* DAGSyncPass::FindLastestPosition(Operation* srcOp, Graph &mainGraph, 
                 return nextOp;
             }
         }
-        
+
         // Once meet SyncBlockWaitOp, return now!
         if(auto waitOp = dyn_cast<hivm::SyncBlockWaitOp>(nextOp)) {
             if(waitOp.getTcoreType() == hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR)) {
@@ -572,12 +578,12 @@ Operation* DAGSyncPass::FindLastestPosition(Operation* srcOp, Graph &mainGraph, 
         }
         insertPos = nextOp;
     }
-    return insertPos; 
+    return insertPos;
 }
 
-Operation* DAGSyncPass::FindEarliestPosition(Operation* dstOp, Graph &mainGraph, OpBuilder &builder) 
+Operation* DAGSyncPass::FindEarliestPosition(Operation* dstOp, Graph &mainGraph, OpBuilder &builder)
 {
-    auto insertPos = dstOp;   
+    auto insertPos = dstOp;
     auto opMap = mainGraph.getOpMapLegacy();
     auto valueTypes = &mainGraph.getValueTypes();
     for (auto prevOp = dstOp->getPrevNode(); prevOp != nullptr; prevOp = prevOp->getPrevNode()) {
@@ -590,7 +596,7 @@ Operation* DAGSyncPass::FindEarliestPosition(Operation* dstOp, Graph &mainGraph,
         }
         insertPos = prevOp;
     }
-    return insertPos; 
+    return insertPos;
 }
 
 // 主要的同步和数据搬运插入函数
@@ -893,12 +899,12 @@ static void rewriteCopyChainForCbub(
   // Create new to_memref
   builder.setInsertionPoint(toMemRefOp);
   auto newMemRefType = MemRefType::get(
-      newShape, 
-      elementType, 
-      mlir::AffineMap{}, 
+      newShape,
+      elementType,
+      mlir::AffineMap{},
       toMemRefOp.getType().getMemorySpace());
   auto newToMemRefOp = builder.create<bufferization::ToMemrefOp>(
-      toMemRefOp.getLoc(), 
+      toMemRefOp.getLoc(),
       newMemRefType,
       reshape4DOp.getResult());
   (*valueTypes)[newToMemRefOp.getResult()] = CoreType::VECTOR_ONLY;
@@ -919,6 +925,252 @@ static void rewriteCopyChainForCbub(
   toMemRefOp.erase();
 
   return;
+}
+
+template <typename OpTy>
+OpTy createBlockSync(OpBuilder builder,
+                     hivm::TCoreType coreType,
+                     hivm::PIPE srcPipe,
+                     hivm::PIPE dstPipe,
+                     int flag,
+                     Operation *cause)
+{
+    auto flagId = builder.getIntegerAttr(builder.getI64Type(), flag);
+    auto coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), coreType);
+    auto setPipe = PipeAttr::get(builder.getContext(), srcPipe);
+    auto waitPipe = PipeAttr::get(builder.getContext(), dstPipe);
+    return builder.create<OpTy>(cause->getLoc(), coreAttr, setPipe, waitPipe, flagId);
+}
+
+// since we do not have llvm::set_intersects in this version...
+template <class S1Ty, class S2Ty> bool intersects(S1Ty &s1, S2Ty &s2)
+{
+    if (s1.size() > s2.size()) {
+        return intersects(s2, s1);
+    }
+
+    return llvm::any_of(s1, [&](auto e) { return s2.count(e); });
+}
+
+bool mayAlias(DataFlowSolver &solver, Value ptrA, Value ptrB)
+{
+    if (ptrA == ptrB) {
+        return true;
+    }
+    const auto *stateA = solver.lookupState<dataflow::Lattice<AliasInfo>>(ptrA);
+    const auto *stateB = solver.lookupState<dataflow::Lattice<AliasInfo>>(ptrB);
+    if (!stateA || !stateB) { // not triton ptr type
+        return true;
+    }
+    auto infoA = stateA->getValue();
+    auto infoB = stateB->getValue();
+
+    return intersects(infoA.getAllocs(), infoB.getAllocs());
+}
+
+const size_t MAX_EXPECTED_PARENTS_COUNT = 8;
+
+std::optional<std::pair<Operation *, Operation *>> findAncestorCommonBlock(mlir::Operation *opA, mlir::Operation *opB)
+{
+    if (opA->getBlock() == opB->getBlock()) {
+        return std::make_pair(opA, opB);
+    }
+
+    // record all ancestors of opA
+    llvm::SmallPtrSet<mlir::Operation *, MAX_EXPECTED_PARENTS_COUNT> ancestorsA;
+    mlir::Operation *curr = opA;
+    while (curr) {
+        ancestorsA.insert(curr);
+        curr = curr->getParentOp();
+    }
+
+    // find the last ancestor of opB which is also the ancestor of opA
+    mlir::Operation *commonAncOp = nullptr;
+    curr = opB;
+    while (curr) {
+        if (ancestorsA.count(curr)) {
+            commonAncOp = curr;
+            break;
+        }
+        curr = curr->getParentOp();
+    }
+
+    if (!commonAncOp) {
+        return std::nullopt;
+    }
+
+    // find the ancestors in the given region
+    for (mlir::Region &region : commonAncOp->getRegions()) {
+        for (mlir::Block &block : region) {
+            auto *ancA = block.findAncestorOpInBlock(*opA);
+            auto *ancB = block.findAncestorOpInBlock(*opB);
+            if (ancA && ancB) {
+                return std::make_pair(ancA, ancB);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+struct SyncCandidate {
+    CoreType srcCoreType;
+    Operation *setCause;
+    Operation *setAfter;
+    Operation *waitCause;
+    Operation *waitBefore;
+};
+
+// setOp, waitOp
+void createBlockSyncBetween(OpBuilder builder,
+                            hivm::PIPE srcPipe,
+                            hivm::PIPE dstPipe,
+                            SyncCandidate candidate,
+                            int flag)
+{
+    auto srcCoreType = toHivm(candidate.srcCoreType);
+    auto dstCoreType = toHivm(!candidate.srcCoreType);
+
+    builder.setInsertionPointAfter(candidate.setAfter);
+    auto setOp = createBlockSync<SyncBlockSetOp>(builder, srcCoreType, srcPipe, dstPipe, flag, candidate.setCause);
+    builder.setInsertionPoint(candidate.waitBefore);
+    auto waitOp = createBlockSync<SyncBlockWaitOp>(builder, dstCoreType, srcPipe, dstPipe, flag, candidate.waitCause);
+};
+
+void addMemEffectsSync(triton::FuncOp funcOp, Graph *graph, OpBuilder &builder, int &syncFlag)
+{
+    DominanceInfo domInfo(funcOp);
+    PostDominanceInfo postDomInfo(funcOp);
+    DataFlowSolver solver;
+    solver.load<dataflow::DeadCodeAnalysis>();
+    solver.load<SharedMemoryAliasAnalysis>();
+
+    if (failed(solver.initializeAndRun(funcOp))) {
+        funcOp->emitWarning("SharedMemoryAliasAnalysis failed! This could lead to potential memory related issues! \n");
+    }
+
+    // [(node, EffectInstance, LinearisationPt)]
+    llvm::SmallVector<std::tuple<OpNode *, MemoryEffects::EffectInstance>> memOps;
+
+    // [(setAfter, waitBefore, srcOP, dstOp)][CoreType]
+    llvm::SmallVector<SyncCandidate> candidates;
+
+    funcOp.walk([&](MemoryEffectOpInterface memIface) {
+        auto *op = memIface.getOperation();
+        if (llvm::isa<triton::AssertOp>(op)) {
+            return;
+        }
+
+        auto *currNode = graph->getOpMap()[op].get();
+        SmallVector<MemoryEffects::EffectInstance> effects;
+
+        memIface.getEffects(effects);
+
+        for (auto &effect : effects) {
+            if (!isa<MemoryEffects::Write, MemoryEffects::Read>(effect.getEffect())) {
+                continue;
+            }
+            memOps.emplace_back(currNode, effect);
+            bool isWrite = isa<MemoryEffects::Write>(effect.getEffect());
+            for (auto &[prevNode, prevEffect] : memOps) {
+                if ((isa<MemoryEffects::Write>(prevEffect.getEffect()) || isWrite) &&
+                    mayAlias(solver, prevEffect.getValue(), effect.getValue()) &&
+                    prevNode->isOn() != currNode->isOn() // write is forced on single core type, so we are safe to judge
+                                                         // based on whether the core types are different
+                ) {
+                    CoreType srcCoreType = isWrite ? !currNode->isOn() : prevNode->isOn();
+                    auto opPair = findAncestorCommonBlock(prevNode->op, currNode->op);
+                    if (!opPair.has_value()) {
+                        op->emitWarning(
+                            llvm::formatv("Unable to find ancestors in common block with {0}\n", *prevNode->op));
+                        continue;
+                    }
+                    auto [setAfter, waitBefore] = opPair.value();
+                    if (setAfter == waitBefore) {
+                        continue;
+                    }
+                    candidates.push_back(SyncCandidate {srcCoreType, prevNode->op, setAfter, op, waitBefore});
+                }
+            }
+        }
+    });
+
+    auto addBlockSyncCommon = [&builder, &syncFlag](SyncCandidate cand) {
+        llvm::dbgs() << "\n\n=== Insert sync between ===\n"
+                     << *cand.setAfter << "\n"
+                     << *cand.waitBefore << "\n=== Insert Sync End ===\n\n";
+
+        auto srcPipe = cand.srcCoreType == CoreType::CUBE_ONLY ? hivm::PIPE::PIPE_FIX : hivm::PIPE::PIPE_MTE2;
+        auto dstPipe = hivm::PIPE::PIPE_S;
+        createBlockSyncBetween(builder, srcPipe, dstPipe, cand, syncFlag % 14);
+        syncFlag++;
+    };
+
+    if (candidates.empty()) {
+        return;
+    }
+
+    auto setAfterDominate = [&domInfo](Operation *a, Operation *b) {
+        if (domInfo.dominates(a, b)) {
+            return true;
+        }
+        if (domInfo.dominates(b, a)) {
+            return false;
+        }
+        if (a->isAncestor(b)) {
+            return false;
+        }
+        if (b->isAncestor(a)) {
+            return true;
+        }
+        return false;
+    };
+
+    auto waitBeforePostDominate = [&postDomInfo](Operation *a, Operation *b) {
+        if (postDomInfo.postDominates(a, b)) {
+            return true;
+        }
+        if (postDomInfo.postDominates(b, a)) {
+            return false;
+        }
+        if (a->isAncestor(b)) {
+            return true;
+        }
+        if (b->isAncestor(a)) {
+            return false;
+        }
+        return false;
+    };
+
+    llvm::sort(candidates, [&](const SyncCandidate &a, const SyncCandidate &b) {
+        if (a.setAfter != b.setAfter) {
+            return setAfterDominate(a.setAfter, b.setAfter);
+        }
+
+        if (a.waitBefore != b.waitBefore) {
+            return waitBeforePostDominate(a.waitBefore, b.waitBefore);
+        }
+
+        return false;
+    });
+
+    for (auto [i, cand] : llvm::enumerate(candidates)) {
+        bool shouldInsert = true;
+        for (auto otherCand : ArrayRef(candidates).drop_front(i + 1)) {
+            bool duplicated = (cand.waitBefore == otherCand.waitBefore && cand.setAfter == otherCand.setAfter &&
+                               cand.srcCoreType == otherCand.srcCoreType);
+            bool containsOther =
+                (cand.srcCoreType == otherCand.srcCoreType && setAfterDominate(cand.setAfter, otherCand.setAfter) &&
+                 waitBeforePostDominate(cand.waitBefore, otherCand.waitBefore));
+            if (duplicated || containsOther) {
+                shouldInsert = false;
+                break;
+            }
+        }
+
+        if (shouldInsert) {
+            addBlockSyncCommon(cand);
+        }
+    }
 }
 
 void DAGSyncPass::runOnOperation()
@@ -970,6 +1222,7 @@ void DAGSyncPass::runOnOperation()
         // 用于避免重复插入同步
         llvm::DenseSet<std::pair<mlir::Operation *, mlir::Operation *>> processedPairs;
         int syncFlag = 1;
+        addMemEffectsSync(funcOp, shared_graph.get(), builder, syncFlag);
 
         // 3. 使用 walk 遍历函数中的所有操作
         funcOp.walk([&](mlir::Operation *op) {
