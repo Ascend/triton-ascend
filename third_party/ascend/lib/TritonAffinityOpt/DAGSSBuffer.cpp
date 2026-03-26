@@ -1714,6 +1714,195 @@ void greedyAbsorbToRegion(
   }
 }
 
+SmallVector<Value> getOperationInput(Operation *op, SmallVector<Value> dependValues,
+    DenseMap<Value, std::pair<Value, SmallVector<Operation *>>> &collectDepValueMap)
+{
+  // Analyse each Op's input
+  DenseSet<Value> opInput;
+  if (isa<scf::IfOp>(op) || isa<scf::ForOp>(op)) {
+    SmallVector<Block *> regionBlocks;
+    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+      regionBlocks.push_back(&(ifOp.getThenRegion().front()));
+      regionBlocks.push_back(&(ifOp.getElseRegion().front()));
+    } else {
+      auto forOp = dyn_cast<scf::ForOp>(op);
+      regionBlocks.push_back(forOp.getBody());
+    }
+
+    // recursively walk scf op
+    for (Block *curBlock: regionBlocks) {
+      for (auto &curOp : *curBlock) {
+        for (auto operand : getOperationInput(&curOp, dependValues, collectDepValueMap)) {
+          Operation *defOp;
+          if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
+            Block* ownerBlock = blockArg.getOwner();
+            defOp = ownerBlock->getParentOp();
+          } else {
+            defOp = operand.getDefiningOp();
+          }
+          Block *defBlock = defOp->getBlock();
+
+          if (!(defOp == op || llvm::is_contained(regionBlocks, defBlock))) {
+            opInput.insert(operand);
+          }
+        }
+      }
+    }
+    SmallVector<Value> retVector(opInput.begin(), opInput.end());
+    return retVector;
+  } else {
+    SmallVector<Value> operands = op->getOperands();
+    // store ifresult value that will be replaced
+    for (auto operand : operands) {
+      if (llvm::is_contained(dependValues, operand)) {
+        if (collectDepValueMap.find(operand) != collectDepValueMap.end()) {
+          collectDepValueMap[operand].second.push_back(op);
+        } else {
+          SmallVector<Operation *> userOps;
+          userOps.push_back(op);
+          collectDepValueMap[operand] = {operand, userOps};
+        }
+      }
+    }
+    return operands;
+  }
+}
+
+SmallVector<Operation *> collectDepValuesCalculation(DenseSet<Operation *> forRegionOps,
+    DenseSet<Operation *> regionOps, Operation *op, SmallVector<Value> dependValues,
+    DenseMap<Value, std::pair<Value, SmallVector<Operation*>>> &collectDepValueMap)
+{
+  DenseSet<Operation *> collectOps;
+  std::deque<Operation *> opStack;
+  bool flag = false;
+  
+  opStack.push_back(op);
+  while (opStack.size()) {
+    Operation *curOp = opStack.front();
+    opStack.pop_front();
+
+    for (auto operand : getOperationInput(curOp, dependValues, collectDepValueMap)) {
+      if (llvm::is_contained(dependValues, operand)) {
+        flag = true;
+      }
+
+      Operation *parentOp = operand.getDefiningOp();
+      if (llvm::is_contained(regionOps, parentOp)) {
+        opStack.push_back(parentOp);
+        continue;
+      } else if (llvm::is_contained(forRegionOps, parentOp)) {
+        opStack.push_back(parentOp);
+        collectOps.insert(parentOp);
+      }
+    }
+  }
+
+  if (flag) {
+    SmallVector<Operation *> retVector(collectOps.begin(), collectOps.end());
+    return retVector;
+  } else {
+    collectDepValueMap.clear();
+    SmallVector<Operation *> emptyVector;
+    emptyVector.clear();
+    return emptyVector;
+  }
+}
+
+void copyOpsToMergedRegion(scf::ForOp forOp, SmallVector<Operation *> collectOps, MergedRegion &mergedRegion,
+    DenseMap<Value, std::pair<Value, SmallVector<Operation*>>> &collectDepValueMap)
+{
+  Block *forBodyBlock = forOp.getBody();
+  OpBuilder builder(forOp);
+  SmallVector<Operation *> clonedOps;
+  IRMapping mapper;
+
+  // copy calculation of ifreult value related to load/store op
+  int cnt = 0;
+  for (Operation &origOp : forBodyBlock->without_terminator()) {
+    if (cnt >= collectOps.size())
+      break;
+
+    if (llvm::is_contained(collectOps, &origOp)) {
+      builder.setInsertionPointAfter(&origOp);
+
+      Operation *clonedOp = (&origOp)->clone(mapper);
+      builder.insert(clonedOp);
+      mapper.map(&origOp, clonedOp);
+
+      clonedOps.push_back(clonedOp);
+      cnt++;
+
+      // replace the ifresult value by new cloned op's result
+      SmallVector<Value> results = origOp.getResults();
+      for (auto [idx, result] : llvm::enumerate(origOp.getResults())) {
+        if (collectDepValueMap.find(result) != collectDepValueMap.end()) {
+          collectDepValueMap[result].first = clonedOp->getResult(idx);
+        }
+      }
+    }
+  }
+
+  DenseSet<Operation *> mergedRegionOps;
+  for (Operation *op : mergedRegion.opsToMove) {
+      CollectAllNestedOps(op, mergedRegionOps);
+  }
+
+  // replace the ifresult value by new cloned op's result
+  for (Operation *op : mergedRegionOps) {
+    for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
+      if (collectDepValueMap.find(operand) != collectDepValueMap.end()) {
+        op->setOperand(idx, collectDepValueMap[operand].first);
+      }
+    }
+  }
+
+  // update MergedRegion
+  clonedOps.append(mergedRegion.opsToMove);
+  mergedRegion.opsToMove = clonedOps;
+}
+
+void copyLoadCalculation(scf::ForOp forOp, SmallVector<Value> dependValues, SmallVector<MergedRegion> &mergedRegions)
+{
+  mlir::Operation* parentOp = forOp->getParentOp();
+  mlir::Operation* scopeOp = nullptr;
+  while (parentOp) {
+      if (dyn_cast<scope::ScopeOp>(parentOp)) {
+          scopeOp = parentOp;
+          break;
+      }
+      parentOp = parentOp->getParentOp();
+  }
+  auto coreTypeAttr = scopeOp->getAttrOfType<hivm::TCoreTypeAttr>(
+          hivm::TCoreTypeAttr::name);
+  // only process the vector core
+  if (coreTypeAttr.getTcoretype() == hivm::TCoreType::CUBE) {
+    return;
+  }
+
+  // recursively collect all op in forOp
+  DenseSet<Operation *> forRegionOps;
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+      CollectAllNestedOps(&op, forRegionOps);
+  }
+  
+  for (MergedRegion &mr : mergedRegions) {
+    DenseSet<Operation *> regionOps;
+    for (Operation *op : mr.opsToMove) {
+        CollectAllNestedOps(op, regionOps);
+    }
+
+    for (Operation *op : regionOps) {
+      if (isa<triton::StoreOp>(op) || isa<triton::LoadOp>(op)) {
+        // recusively check that whether load/store op's operands originated from if results
+        DenseMap<Value, std::pair<Value, SmallVector<Operation*>>> collectDepValueMap;
+        SmallVector<Operation *> collectOps = \
+            collectDepValuesCalculation(forRegionOps, regionOps, op, dependValues, collectDepValueMap);
+        copyOpsToMergedRegion(forOp, collectOps, mr, collectDepValueMap);
+      }
+    }
+  }
+}
+
 // 以 forOp 的 yield value 为中心
 // 决定它应该归属哪个 mergedRegion, 然后再向前吸 operand
 void ExpandMergedRegionOpsForAIV(
@@ -4020,7 +4209,7 @@ void AddIfCondition(ModuleOp module) {
 
     // 处理forop的末尾对于iter_arg的自增操作, 如tt.advance, 移进对应的if op
     MoveIterArgUsersIntoIf(copiedOp, mergedRegions);
-    
+
     // 获取if yield的value, 并更新if内op的user为yield value
     for (MergedRegion &mr : mergedRegions) {
       // ComputeYieldForMergedRegion(mr, body);
@@ -4043,6 +4232,18 @@ void AddIfCondition(ModuleOp module) {
     SmallVector<Value> dependValues;
     llvm::outs() << "FindDependValues! \n ";
     FindDependValues(dependValues, newMergedRegions);
+
+    if (dependValues.size() != 0) {
+      copyLoadCalculation(oldForOp, dependValues, newMergedRegions);
+      
+      // repeat previous operations
+      for (MergedRegion &mr : newMergedRegions) {
+        mr.yieldValues.clear();
+        mr.resultTypes.clear();
+        ComputeYieldForMergedRegionV4(mr);
+      }
+      FindDependValues(dependValues, newMergedRegions);
+    }
     
     // 如果存在VV或CC依赖，更新ForOp添加新的对应args
     if (dependValues.size() != 0) {
@@ -5146,36 +5347,16 @@ void WalkAIVNestedForAndProcess(
 void DAGSSBufferPass::runOnOperation() {
   auto module = getOperation();
 
-  llvm::outs() << module << "  before ssbuffer\n\n";
-
-  // ControlSsbuf(module);
-  // cv同步控制流
   AddIfCondition(module);
 
-  llvm::outs() << module << "  after addifcondition\n\n";
-  llvm::outs().flush();
-
   FlowSssbuf(module);
-
-  llvm::outs() << module << "  after flowsssbuf\n\n";
-  llvm::outs().flush();
-
   ControlSsbufV2(module);
-
-  llvm::outs() << module << "  after controlssbufv2\n\n";
-  llvm::outs().flush();
 
   // advance不能出现在if里, 规避处理
   ChangeAdvanceOpForm(module);
 
-  llvm::outs() << module << "  after changeadvanceopform\n\n";
-  llvm::outs().flush();
-
   DenseMap<scf::IfOp, SmallVector<Value>> ifResultDeps;
   WalkAIVNestedForAndProcess(module, ifResultDeps, 2);
-
-  llvm::outs() << module << "  after double ssbuffer\n\n";
-  llvm::outs().flush();
 
   return;
 }
