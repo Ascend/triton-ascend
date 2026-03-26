@@ -102,12 +102,12 @@ bool getEnvBool(const char* envVar, bool defaultValue)
     if (val == nullptr) {
         return defaultValue;  // variable not set
     }
-    
+
     std::string s(val);
     // Convert to lowercase for easier comparison
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return std::tolower(c); });
-    
+
     // Common false literals
     if (s.empty() || s == "0" || s == "false" || s == "no" || s == "off") {
         return false;
@@ -153,7 +153,7 @@ BitcastConverter::matchAndRewrite(triton::BitcastOp op, OpAdaptor adaptor,
       });
       rewriter.replaceOp(op, adaptor.getSrc());
       return success();
-    } 
+    }
     result = rewriter.create<arith::BitcastOp>(
       loc, resType, adaptor.getSrc());
   } else {
@@ -978,7 +978,7 @@ Value ReduceConverter::cloneReduceOps(OpBuilder &builder, Value in, Value out,
   auto &body = reg.getBlocks().front();
   auto numArguments = 2;
   assert(body.getNumArguments() == numArguments);
-  
+
   Value ttIn = body.getArgument(0);
   Value ttOut = body.getArgument(1);
 
@@ -1021,16 +1021,19 @@ bool ReduceConverter::isMultiOpReduce(
 Value ReduceConverter::computeReduceResultWithCompileFlag(OpBuilder &opBuilder, Location loc, Value lhs, Value rhs,
     Value source, Value initTensor, triton::ReduceOp op, bool compileOn91095Flag) const
 {
-  auto reductionOps = this->getReductionOps(op);
-  assert(reductionOps.size() == 1);
-  if (compileOn91095Flag) {
-    return this->cloneReduceOps(opBuilder,
-                                lhs, rhs,
-                                source, initTensor, op);
+  // Original operation list (including all operations)
+  auto originalReductionOps = this->getReductionOps(op);
+  auto realReductionOps = this->getRealReductionOps(op);
+
+  // If the size of the original operation list is greater than 1,
+  // there are additional operations such as type conversion, and these operations must be cloned.
+  bool needClone = compileOn91095Flag || originalReductionOps.size() > 1;
+  if (needClone) {
+    return this->cloneReduceOps(opBuilder, lhs, rhs, source, initTensor, op);
   } else {
-    auto rop = reductionOps.front();
-    return this->getReductionElement(lhs, rhs, loc, rop,
-                                     opBuilder, false);
+    assert(realReductionOps.size() == 1);
+    auto rop = realReductionOps.front();
+    return this->getReductionElement(lhs, rhs, loc, rop, opBuilder, false);
   }
 }
 
@@ -1042,20 +1045,23 @@ LogicalResult ReduceConverter::convertToTargetOp(
   auto elemType = sourceType.getElementType();
   auto resType = op.getResult().front().getType();
   auto loc = op.getLoc();
-  auto reductionOps = this->getReductionOps(op);
-  auto multiOpReduce = this->isMultiOpReduce(reductionOps);
+
+  // Actual operation list (filtering type conversion operations, leaving only actual reduce operations)
+  auto realReductionOps = this->getRealReductionOps(op);
+
+  bool multiOpReduce = this->isMultiOpReduce(realReductionOps);
   // Reduction of arbitrary operations isn't supported because using the first
   // element across the reduction dimension requires us to iterate over a
   // subview that skips over each first element.
-  if (!multiOpReduce && !this->isReductionOpSupported(reductionOps.front())) {
-     if (compileOn91095Flag) {
- 	  	       llvm_unreachable("All reduction cases expected to be covered");
-     }
+  if (!multiOpReduce && !this->isReductionOpSupported(realReductionOps.front())) {
+    if (compileOn91095Flag) {
+      llvm_unreachable("All reduction cases expected to be covered");
+    }
     return rewriter.notifyMatchFailure(
         op, "Only support lowering reduction with single op and limited types of reduction");
   }
 
-  auto rop = reductionOps.front();
+  auto rop = realReductionOps.front();
   auto ropLoc = rop->getLoc();
   auto axis = op.getAxis();
   auto isVectorReduce = sourceType.getRank() == 1;
@@ -1063,11 +1069,10 @@ LogicalResult ReduceConverter::convertToTargetOp(
   auto constantType = elemType;
 
   auto accBaseConstOp = multiOpReduce ?
- 	     this->getMultiOpReductionBaseConstOp(rewriter, op, ropLoc,  constantType) :
- 	     this->getReductionBaseConstOp(rewriter, rop, constantType);
+      this->getMultiOpReductionBaseConstOp(rewriter, op, ropLoc, constantType) :
+      this->getReductionBaseConstOp(rewriter, rop, constantType);
 
   Value initTensor;
-
   if (isVectorReduce) {
     auto holder = rewriter.create<bufferization::AllocTensorOp>(
         loc, RankedTensorType::get({}, constantType), ValueRange{});
@@ -1391,12 +1396,12 @@ LogicalResult ScanConverter::convertToTargetOpExtended(
   LogicalResult loopResult = success();
   auto processDimension = [&](ArrayRef<Value> baseIdxsArray) {
     llvm::SmallVector<Value> baseIdxs(baseIdxsArray.begin(), baseIdxsArray.end());
-    
+
     auto startInd = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     if (reverse) {
       startInd = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), baseShape[axis] - 1);
     }
-    
+
     llvm::SmallVector<Value> firstIdx = baseIdxs;
     if (axis <= firstIdx.size()) {
       firstIdx.insert(firstIdx.begin() + axis, startInd);
@@ -1424,7 +1429,7 @@ LogicalResult ScanConverter::convertToTargetOpExtended(
     rewriter.setInsertionPointToStart(forOp.getBody());
 
     Value k = forOp.getInductionVar();
-    
+
     if (reverse) {
       // Reverse scanning: Convert the forward loop index to the actual reverse index. (axis_size - 1) - k
       Value axisSizeVal = rewriter.create<arith::ConstantIndexOp>(loc, baseShape[axis]);
@@ -1445,7 +1450,7 @@ LogicalResult ScanConverter::convertToTargetOpExtended(
     } else {
       prevIndex = rewriter.create<arith::SubIOp>(loc, k, one);
     }
-    
+
     llvm::SmallVector<Value> prevIdx = baseIdxs;
     if (axis <= prevIdx.size()) {
       prevIdx.insert(prevIdx.begin() + axis, prevIndex);
@@ -2687,7 +2692,7 @@ IndirectLoadConverter::matchAndRewrite(triton::ascend::IndirectLoadOp op, OpAdap
   SmallVector<Value> inputVals({src, offsets});
   if (mask)  inputVals.push_back(mask);
   if (other) inputVals.push_back(other);
-  auto callOp = rewriter.create<func::CallOp>(loc, funcOp.getSymNameAttr(), 
+  auto callOp = rewriter.create<func::CallOp>(loc, funcOp.getSymNameAttr(),
                                               TypeRange({resTy}),
                                               inputVals);
   rewriter.replaceOp(op, callOp);
@@ -2739,7 +2744,7 @@ LogicalResult
 IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, OpAdaptor adaptor,
                                      ConversionPatternRewriter &rewriter) const {
   auto loc = op.getLoc();
-  
+
   // Get converted operands
   Value src = adaptor.getSrc();
   Value indexTensor = adaptor.getIndex();
@@ -2747,16 +2752,16 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
   auto srcOffsetVals = adaptor.getSrcOffset();
   auto readShapeAttr = op.getReadShape();
   int32_t dim = op.getDim();
-  
+
   // Get result type
   auto resultTensorType = cast<RankedTensorType>(op.getResult().getType());
   auto elemType = resultTensorType.getElementType();
   auto resultShape = resultTensorType.getShape();
-  
+
   // Convert src (tt.ptr -> memref) to the correct memref shape
   // src is now memref<?xT> after type conversion, need to reinterpret to full shape
   auto srcMemRefType = cast<MemRefType>(src.getType());
-  
+
   // Build multi-dimensional memref type
   SmallVector<int64_t> fullSrcShape;
   for (auto shapeVal : srcShapeVals) {
@@ -2767,15 +2772,15 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
     }
   }
   auto fullSrcMemRefType = MemRefType::get(fullSrcShape, elemType);
-  
+
   // Reinterpret cast from 1D to multi-dimensional
   // Build strides: stride[i] = product of all dimensions after i
   SmallVector<OpFoldResult> sizes, strides; // offsets are 0
-  
+
   // Calculate strides from right to left (row-major layout)
   Value currentStride = rewriter.create<arith::ConstantIndexOp>(loc, 1);
   strides.insert(strides.begin(), rewriter.getIndexAttr(1));
-  
+
   for (int i = fullSrcShape.size() - 1; i > 0; --i) {
     // Update stride for next dimension: stride *= size[i]
     if (fullSrcShape[i] != ShapedType::kDynamic) {
@@ -2787,7 +2792,7 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
         strides.insert(strides.begin(), rewriter.getIndexAttr(constOp.value()));
         continue;
       }
-        
+
       strides.insert(strides.begin(), currentStride);
       continue;
     }
@@ -2801,11 +2806,11 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
 
     strides.insert(strides.begin(), currentStride);
   }
-  
+
   for (auto shapeVal : srcShapeVals) {
     OpFoldResult shapeSize;
     if (auto constOp = shapeVal.getDefiningOp<arith::ConstantIndexOp>()) {
-      // Static dimension: 
+      // Static dimension:
       // Use attributes to enable static_sizes to record specific integer values
       shapeSize = rewriter.getIndexAttr(constOp.value());
     } else {
@@ -2840,45 +2845,45 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
   OpFoldResult offset = peelAddPtrChain();
   auto srcMemRef = rewriter.create<memref::ReinterpretCastOp>(
       loc, fullSrcMemRefType, src, offset, sizes, strides);
-  
+
   // Allocate output buffer
   auto resultMemRefType = MemRefType::get(resultShape, elemType);
   auto outputBuffer = rewriter.create<memref::AllocOp>(loc, resultMemRefType);
-  
+
   // Get indices tensor type for extracting
   auto indicesTensorType = cast<RankedTensorType>(indexTensor.getType());
   int64_t numIndices = indicesTensorType.getShape()[0];
-  
+
   // Create for loop
   auto zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   auto numIndicesVal = rewriter.create<arith::ConstantIndexOp>(loc, numIndices);
   auto stepOne = rewriter.create<arith::ConstantIndexOp>(loc, 1);
   auto forOp = rewriter.create<scf::ForOp>(loc, zeroIdx, numIndicesVal, stepOne);
-  
+
   // Mark as parallel loop
   forOp->setAttr("hivm.parallel_loop", rewriter.getUnitAttr());
-  
+
   // Build loop body
   Block *loopBody = forOp.getBody();
   auto savedInsertionPoint = rewriter.saveInsertionPoint();
   rewriter.setInsertionPointToStart(loopBody);
-  
+
   // Remove the terminator temporarily
   Operation *terminator = &loopBody->back();
   rewriter.setInsertionPoint(terminator);
-  
+
   Value iv = forOp.getInductionVar();
-  
+
   // Extract index from indices tensor
   Value selectedIdx = rewriter.create<tensor::ExtractOp>(loc, indexTensor, ValueRange{iv});
   Value selectedIdxAsIndex = rewriter.create<arith::IndexCastOp>(
       loc, rewriter.getIndexType(), selectedIdx);
-  
+
   // Build source subview offsets/sizes/strides
   SmallVector<OpFoldResult> srcSubviewOffsets, srcSubviewSizes, srcSubviewStrides;
   // DenseI32ArrayAttr can be implicitly converted to ArrayRef<int32_t>
   ArrayRef<int32_t> readShape = readShapeAttr;
-  
+
   for (size_t i = 0; i < srcOffsetVals.size(); ++i) {
     if (i == static_cast<size_t>(dim)) {
       // Use the selected index for this dimension
@@ -2896,10 +2901,10 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
     }
     srcSubviewStrides.push_back(rewriter.getIndexAttr(1));
   }
-  
+
   auto srcSubview = rewriter.create<memref::SubViewOp>(
       loc, srcMemRef, srcSubviewOffsets, srcSubviewSizes, srcSubviewStrides);
-  
+
   // Build destination subview
   SmallVector<OpFoldResult> dstSubviewOffsets, dstSubviewSizes, dstSubviewStrides;
   for (size_t i = 0; i < resultShape.size(); ++i) {
@@ -2912,7 +2917,7 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
     }
     dstSubviewStrides.push_back(rewriter.getIndexAttr(1));
   }
-  
+
   auto dstSubview = rewriter.create<memref::SubViewOp>(
       loc, outputBuffer, dstSubviewOffsets, dstSubviewSizes, dstSubviewStrides);
 
@@ -2931,24 +2936,24 @@ IndexSelectSimdConverter::matchAndRewrite(triton::ascend::IndexSelectSimdOp op, 
                        rewriter.getDenseI32ArrayAttr({static_cast<int32_t>(dim)}));
     dstMarkOp->setAttr("hfusion.stride_align_value_in_byte",
                        rewriter.getDenseI32ArrayAttr({32}));
-    
+
     // Copy from source to destination
     rewriter.create<memref::CopyOp>(loc, srcSubview, dstSubview);
   }
-  
+
   // Restore insertion point
   rewriter.restoreInsertionPoint(savedInsertionPoint);
-  
+
   // Convert memref to tensor
   auto resultTensor = rewriter.create<bufferization::ToTensorOp>(
       loc, resultTensorType, outputBuffer, true, true);
-  
+
   // Mark as index_select_simd
   resultTensor->setAttr("index_select_simd", rewriter.getUnitAttr());
-  
+
   // Replace the original op
   rewriter.replaceOp(op, resultTensor);
-  
+
   return success();
 }
 

@@ -240,8 +240,8 @@ public:
     int64_t axis = op.getAxis();
     assert(axis >= 0 && axis < sourceType.getRank() && "Expected reduction axis is within operand's rank");
 
-    auto reductionOps = this->getReductionOps(op);
-    if (reductionOps.size() == 1) {
+    auto realReductionOps = this->getRealReductionOps(op);
+    if (realReductionOps.size() == 1) {
       return this->convertToTargetOp(op, adaptor, rewriter);
     }
     return this->convertToTargetOpExtended(op, adaptor, rewriter);
@@ -253,6 +253,18 @@ protected:
     auto reductionBody = reductionOp.getBody();
     return llvm::map_to_vector(reductionBody->without_terminator(),
                                [](Operation &op) { return &op; });
+  }
+
+  llvm::SmallVector<Operation *> getRealReductionOps(OpTy reductionOp) const
+  {
+    llvm::SmallVector<Operation *> realOps;
+    for (Operation &bodyOp : reductionOp.getBody()->without_terminator()) {
+      // Skips non-reduce operations, including type conversion operations (this can be extended as needed).
+      if (isa<arith::ExtFOp, arith::TruncFOp, arith::BitcastOp>(&bodyOp))
+        continue;
+      realOps.push_back(&bodyOp);
+    }
+    return realOps;
   }
 
   arith::ConstantOp getMultiOpReductionBaseConstOp(ConversionPatternRewriter &rewriter, OpTy op,
