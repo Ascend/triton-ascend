@@ -148,6 +148,11 @@ void triton::UseAnalysis::visitOperation(Operation *op,
           propagateResults(getLatticeElement(init), {result});
         }
       })
+      .Case<triton::ReduceOp>([&](auto reduceOp) {
+        for (auto operand : operands) {
+          propagateUse(operand, UseType::DataUse);
+        }
+      })
       .Case<hivm::FixpipeOp>([&](auto fixpipeOp) {
         propagateUse(operands[0], UseType::DataUse);
       })

@@ -831,6 +831,20 @@ void TritonToLinalgPass::runOnOperation() {
     signalPassFailure();
   }
 
+  // 2.1 Pre-clean dead control-flow before use analysis.
+  // This helps remove unreachable branches such as `scf.if %true` else-region,
+  // so runUseAnalysis won't walk dead ops with missing lattice states.
+  {
+    PassManager pm(&getContext(), moduleOp.getOperationName());
+    pm.addPass(createCSEPass());
+    pm.addPass(createCanonicalizerPass());
+    if (failed(runPipeline(pm, moduleOp))) {
+      moduleOp->emitError("failed to pre-clean dead control-flow before use analysis");
+      signalPassFailure();
+      return;
+    }
+  }
+
   // 2. Perform use analysis on FuncOp.
   moduleOp.walk([this](triton::FuncOp op) {
     if (failed(runUseAnalysis(op))) {
