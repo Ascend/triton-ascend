@@ -30,6 +30,7 @@
 #include <memory>
 #include <type_traits>
 #include <utility>
+#include "bishengir/Dialect/Annotation/IR/Annotation.h"
 
 namespace mlir { namespace AffinityDAG {
 
@@ -143,7 +144,7 @@ OpAbility OpNode::canRunOn() const {
     .Case<triton::DotOp>([](auto) {
       return OpAbility::CUBE_ONLY;
     })
-    .Case<arith::ConstantOp, triton::AdvanceOp, triton::TransOp>([](auto) {
+    .Case<arith::ConstantOp, triton::AdvanceOp, triton::TransOp, annotation::MarkOp>([](auto) {
       return OpAbility::CUBE_AND_VECTOR;
     })
     .Case<arith::SelectOp>([](arith::SelectOp op) {

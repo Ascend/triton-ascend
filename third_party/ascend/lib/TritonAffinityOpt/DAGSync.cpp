@@ -1,5 +1,7 @@
 #include "TritonAffinityOpt/Passes.h"
 
+#include "bishengir/Dialect/Annotation/IR/Annotation.h"
+#include "bishengir/Dialect/Scope/IR/Scope.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "bishengir/Dialect/HIVM/IR/HIVMImpl.h"
 #include "bishengir/Dialect/HIVM/IR/HIVMInterfaces.h"
@@ -884,6 +886,12 @@ static void rewriteCopyChainForCbub(
       loc, interTensor3DType, inputTensor);
   (*valueTypes)[reshape3DOp.getResult()] = CoreType::VECTOR_ONLY;
 
+  // nark tiling dim for reshapeop
+  auto markOp3d = builder.create<annotation::MarkOp>(loc, reshape3DOp);
+  auto tilingDimAttr3d = builder.getDictionaryAttr(SmallVector<NamedAttribute>{
+    NamedAttribute(builder.getStringAttr("1"), builder.getIndexAttr(1))});
+  markOp3d->setAttr("tiling_dim_mapping", tilingDimAttr3d);
+
   // 插入 triton.trans 调整维度顺序 Insert tt.trans {order = [1, 0, 2]}
   SmallVector<int32_t, 4> order = {1, 0, 2};
   auto orderAttr = builder.getDenseI32ArrayAttr(order);  // OpBuilder supports this
@@ -895,6 +903,12 @@ static void rewriteCopyChainForCbub(
   auto reshape4DOp = builder.create<triton::ReshapeOp>(
       loc, finalTensorType, transOp.getResult());
   (*valueTypes)[reshape4DOp.getResult()] = CoreType::VECTOR_ONLY;
+
+  // nark tiling dim for reshapeop
+  auto markOp4d = builder.create<annotation::MarkOp>(loc, reshape4DOp);
+  auto tilingDimAttr4d = builder.getDictionaryAttr(SmallVector<NamedAttribute>{
+    NamedAttribute(builder.getStringAttr("1"), builder.getIndexAttr(1))});
+  markOp4d->setAttr("tiling_dim_mapping", tilingDimAttr4d);
 
   // Create new to_memref
   builder.setInsertionPoint(toMemRefOp);

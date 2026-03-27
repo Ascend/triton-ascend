@@ -174,6 +174,15 @@ void collectOpsToMove(Operation* op, AffinityDAG::Graph& graph,
     }
   }
 
+  if (isa<annotation::MarkOp>(op)) {
+    auto res = op->getOperand(0);
+    if (AffinityDAG::intersects(valueTypes[res], AffinityDAG::CoreType::VECTOR_ONLY)) {
+      needsMoveAiv = true;
+    }
+    if (AffinityDAG::intersects(valueTypes[res], AffinityDAG::CoreType::CUBE_ONLY)) {
+      needsMoveCube = true;
+    }
+  }
   // 检查特定操作类型
   if (isa<hivm::CopyOp>(op)) {
     needsMoveAiv = true;
