@@ -1517,8 +1517,22 @@ BlockDataParser::rewriteTerminator(
 
 // This function is util function for rewriteLoopOp that
 // check if given regionIterArg is used with given condition
-bool isUsedWithCondition(Value v, std::function<bool(OpOperand *)> cond, int depth = 0) {
-  for (auto &use: v.getUses()) {
+bool isUsedWithCondition(
+    Value v,
+    std::function<bool(OpOperand *)> cond,
+    int depth = 0,
+    llvm::SmallSetVector<Value, 8> *visited = nullptr) {
+  llvm::SmallSetVector<Value, 8> localVisited;
+  if (!visited) {
+    visited = &localVisited;
+  }
+
+  if (visited->contains(v)) {
+    return false;
+  }
+  visited->insert(v);
+
+  for (auto &use : v.getUses()) {
     auto *user = use.getOwner();
     if (user->hasAttr(ConverterUtils::discreteAttrName))
       continue;
@@ -1526,22 +1540,23 @@ bool isUsedWithCondition(Value v, std::function<bool(OpOperand *)> cond, int dep
       return true;
     if (auto loopOp = dyn_cast<LoopLikeOpInterface>(user);
         loopOp && !loopOp->hasAttr("ExtractedLoadOrStore")) {
-      if(isUsedWithCondition(loopOp.getTiedLoopRegionIterArg(&use), cond, depth + 1))
+      Value tiedArg = loopOp.getTiedLoopRegionIterArg(&use);
+      if (tiedArg && isUsedWithCondition(tiedArg, cond, depth + 1, visited))
         return true;
     } else if (auto yieldOp = dyn_cast<scf::YieldOp>(user);
                yieldOp && !isa<scf::WhileOp>(user->getParentOp())) {
-      if (depth && isUsedWithCondition(yieldOp->getParentOp()->getResult(use.getOperandNumber()), cond, depth - 1))
+      if (depth && isUsedWithCondition(yieldOp->getParentOp()->getResult(use.getOperandNumber()), cond, depth - 1, visited))
         return true;
     } else if (auto conditionOp = dyn_cast<scf::ConditionOp>(user);
                conditionOp && use.getOperandNumber() > 0) {
       auto whileOp = cast<scf::WhileOp>(conditionOp->getParentOp());
-      if (depth && isUsedWithCondition(whileOp->getResult(use.getOperandNumber() - 1), cond, depth - 1))
+      if (depth && isUsedWithCondition(whileOp->getResult(use.getOperandNumber() - 1), cond, depth - 1, visited))
         return true;
-      if (isUsedWithCondition(whileOp.getAfterArguments()[use.getOperandNumber() - 1], cond, depth))
+      if (isUsedWithCondition(whileOp.getAfterArguments()[use.getOperandNumber() - 1], cond, depth, visited))
         return true;
     }
-    for (auto res: user->getResults()) {
-      if (isUsedWithCondition(res, cond, depth))
+    for (auto res : user->getResults()) {
+      if (isUsedWithCondition(res, cond, depth, visited))
         return true;
     }
   }
