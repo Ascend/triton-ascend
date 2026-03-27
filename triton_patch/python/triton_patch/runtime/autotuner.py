@@ -359,6 +359,8 @@ class Config:
         self.enable_hivm_auto_cv_balance = bishengir_options.get("enable_hivm_auto_cv_balance", None) # Compiler Default True
         self.tile_mix_vector_loop = bishengir_options.get("tile_mix_vector_loop", None) # Compiler Default 1
         self.tile_mix_cube_loop = bishengir_options.get("tile_mix_cube_loop", None) # Compiler Default 1
+        self.enable_ubuf_saving = bishengir_options.get("enable_ubuf_saving", None)
+        self.enable_auto_bind_sub_block = bishengir_options.get("enable_auto_bind_sub_block", None)
 
     def all_kwargs(self):
         return {
@@ -384,6 +386,8 @@ class Config:
                     ("set_workspace_multibuffer", self.set_workspace_multibuffer),
                     ("tile_mix_vector_loop", self.tile_mix_vector_loop),
                     ("tile_mix_cube_loop", self.tile_mix_cube_loop),
+                    ("enable_ubuf_saving", self.enable_ubuf_saving),
+                    ("enable_auto_bind_sub_block", self.enable_auto_bind_sub_block),
                 ) if v is not None
             }
         }
@@ -411,6 +415,8 @@ class Config:
         res.append(f"set_workspace_multibuffer: {self.set_workspace_multibuffer}")
         res.append(f"tile_mix_vector_loop: {self.tile_mix_vector_loop}")
         res.append(f"tile_mix_cube_loop: {self.tile_mix_cube_loop}")
+        res.append(f"enable_ubuf_saving: {self.enable_ubuf_saving}")
+        res.append(f"enable_auto_bind_sub_block: {self.enable_auto_bind_sub_block}")
         return ", ".join(res)
 
 
