@@ -1114,6 +1114,9 @@ def _load_block_pointer(ptr, mask, other, boundary_check, padding, cache, evicti
     # Check `boundary_check` argument
     boundary_check = _canonicalize_boundary_check(boundary_check, dst_ty.get_block_shapes())
 
+    if boundary_check and padding is None:
+        padding = ir.PADDING_OPTION.PAD_ZERO
+
     # Build IR
     return tl.tensor(
         builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile), dst_ty)
