@@ -29,21 +29,17 @@ Version plan for 2026: Upgrade to Triton 3.5.
 1. [Meeting calendar](https://meeting.osinfra.cn/ascend)
 2. [Meeting minutes dashboard](https://etherpad-ascend.meeting.osinfra.cn/p/sig-AscendNPU-IR)
 
-## Performance Benchmarking
-### Performance Charts of Key Operators
-The key operators FA, MM, and Softmax that have been optimized are selected as examples. The following charts show the performance differences between Triton operators and AscendC operators. The metric is the speedup ratio (`Speedup = AscendC_Duration_Time/Triton_Duration_Time`). For details, see the [Optimization Guide](./docs/en/debug_guide/profiling.md).
+## Performance
+### GroupGEMM Operator Performance
+We select the GroupGEMM operator as a representative example to demonstrate the performance comparison between Triton-Ascend and AscendC.
 
-- FA performance chart:
+<div style="text-align: center;">
+  <img src="docs/en/figures/groupgemm_speedup.svg" alt="GroupGEMM Performance" width="600">
+</div>
 
-![FA performance chart](docs/en/figures/FA_Performance.png)
-
-- MM performance chart:
-
-![MM performance chart](docs/en/figures/MM_Performance.png)
-
-- Softmax performance chart:
-
-![Softmax performance chart](docs/en/figures/Softmax_Performance.png)
+- The Y-axis shows the speedup ratio (Speedup = AscendC_Duration_Time / Triton_Duration_Time).
+- The hardware used is the `Ascend 950` series
+- For operator performance tuning, please refer to the [Performance Optimization Guide](./docs/en/debug_guide/profiling.md)：
 
 ## Support
 
@@ -53,16 +49,10 @@ Triton-Ascend is supported by Ascend AI products. The following table lists the 
 
 | Product Series                  | Product Model                             |
 |----------------------------|---------------------------------------|
-| **Atlas A3 training products**  | Atlas 800T A3 SuperNode server           |
-|                            | Atlas 900 A3 SuperPoD server         |
-|                            | A200T A3 Box8 SuperPoD server           |
+| **Atlas A3 training products**  | Atlas 800T A3 SuperNode server<br>Atlas 900 A3 SuperPoD server<br>A200T A3 Box8 SuperPoD server           |
 | **Atlas A3 inference products**  | Atlas 800I A3 SuperNode server           |
-| **Atlas A2 training products**  | Atlas 800T A2 training server             |
-|                            | Atlas 900 A2 PoD cluster basic unit        |
-|                            | Atlas 200T A2 Box16 heterogeneous subrack         |
-| **Atlas A2 inference products**  | Atlas 800I A2 inference server             |
-|                            | Atlas 300I A2 inference card                 |
-|                            | A200I A2 Box heterogeneous subrack                |
+| **Atlas A2 training products**  | Atlas 800T A2 training server<br>Atlas 900 A2 PoD cluster basic unit<br>Atlas 200T A2 Box16 heterogeneous subrack             |
+| **Atlas A2 inference products**  | Atlas 800I A2 inference server<br>Atlas 300I A2 inference card<br>A200I A2 Box heterogeneous subrack             |
 
 - #### Compatibility
 
