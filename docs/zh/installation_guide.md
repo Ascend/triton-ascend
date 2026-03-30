@@ -62,9 +62,10 @@ pip install triton-ascend
 ```
 
 - 注意：社区 Triton 和 Triton-Ascend 不能同时存在。在安装依赖Triton的其他软件时，会自动安装社区 Triton，将覆盖掉已安装的 Triton-Ascend 目录。
-此时也需要先卸载社区 Triton，再安装 Triton-Ascend。
+此时也需要先卸载社区 Triton 和 Triton-Ascend，再安装 Triton-Ascend。
 ```shell
 pip uninstall triton
+pip uninstall triton-ascend
 pip install triton-ascend
 ```
 

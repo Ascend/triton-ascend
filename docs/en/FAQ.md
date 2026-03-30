@@ -13,10 +13,11 @@ pip install triton-ascend
 
 A: No. You need to uninstall the community Triton first before installing Triton-Ascend.
 - Note: When installing other software that depends on Triton, the community Triton will be automatically installed, which will overwrite the already installed Triton-Ascend directory.
-In this case, you also need to uninstall the community Triton first before installing Triton-Ascend.
+In this case, you also need to uninstall the community Triton and Triton-Ascend first before installing Triton-Ascend.
 
 ```Python
 pip uninstall triton
+pip uninstall triton-ascend
 pip install triton-ascend
 ```
 
