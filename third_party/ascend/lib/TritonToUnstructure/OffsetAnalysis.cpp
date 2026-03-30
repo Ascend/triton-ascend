@@ -292,7 +292,8 @@ void parseLoopRegionIterArg(LoopLikeOpInterface loopOp, const Location &loc,
     auto argNum = regionIterArg.getArgNumber();
     auto conditionArg = whileOp.getConditionOp().getArgs()[argNum];
     parse(conditionArg, loc, rewriter, offsetMap);
-    offsetMap[regionIterArg] = offsetMap[conditionArg];
+    auto tmp = offsetMap[conditionArg];
+    offsetMap[regionIterArg] = tmp;
     return;
   }
   OpOperand *initArgOperand = loopOp.getTiedLoopInit(regionIterArg);
@@ -300,7 +301,8 @@ void parseLoopRegionIterArg(LoopLikeOpInterface loopOp, const Location &loc,
     return;
   Value initArg = initArgOperand->get();
   parse(initArg, loc, rewriter, offsetMap);
-  offsetMap[regionIterArg] = offsetMap[initArg];
+  auto tmp = offsetMap[initArg];
+  offsetMap[regionIterArg] = tmp;
 }
 
 void parseArithOp(Operation *arithOp, const Location &loc,
