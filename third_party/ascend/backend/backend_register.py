@@ -45,7 +45,7 @@ class BackendStrategyRegistry:
 
     def list_categories(self):
         return list(self.strategies.keys())
-    
+
     def list_methods(self, category):
         if category not in self.strategies:
             raise ValueError(f"Strategy {category} not registered")
@@ -55,15 +55,15 @@ class BackendStrategyRegistry:
 class _LazyBackendStrategyRegister:
     def __init__(self):
         self._instance = None
-    
+
     def _get_instance(self):
         if self._instance is None:
             self._instance = BackendStrategyRegistry()
         return self._instance
-    
+
     def register(self, *args, **kwargs):
         return self._get_instance().register(*args, **kwargs)
-    
+
     def execute_func(self, *args, **kwargs):
         return self._get_instance().execute_func(*args, **kwargs)
 
@@ -263,10 +263,14 @@ def get_current_stream(device):
 def get_current_stream(device):
     import torch
     import torch_npu
-    from torch_npu._C import _npu_getCurrentRawStream
     if device is None:
         device = torch.npu.current_device()
-    return _npu_getCurrentRawStream(device)
+    if hasattr(torch_npu._C, "_npu_getCurrentRawStreamNoWait"):
+        from torch_npu._C import _npu_getCurrentRawStreamNoWait
+        return _npu_getCurrentRawStreamNoWait(device)
+    else:
+        from torch_npu._C import _npu_getCurrentRawStream
+        return _npu_getCurrentRawStream(device)
 
 
 @backend_strategy_registry.register("mindspore", "header_file")
