@@ -108,6 +108,8 @@ docker exec -u root -it triton-ascend_container /bin/bash
 ```bash
 # 设置CANN环境变量（以root用户默认安装路径`/usr/local/Ascend`为例）
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
+# 拉取triton-ascend源码仓及用例（可选，非源码编译安装运行示例时需拉源码仓）
+git clone https://gitcode.com/Ascend/triton-ascend.git
 # 运行tutorials示例：
 python3 ./triton-ascend/third_party/ascend/tutorials/01-vector-add.py
 ```

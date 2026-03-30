@@ -11,7 +11,7 @@
 
 当前Triton-Ascend要求的Python版本为:**py3.9-py3.11**。
 
-### 安装Ascend CANN
+### 安装CANN
 
 异构计算架构CANN（Compute Architecture for Neural Networks）是昇腾针对AI场景推出的异构计算架构，
 向上支持多种AI框架，包括MindSpore、PyTorch、TensorFlow等，向下服务AI处理器与编程，发挥承上启下的关键作用，是提升昇腾AI处理器计算效率的关键平台。
@@ -29,17 +29,14 @@
 | Triton-Ascend版本 | CANN商用版本 | CANN发布日期 |
 |-------------------|----------------------|--------------------|
 | 3.2.0             | CANN 8.5.0           | 2026/01/16         |
-| 3.2.0rc4          | CANN 8.3.RC2         | 2025/11/20         |
-|                   | CANN 8.3.RC1         | 2025/10/30         |
+| 3.2.0rc4          | CANN 8.3.RC2<br>CANN 8.3.RC1         | 2025/11/20<br>2025/10/30         |
 
 - 社区版
 
 | Triton-Ascend版本 | CANN社区版本 | CANN发布日期 |
 |-------------------|----------------------|--------------------|
 | 3.2.0             | CANN 8.5.0           | 2026/01/16         |
-| 3.2.0rc4          | CANN 8.3.RC2         | 2025/11/20         |
-|                   | CANN 8.5.0.alpha001  | 2025/11/12         |
-|                   | CANN 8.3.RC1         | 2025/10/30         |
+| 3.2.0rc4          | CANN 8.3.RC2<br>CANN 8.5.0.alpha001<br>CANN 8.3.RC1         | 2025/11/20<br>2025/11/12<br>2025/10/30         |
 
 
 ### 安装torch_npu
@@ -90,10 +87,15 @@ pip install -i https://test.pypi.org/simple/ "triton-ascend<3.2.0rc" --pre --no-
 
 我们推荐使用<a href="#auto-code-base">快速安装</a>的方式完成基于源码安装Triton-Ascend；若您有特殊需求，如目标机器无法联网等原因，可以进行<a href="#hand-code-base">手动安装</a>。
 
-### 系统要求
+### 系统推荐
 
-- GCC >= 9.4.0
-- GLIBC >= 2.27
+| Pytorch版本 | 推荐的GCC版本 | 推荐的GLIBC版本 |
+|-------------------|----------------------|--------------------|
+| PyTorch2.6.0      | (aarch64)11.2.1<br>(x86) 9.3.1 | (aarch64)>=2.28<br>(x86)>=2.17 |
+| PyTorch2.7.1      | 11.2.1               | 2.28               |
+| PyTorch2.8.0      | 13.3.1               | 2.28               |
+| PyTorch2.9.1      | 13.3.1               | 2.28               |
+| PyTorch2.10       | 13.3.1               | 2.28               |
 
 <a id="code-require"></a>
 ### 依赖
@@ -233,10 +235,10 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend/pytho
    python3 setup.py install
    ```
 
-- 注3：推荐GCC >= 9.4.0，如果GCC < 9.4.0，可能报错 “ld.lld: error: unable to find library -lstdc++fs”，说明链接器无法找到 stdc++fs 库。
+注3：推荐GCC版本见前段章节“系统推荐”，如果GCC < 9.4.0，可能报错 “ld.lld: error: unable to find library -lstdc++fs”，说明链接器无法找到 stdc++fs 库。
 该库用于支持 GCC 9 之前版本的文件系统特性。此时需要手动把 CMake 文件中相关代码片段的注释打开：
 
-- triton-ascend/CMakeLists.txt
+triton-ascend/CMakeLists.txt
 
    ```bash
    if (NOT WIN32 AND NOT APPLE)
@@ -304,6 +306,8 @@ docker exec -u root -it triton-ascend_container /bin/bash
 
    安装运行时依赖，参考如下：
 ```bash
+   # 拉取triton-ascend源码仓及用例（可选，非源码编译安装运行示例时需拉源码仓）
+   git clone https://gitcode.com/Ascend/triton-ascend.git
    cd triton-ascend && pip install -r requirements.txt
 ```
    运行实例: [01-vector-add.py](../../third_party/ascend/tutorials/01-vector-add.py)
@@ -311,7 +315,7 @@ docker exec -u root -it triton-ascend_container /bin/bash
    # 设置CANN环境变量（以root用户默认安装路径`/usr/local/Ascend`为例）
    source /usr/local/Ascend/ascend-toolkit/set_env.sh
    # 运行tutorials示例：
-   python3 ./triton-ascend/third_party/ascend/tutorials/01-vector-add.py
+   python3 ./third_party/ascend/tutorials/01-vector-add.py
 ```
 
 观察到类似的输出即说明环境配置正确。

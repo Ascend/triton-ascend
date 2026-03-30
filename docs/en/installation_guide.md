@@ -6,7 +6,7 @@
 
 Triton-Ascend requires Python 3.9 to 3.11.
 
-### Installing Ascend CANN
+### Installing CANN
 
 Compute Architecture for Neural Networks (CANN) is a heterogeneous compute architecture developed by Ascend for AI scenarios.
 It plays a pivotal bridging role: providing upward integration with multiple AI frameworks (including MindSpore, PyTorch, and TensorFlow), while offering downward support for AI processors and programming. This establishes it as a key platform for improving the computing efficiency of Ascend AI processors.
@@ -25,17 +25,14 @@ The preceding environment variable configurations take effect only in the curren
 | Triton-Ascend Version| CANN Commercial Version| CANN Release Date|
 |-------------------|----------------------|--------------------|
 | 3.2.0             | CANN 8.5.0           | 2026-01-16        |
-| 3.2.0rc4          | CANN 8.3.RC2         | 2025-11-20        |
-|                   | CANN 8.3.RC1         | 2025-10-30        |
+| 3.2.0rc4          | CANN 8.3.RC2<br>CANN 8.3.RC1         | 2025/11/20<br>2025/10/30         |
 
 - Community edition
 
 | Triton-Ascend Version| CANN Community Version| CANN Release Date|
 |-------------------|----------------------|--------------------|
 | 3.2.0             | CANN 8.5.0           | 2026-01-16        |
-| 3.2.0rc4          | CANN 8.3.RC2         | 2025-11-20        |
-|                   | CANN 8.5.0.alpha001  | 2025-11-12        |
-|                   | CANN 8.3.RC1         | 2025-10-30        |
+| 3.2.0rc4          | CANN 8.3.RC2<br>CANN 8.5.0.alpha001<br>CANN 8.3.RC1         | 2025/11/20<br>2025/11/12<br>2025/10/30         |
 
 
 ### Installing torch_npu
@@ -83,8 +80,13 @@ If you need to develop or customize Triton-Ascend, you should install it by comp
 
 ### System Requirements
 
-- GCC >= 9.4.0
-- GLIBC >= 2.27
+| Pytorch Version | Recommended GCC version | Recommended GLIBC version |
+|-------------------|----------------------|--------------------|
+| PyTorch2.6.0      | (aarch64)11.2.1<br>(x86) 9.3.1 | (aarch64)>=2.28<br>(x86)>=2.17 |
+| PyTorch2.7.1      | 11.2.1               | 2.28               |
+| PyTorch2.8.0      | 13.3.1               | 2.28               |
+| PyTorch2.9.1      | 13.3.1               | 2.28               |
+| PyTorch2.10       | 13.3.1               | 2.28               |
 
 ### Dependencies
 
@@ -212,10 +214,10 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend/pytho
    python3 setup.py install
    ```
 
-- Note 3: GCC 9.4.0 or later is recommended. If the GCC version is earlier than 9.4.0, "ld.lld: error: unable to find library -lstdc++fs" may be reported, indicating that the linker cannot find the stdc++fs library.
+Note 3: For the recommended GCC version, please refer to the earlier section "System Requirements". If the GCC version is earlier than 9.4.0, "ld.lld: error: unable to find library -lstdc++fs" may be reported, indicating that the linker cannot find the stdc++fs library.
 This library supports the file system features of versions earlier than GCC 9. In this case, you need to manually uncomment the related code snippet in the CMake file.
 
-- triton-ascend/CMakeLists.txt
+triton-ascend/CMakeLists.txt
 
    ```bash
    if (NOT WIN32 AND NOT APPLE)
@@ -229,6 +231,8 @@ This library supports the file system features of versions earlier than GCC 9. I
 
    Install the runtime dependencies. Refer to the following command:
    ```bash
+   # Pull the triton-ascend source code repository and examples (optional; required to pull the source code repository when running examples without source code compilation and installation).
+   git clone https://gitcode.com/Ascend/triton-ascend.git
    cd triton-ascend && pip install -r requirements_dev.txt
    ```
    Run the [01-vector-add.py](../../third_party/ascend/tutorials/01-vector-add.py) instance.
@@ -236,7 +240,7 @@ This library supports the file system features of versions earlier than GCC 9. I
    # Set the CANN environment variables (for example, as the root user and with the default installation path /usr/local/Ascend).
    source /usr/local/Ascend/ascend-toolkit/set_env.sh
    # Run the tutorials example.
-   python3 ./triton-ascend/third_party/ascend/tutorials/01-vector-add.py
+   python3 ./third_party/ascend/tutorials/01-vector-add.py
    ```
     If an output similar to the following is displayed, the environment is correctly configured:
     ```

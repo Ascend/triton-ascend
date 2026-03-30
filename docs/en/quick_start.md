@@ -59,6 +59,8 @@ Run the [01-vector-add.py](../../ascend/examples/tutorials/01-vector-add.py) ins
 ```bash
 # Set the CANN environment variables (for example, as the root user and with the default installation path /usr/local/Ascend).
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
+# Pull the triton-ascend source code repository and examples (optional; required to pull the source code repository when running examples without source code compilation and installation).
+git clone https://gitcode.com/Ascend/triton-ascend.git
 # Run the tutorials example.
 python3 ./triton-ascend/ascend/examples/tutorials/01-vector-add.py
 ```
