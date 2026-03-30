@@ -5425,10 +5425,7 @@ SmallVector<Value> collectIfInfo(
     for (Operation &op : thenRegion.front()) {
       for (Value operand : op.getOperands()) {
         for (Value v : producedValues) {
-          llvm::outs()<<"循环producedValue"<<"\n";
-          llvm::outs()<<"producedValue:"<<v<<"\n";
-          llvm::outs()<<"operand:"<<operand<<"\n";
-          if (operand == v) {
+          if (operand == v && !llvm::is_contained(deps, operand)) {
             deps.push_back(operand);
           }
         }
