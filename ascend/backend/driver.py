@@ -213,10 +213,14 @@ class NPUDriver(DriverBase):
         # TODO: use CANN API instead of torchnpu
         import torch
         import torch_npu
-        from torch_npu._C import _npu_getCurrentRawStream
         if device is None:
             device = self.get_current_device()
-        return _npu_getCurrentRawStream(device)
+        if hasattr(torch_npu._C, "_npu_getCurrentRawStreamNoWait"):
+            from torch_npu._C import _npu_getCurrentRawStreamNoWait
+            return _npu_getCurrentRawStreamNoWait(device)
+        else:
+            from torch_npu._C import _npu_getCurrentRawStream
+            return _npu_getCurrentRawStream(device)
 
     def get_benchmarker(self):
         from triton.testing import do_bench
