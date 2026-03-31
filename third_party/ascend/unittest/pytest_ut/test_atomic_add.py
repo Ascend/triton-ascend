@@ -51,6 +51,24 @@ def atomic_add_supply(
     tmp0 = tl.load(in_ptr0 + (x0), xmask)
     tmp1 = tl.atomic_add(out_ptr0 + (x1), tmp0, xmask)
 
+
+@triton.jit
+def atomic_add_for_load_offset(
+    index_ptr, in_ptr0, out_ptr0
+):
+    index = tl.atomic_add(index_ptr, 1)
+    val = tl.load(in_ptr0 + index)
+    tl.store(out_ptr0, val)
+
+
+@triton.jit
+def atomic_add_for_store_offset(
+    index_ptr, out_ptr0
+):
+    index = tl.atomic_add(index_ptr, 1)
+    tl.store(out_ptr0 + index, 1)
+
+
 @pytest.mark.parametrize('param_list',
                          [
                              ['int64', (256, 32), 2],
@@ -162,6 +180,34 @@ def test_atomic_add_2d_supply(dtype, shape):
     n_elements = shape[0] * shape[1]
     atomic_add_supply[shape[0], 1, 1](x0, x1, n_elements, BLOCK_SIZE=shape[1])
     test_common.validate_cmp(dtype, x1, x1_ref)
+
+
+def test_atomic_add_for_load_offset():
+    index = torch.tensor([1]).npu()
+    input_tensor = torch.zeros(5).npu()
+    output = torch.tensor([1]).npu()
+    index_ref = index.clone()
+    index_ref += 1
+    output_ref = output.clone()
+    output_ref = input_tensor[index]
+    
+    atomic_add_for_load_offset[(1, )](index, input_tensor, output)
+    torch.equal(index, index_ref)
+    torch.equal(output, output_ref)
+
+
+def test_atomic_add_for_store_offset():
+    index = torch.tensor([1]).npu()
+    output = torch.zeros(5).npu()
+    index_ref = index.clone()
+    index_ref += 1
+    output_ref = output.clone()
+    output_ref[index] = 1
+    
+    atomic_add_for_store_offset[(1, )](index, output)
+    torch.equal(index, index_ref)
+    torch.equal(output, output_ref)
+
 
 if __name__ == "__main__":
     param_list = ['float32', (32, 32), 2]
