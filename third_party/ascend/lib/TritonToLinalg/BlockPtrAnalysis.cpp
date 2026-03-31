@@ -2157,9 +2157,17 @@ void BlockDataParser::rewriteAddPtrToUnstrucMemAcc(
             bB.create<tensor::ExtractOp>(bLoc, ptrOffset, allIVs);
         Value scalarOffset = bB.create<arith::IndexCastOp>(
             bLoc, bB.getIndexType(), scalarOffsetRaw);
+        OpFoldResult baseOffset = bB.getIndexAttr(0);
+        for (auto ofr : data.getOffsetsRef()) {
+          baseOffset = addOpFoldResult(baseOffset, ofr, bLoc, bB);
+        }
+        Value baseVal =
+            getValueOrCreateConstantIndexOp(bB, bLoc, baseOffset);
+        Value combinedOffset =
+            bB.create<arith::AddIOp>(bLoc, baseVal, scalarOffset);
         // Replace offset & size. Only single element.
         data.getOffsetsRef().clear();
-        data.getOffsetsRef().push_back(scalarOffset);
+        data.getOffsetsRef().push_back(combinedOffset);
         data.getSizesRef().clear();
         data.getSizesRef().push_back(bB.getIndexAttr(1));
         data.getStridesRef().clear();
