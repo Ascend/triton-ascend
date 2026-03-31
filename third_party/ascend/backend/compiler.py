@@ -420,12 +420,6 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
                 f"--enable-auto-multi-buffer={multibuffer}",
             ]
 
-        enable_ubuf_saving = metadata["enable_ubuf_saving"]
-        if enable_ubuf_saving is not None:
-            _compile_option_list += [
-                f"--enable-ubuf-saving={enable_ubuf_saving}",
-            ]
-
         _compile_option_list += [
             f"--enable-auto-bind-sub-block={get_auto_bind_sub_block_option(metadata)}",
         ]
@@ -474,16 +468,6 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         if set_workspace_multibuffer is not None:
             _compile_option_list += \
                 [f"--set-workspace-multibuffer={set_workspace_multibuffer}"]
-
-        tile_mix_vector_loop = metadata["tile_mix_vector_loop"]
-        if tile_mix_vector_loop is not None:
-            _compile_option_list += \
-                [f"--tile-mix-vector-loop={tile_mix_vector_loop}"]
-
-        tile_mix_cube_loop = metadata["tile_mix_cube_loop"]
-        if tile_mix_cube_loop is not None:
-            _compile_option_list += \
-                [f"--tile-mix-cube-loop={tile_mix_cube_loop}"]
 
         auto_multi_buffer = metadata["limit_auto_multi_buffer_of_local_buffer"]
         if auto_multi_buffer is not None:
