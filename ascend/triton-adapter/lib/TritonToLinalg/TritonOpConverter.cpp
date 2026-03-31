@@ -156,12 +156,18 @@ LogicalResult SelectCanonicalizer::matchAndRewrite(
     arith::SelectOp op, PatternRewriter &rewriter) const {
   auto loc = op.getLoc();
 
-  // 0. Shortcut for scalars
+  // 0. Shortcut for scalars and bool type
   auto type = dyn_cast<TensorType>(op.getResult().getType());
   if (!type) {
     // do nothing non-tensor select
     return failure();
   }
+  auto elementType = type.getElementType();
+  if (elementType.isInteger(1)) {
+    // do nothing with bool type
+    return failure();
+  }
+  auto tensorShape = type.getShape();
   auto mask = op.getCondition();
   if (!isa<ShapedType>(mask.getType())) {
     // do nothing for scalar mask

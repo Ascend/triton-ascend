@@ -1222,8 +1222,6 @@ void BlockDataParser::rewriteMakeTensorPtrOp(
     assert(data.getRank() == 1);
   }
 
-  known[op.getResult()] = data;
-
   // special handling for davinci
   // create redundant reinterpret_cast op for record shape info
   auto redundantOp = createRedundantOp(op, rewriter, data);
@@ -1231,6 +1229,7 @@ void BlockDataParser::rewriteMakeTensorPtrOp(
 
   // create reinterpret_cast op for the target block
   data.setSource(redundantOp.getResult());
+  known[op.getResult()] = data;
   auto castOp = data.createCastOp(resultShape, loc, rewriter);
   rewriter.replaceOp(op, castOp.getResult());
 

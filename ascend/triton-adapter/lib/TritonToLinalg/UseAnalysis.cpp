@@ -296,6 +296,16 @@ LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
       LLVM_DEBUG({ op->setAttr("Undefined", UnitAttr::get(context)); });
       return;
     } else if (useType == UseType::MetaUse) {
+      auto memEffect = dyn_cast<MemoryEffectOpInterface>(op);
+      if (memEffect) {
+        if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(op)) {
+          LLVM_DEBUG({
+            os << "force protecting side-effect op:" << *op <<"\n";
+          });
+          op->setAttr("DataUse", UnitAttr::get(context));
+          return;
+        }
+      }
       if (!isa<mlir::scf::IfOp, mlir::scf::ForOp, mlir::scf::WhileOp, triton::ReduceOp>(op)) {
         assert(op->getNumResults() == 1 &&
                "Ops used for meta computation are expected to have one result");
