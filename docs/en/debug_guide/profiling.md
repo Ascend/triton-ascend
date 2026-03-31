@@ -102,6 +102,9 @@ The AI processor used in the previous example has 48 vector cores. The _layer_no
 
 
 ```diff
+import triton
+import triton.language as tl
+
 @triton.jit
 def npu_vector_cmp_kernel(
     X,                 # [Tensor] input tensor (row x col)

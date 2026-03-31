@@ -133,10 +133,10 @@ By properly using these temporary files, developers can efficiently locate and s
 
 The following uses the [01-vector-add.py](../../../third_party/ascend/tutorials/01-vector-add.py#) test case as an example to describe the compilation process:
 This is a simple addition calculation of two tensors. For the calculation logic, see the comments in the sample case.
-You can enable the dump file output by setting **TRITON_DEBUG=1** to obtain **kernel.ttir.mlir** and **kernel.ttadapter.mlir**.
+You can enable the dump file output by setting **TRITON_DEBUG=1** and **TRITON_DISABLE_CACHE=1** to obtain **kernel.ttir.mlir** and **kernel.ttadapter.mlir**.
 - Run the test case.
 ```
-TRITON_DEBUG=1 python 01-vector-add.py
+TRITON_DEBUG=1 TRITON_DISABLE_CACHE=1 python 01-vector-add.py
 ```
 After the test case is executed, the dump file path is displayed. The default path is **~/.triton/dump**. The following information is displayed:
 ```
@@ -368,7 +368,7 @@ Description of environment variables:
 **TRITON_DEBUG=1**: enables all debugging outputs (including compilation and runtime printing).
 
 ### 5.2 Compilation Error Debugging
-When the `ttir.mlir` → `ttadapter.mlir` conversion fails, the `ttadapter.mlir` cannot be generated and the `MLIRCompilationError` error is reported.
+When the `ttir.mlir` → `ttadapter.mlir` conversion fails, the `ttadapter.mlir` cannot be generated and the `MLIRCompileError` error is reported.
 You need to locate the fault at the Triton-Ascend code layer. Triton-Ascend contains the Python and C++ code layers. You need to locate the error code segment based on the call stack information in the error log and use the corresponding debugging method.
 
 ### 5.2.1 Debugging Python Code

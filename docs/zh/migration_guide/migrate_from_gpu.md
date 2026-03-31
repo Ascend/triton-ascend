@@ -5,12 +5,13 @@
 
 ### 迁移核心原则
 - 放弃 GPU「逻辑 grid 自由定义」，转为昇腾「物理核组绑定」；
-- VV场景下要求 32 字节访存对齐，CV场景下要求 512 字节对齐，移除 GPU 专属同步 API；
+- Vector算子场景下要求 32 字节访存对齐，cube-vector融合算子场景下要求 512 字节对齐，并移除 GPU 专属同步 API（如cuda中控制线程 / 流 / kernel 同步的专用接口）；
 - grid 优先用 1D，2D NPU适配写法也会合并为1D, 实际grid值应对齐芯片物理核数，比如：(20,) 与 (4, 5) 的效果是一样的。
 
 ### 完整迁移示例（向量加法）
 
 ```diff
+import torch
 + import torch_npu  # 【新增】导入昇腾NPU PyTorch适配库，提供NPU设备支持
 import triton
 import triton.language as tl
@@ -136,7 +137,7 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 @triton.jit
 def zeros_kernel(
     output_ptr,
@@ -170,7 +171,7 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 @triton.jit
 def zeros_kernel(
     output_ptr,
@@ -226,7 +227,7 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 @triton.jit
 def masked_fill_kernel(inp, expand_mask, value, out, N, BLOCK_SIZE: tl.constexpr):
@@ -237,12 +238,14 @@ def masked_fill_kernel(inp, expand_mask, value, out, N, BLOCK_SIZE: tl.constexpr
     cur_inp = tl.load(inp + offsets, mask=(~fill_mask) & mask, other=0)
     tl.store(out + offsets, cur_inp, (~fill_mask) & mask)
     tl.store(out + offsets, value, fill_mask & mask)
-    def masked_fill(inp, mask, value):
+
+def masked_fill(inp, mask, value):
     # ... 参数验证代码 ...
     # inp.device = "npu"
+    out = torch.zeros_like(inp)
     N = inp.numel()
     if N == 0:
-    return out
+        return out
 
     grid = lambda meta: (triton.cdiv(N, 4096),)  # 导致 coreDim 超限
     masked_fill_kernel[grid](inp, mask.to(torch.int), value, out, N, 4096)
@@ -255,7 +258,7 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 @triton.jit
 def masked_fill_kernel(inp, expand_mask, value, out, N,
@@ -266,22 +269,23 @@ def masked_fill_kernel(inp, expand_mask, value, out, N,
     num_sub_blocks = tl.cdiv(BLOCK_SIZE, BLOCK_SIZE_SUB)
     # 分块处理，避免 UB 溢出
     for sub_block_idx in range(num_sub_blocks):
-    sub_offset = base_offset + sub_block_idx * BLOCK_SIZE_SUB
-    offsets = sub_offset + tl.arange(0, BLOCK_SIZE_SUB)
-    mask = offsets < N
-    # 分批加载和处理数据
-    input_vals = tl.load(inp + offsets, mask=mask, other=0)
-    fill_mask_vals = tl.load(expand_mask + offsets, mask=mask, other=0).to(tl.int1)
-    # 先写入原始数据
-    tl.store(out + offsets, input_vals, mask=mask)
-    # 然后在需要填充的位置覆写目标值
-    value_to_write = tl.full([BLOCK_SIZE_SUB], value, dtype=input_vals.dtype)
-    final_vals = tl.where(fill_mask_vals, value_to_write, input_vals)
-    tl.store(out + offsets, final_vals, mask=mask)
+        sub_offset = base_offset + sub_block_idx * BLOCK_SIZE_SUB
+        offsets = sub_offset + tl.arange(0, BLOCK_SIZE_SUB)
+        mask = offsets < N
+        # 分批加载和处理数据
+        input_vals = tl.load(inp + offsets, mask=mask, other=0)
+        fill_mask_vals = tl.load(expand_mask + offsets, mask=mask, other=0).to(tl.int1)
+        # 先写入原始数据
+        tl.store(out + offsets, input_vals, mask=mask)
+        # 然后在需要填充的位置覆写目标值
+        value_to_write = tl.full([BLOCK_SIZE_SUB], value, dtype=input_vals.dtype)
+        final_vals = tl.where(fill_mask_vals, value_to_write, input_vals)
+        tl.store(out + offsets, final_vals, mask=mask)
 
-def masked_fill(inp, mask, value):
+def masked_fill(inp, expand_mask, value):
     logger.debug("GEMS MASKED FILL")
 
+    out = torch.zeros_like(inp)
     # ... 参数验证代码 ...
     # inp.device = "npu"
     N = inp.numel()
@@ -299,7 +303,7 @@ def masked_fill(inp, mask, value):
 ```
 
 ### 为什么会出现UBSIZE超出内存的错误
-切分不合理,存在过多的非对齐访存或者运算，例如对（64，32）二维数据搬运，对应stride(12832，128),如果是对齐数据的访存，对应的stride(32,1)。 对于非对齐访问内容，在最内轴新增一个大小为1的轴，变为（64，32，4） 由于硬件要求VV场景ub内存32bytes对齐 ，假设type=float16，对应stride应该为(12832, 128,1)
+切分不合理,存在过多的非对齐访存或者运算，例如对（64，32）二维数据搬运，对应stride(12832，128),如果是对齐数据的访存，对应的stride(32,1)。 对于非对齐访问内容，在最内轴新增一个大小为1的轴，变为（64，32，4） 由于硬件要求vector算子场景ub内存32bytes对齐 ，假设type=float16，对应stride应该为(12832, 128,1)
 
 
 ### 离散访存代码逐行对比观察scalar低效映射
@@ -311,7 +315,7 @@ bishengir-compile xxx.ttadapter --target=Ascend910B3 --enable-auto-multi-buffer=
 观察HIVM IR阶段是否存在纯scalar搬运或者计算， 没有映射为simd指令，这会成为性能瓶颈。    
 
 问题：离散访存 && scalar低效映射  
-b[1024， 32] = a[1024， 32]  Triton原先写法利用thread的方式 对[1024,32] 中的最低维度32绑定线程块, 再对1024切16，分为[64， 16， 32]，再对64绑定线程块  
+b[1024, 32] = a[1024, 32]  Triton原先写法利用thread的方式 对[1024,32] 中的最低维度32绑定线程块, 再对1024切16，分为[64， 16， 32]，再对64绑定线程块  
 ```diff
 chunk_fwd_kernel_o[(NT, B * H)](
     p_g = tl.make_block_ptr(g, (T,), (H,), (i_t * BT,), (BT,), (0,))

@@ -5,12 +5,13 @@ This document outlines key considerations for migrating Triton operators from GP
 
 ### Core Migration Principles
 - Shift from GPUs' "logical grid flexibility" to Ascend's "physical core group binding".
-- Enforce 32-byte memory alignment in VV scenarios and 512-byte memory alignment in CV scenarios. Remove GPU-specific synchronization APIs.
+- Enforce 32-byte memory alignment in vector operator scenarios and 512-byte memory alignment in cube-vector operator scenarios. And remove GPU-specific synchronization APIs(such as the dedicated interfaces for controlling thread / stream / kernel synchronization in CUDA).
 - Prefer 1D grids. NPUs' 2D adaptations will be merged into the 1D form. Actual grid values must align with the physical core count available on chips. For example, `(20,)` and `(4, 5)` will produce equivalent execution results.
 
 ### Complete Migration Example (Vector Addition)
 
 ```diff
+import torch
 + import torch_npu  # [Added] Import Ascend NPUs' PyTorch adaptation library to support NPU devices.
 import triton
 import triton.language as tl
@@ -136,7 +137,7 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 @triton.jit
 def zeros_kernel(
     output_ptr,
@@ -170,7 +171,7 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 @triton.jit
 def zeros_kernel(
     output_ptr,
@@ -226,7 +227,7 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 @triton.jit
 def masked_fill_kernel(inp, expand_mask, value, out, N, BLOCK_SIZE: tl.constexpr):
@@ -237,12 +238,14 @@ def masked_fill_kernel(inp, expand_mask, value, out, N, BLOCK_SIZE: tl.constexpr
     cur_inp = tl.load(inp + offsets, mask=(~fill_mask) & mask, other=0)
     tl.store(out + offsets, cur_inp, (~fill_mask) & mask)
     tl.store(out + offsets, value, fill_mask & mask)
-    def masked_fill(inp, mask, value):
+
+def masked_fill(inp, mask, value):
     # ... Parameter verification code ...
     # inp.device = "npu"
+    out = torch.zeros_like(inp)
     N = inp.numel()
     if N == 0:
-    return out
+        return out
 
     grid = lambda meta: (triton.cdiv(N, 4096),) # coreDim exceeds the limit.
     masked_fill_kernel[grid](inp, mask.to(torch.int), value, out, N, 4096)
@@ -255,7 +258,7 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 @triton.jit
 def masked_fill_kernel(inp, expand_mask, value, out, N,
@@ -266,24 +269,25 @@ def masked_fill_kernel(inp, expand_mask, value, out, N,
     num_sub_blocks = tl.cdiv(BLOCK_SIZE, BLOCK_SIZE_SUB)
     # Process blocks to avoid UB overflow.
     for sub_block_idx in range(num_sub_blocks):
-    sub_offset = base_offset + sub_block_idx * BLOCK_SIZE_SUB
-    offsets = sub_offset + tl.arange(0, BLOCK_SIZE_SUB)
-    mask = offsets < N
-    # Load and process data in batches.
-    input_vals = tl.load(inp + offsets, mask=mask, other=0)
-    fill_mask_vals = tl.load(expand_mask + offsets, mask=mask, other=0).to(tl.int1)
-    # First, write the original data.
-    tl.store(out + offsets, input_vals, mask=mask)
-    # Then overwrite the target value at the position where padding is required.
-    value_to_write = tl.full([BLOCK_SIZE_SUB], value, dtype=input_vals.dtype)
-    final_vals = tl.where(fill_mask_vals, value_to_write, input_vals)
-    tl.store(out + offsets, final_vals, mask=mask)
+        sub_offset = base_offset + sub_block_idx * BLOCK_SIZE_SUB
+        offsets = sub_offset + tl.arange(0, BLOCK_SIZE_SUB)
+        mask = offsets < N
+        # Load and process data in batches.
+        input_vals = tl.load(inp + offsets, mask=mask, other=0)
+        fill_mask_vals = tl.load(expand_mask + offsets, mask=mask, other=0).to(tl.int1)
+        # First, write the original data.
+        tl.store(out + offsets, input_vals, mask=mask)
+        # Then overwrite the target value at the position where padding is required.
+        value_to_write = tl.full([BLOCK_SIZE_SUB], value, dtype=input_vals.dtype)
+        final_vals = tl.where(fill_mask_vals, value_to_write, input_vals)
+        tl.store(out + offsets, final_vals, mask=mask)
 
-def masked_fill(inp, mask, value):
+def masked_fill(inp, expand_mask, value):
     logger.debug("GEMS MASKED FILL")
 
     # ... Parameter verification code ...
     # inp.device = "npu"
+    out = torch.zeros_like(inp)
     N = inp.numel()
     if N == 0:
         return out
@@ -299,7 +303,7 @@ def masked_fill(inp, mask, value):
 ```
 
 ### Why Does the UBSIZE Out of Memory Error Occur?
-Improper data tiling can lead to excessive unaligned memory access or computation. Consider a 2D data transfer of shape `(64, 32)` as an example. The corresponding stride is `(12832, 128)`. If aligned memory access is required, the stride becomes `(32, 1)`. In unaligned access scenarios, an additional axis of size `1` is added to the innermost dimension, yielding a shape of `(64, 32, 4)`. Because the hardware mandates 32-byte UB memory alignment in VV scenarios, the corresponding stride is recalculated as `(12832, 128, 1)`, assuming `type=float16`.
+Improper data tiling can lead to excessive unaligned memory access or computation. Consider a 2D data transfer of shape `(64, 32)` as an example. The corresponding stride is `(12832, 128)`. If aligned memory access is required, the stride becomes `(32, 1)`. In unaligned access scenarios, an additional axis of size `1` is added to the innermost dimension, yielding a shape of `(64, 32, 4)`. Because the hardware mandates 32-byte UB memory alignment in vector operator scenarios, the corresponding stride is recalculated as `(12832, 128, 1)`, assuming `type=float16`.
 
 
 ### Discrete Memory Access and Inefficient Scalar Mapping Observed by Line-by-Line Code Comparison
