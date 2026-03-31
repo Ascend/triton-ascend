@@ -183,6 +183,13 @@ class SplitAxesParser(AxesKeyParser):
         super().__init__(func_ast, keys)
         self.split_axes = dict()
         self.program_id_vars = list()
+        self.program_id_var_dims = dict()
+        self.num_programs_var_dims = dict()
+        self.grid_stride_tiling_only = dict()
+        # axis_name -> program_id axis dim
+        self.split_axis_pid_dims = dict()
+        # axis_name -> program_id axis dim (includes axes inferred without split params)
+        self.axis_pid_dims = dict()
         self.candidates_params = candidates_params
 
     def parse(self) -> Dict[str, str]:
@@ -190,40 +197,246 @@ class SplitAxesParser(AxesKeyParser):
         return self.split_axes
     
     def visit_Assign(self, node):
-        if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute):
-            if isinstance(node.value.func.value, ast.Name):
-                if node.value.func.value.id == "tl" and node.value.func.attr == "program_id":
-                    if isinstance(node.targets[0], ast.Name) and \
-                       node.targets[0].id not in self.program_id_vars:
-                        self.program_id_vars.append(node.targets[0].id)
+        pid_dim = self._get_program_id_dim(node.value)
+        if pid_dim is not None:
+            if (
+                len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id not in self.program_id_vars
+            ):
+                self.program_id_vars.append(node.targets[0].id)
+                self.program_id_var_dims[node.targets[0].id] = pid_dim
+        num_programs_dim = self._get_num_programs_dim(node.value)
+        if num_programs_dim is not None:
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                self.num_programs_var_dims[node.targets[0].id] = num_programs_dim
         self.generic_visit(node)
 
     def visit_BinOp(self, node):
         if isinstance(node.op, ast.Mult):
             split_axes_val = None
+            split_axis_pid_dim = None
             if isinstance(node.left, ast.Name) and node.left.id in self.program_id_vars:
                 if isinstance(node.right, ast.Name):
                     split_axes_val = node.right.id
+                    split_axis_pid_dim = self.program_id_var_dims.get(node.left.id)
             elif isinstance(node.left, ast.Call) and isinstance(node.left.func, ast.Attribute):
                 if node.left.func.value.id == "tl" and \
                    node.left.func.attr == "program_id":
                     if isinstance(node.right, ast.Name):
                         split_axes_val = node.right.id
+                        split_axis_pid_dim = self._get_program_id_dim(node.left)
 
             if isinstance(node.right, ast.Name) and node.right.id in self.program_id_vars:
                 if isinstance(node.left, ast.Name):
                     split_axes_val = node.left.id
+                    split_axis_pid_dim = self.program_id_var_dims.get(node.right.id)
             elif isinstance(node.right, ast.Call) and isinstance(node.right.func, ast.Attribute):
                 if node.right.func.value.id == "tl" and node.right.func.attr == "program_id":
                     if isinstance(node.left, ast.Name):
                         split_axes_val = node.left.id
+                        split_axis_pid_dim = self._get_program_id_dim(node.right)
             
             if split_axes_val in self.candidates_params and \
                split_axes_val not in self.split_axes.values():
                 split_axes_key = self.get_axis(split_axes_val)
-                if split_axes_key:
+                if split_axes_key and not self._is_tiling_only_split(split_axes_key, split_axes_val):
                     self.split_axes[split_axes_key] = split_axes_val
+                    if split_axis_pid_dim is not None:
+                        self._record_axis_pid_dim(split_axes_key, split_axis_pid_dim)
         self.generic_visit(node)
+
+    def visit_For(self, node):
+        if not isinstance(node.iter, ast.Call):
+            self.generic_visit(node)
+            return
+
+        iter_fn = node.iter.func
+        is_range = isinstance(iter_fn, ast.Name) and iter_fn.id == "range"
+        is_tl_range = (
+            isinstance(iter_fn, ast.Attribute)
+            and isinstance(iter_fn.value, ast.Name)
+            and iter_fn.value.id == "tl"
+            and iter_fn.attr == "range"
+        )
+        if not (is_range or is_tl_range):
+            self.generic_visit(node)
+            return
+
+        if len(node.iter.args) == 0:
+            self.generic_visit(node)
+            return
+
+        start = node.iter.args[0] if len(node.iter.args) >= 2 else None
+        stop = node.iter.args[1] if len(node.iter.args) >= 2 else node.iter.args[0]
+        pid_dim = self._extract_pid_dim_from_expr(start)
+        axis = self._axis_from_expr(stop)
+        if axis is not None and pid_dim is not None:
+            self._record_axis_pid_dim(axis, pid_dim)
+            if len(node.iter.args) >= 3:
+                step = node.iter.args[2]
+                loop_tiling_only_param = self._extract_grid_stride_split_param(start, step, pid_dim)
+                if loop_tiling_only_param is not None:
+                    self._mark_tiling_only_param(axis, loop_tiling_only_param)
+
+        self.generic_visit(node)
+
+    def _get_program_id_dim(self, node):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "tl"
+            and node.func.attr == "program_id"
+        ):
+            return None
+
+        axis_dim = 0
+        if len(node.args) > 0:
+            if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, int):
+                axis_dim = node.args[0].value
+            else:
+                return None
+
+        for kw in node.keywords:
+            if kw.arg == "axis":
+                if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, int):
+                    axis_dim = kw.value.value
+                else:
+                    return None
+                break
+        return axis_dim
+
+    def _get_num_programs_dim(self, node):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "tl"
+            and node.func.attr == "num_programs"
+        ):
+            return None
+
+        axis_dim = 0
+        if len(node.args) > 0:
+            if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, int):
+                axis_dim = node.args[0].value
+            else:
+                return None
+
+        for kw in node.keywords:
+            if kw.arg == "axis":
+                if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, int):
+                    axis_dim = kw.value.value
+                else:
+                    return None
+                break
+        return axis_dim
+
+    def _extract_pid_dim_from_expr(self, node):
+        if node is None:
+            return None
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and child.id in self.program_id_var_dims:
+                return self.program_id_var_dims[child.id]
+            pid_dim = self._get_program_id_dim(child)
+            if pid_dim is not None:
+                return pid_dim
+        return None
+
+    def _contains_pid_dim(self, node, pid_dim):
+        if node is None:
+            return False
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name):
+                if self.program_id_var_dims.get(child.id, None) == pid_dim:
+                    return True
+            if self._get_program_id_dim(child) == pid_dim:
+                return True
+        return False
+
+    def _contains_num_programs_dim(self, node, pid_dim):
+        if node is None:
+            return False
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name):
+                if self.num_programs_var_dims.get(child.id, None) == pid_dim:
+                    return True
+            if self._get_num_programs_dim(child) == pid_dim:
+                return True
+        return False
+
+    def _is_candidate_name(self, node, candidate_name):
+        return (
+            isinstance(node, ast.Name)
+            and node.id == candidate_name
+            and candidate_name in self.candidates_params
+        )
+
+    def _extract_pid_multiplied_candidate(self, node, pid_dim):
+        if node is None:
+            return None
+        candidates = set()
+        for child in ast.walk(node):
+            if not isinstance(child, ast.BinOp) or not isinstance(child.op, ast.Mult):
+                continue
+            left = child.left
+            right = child.right
+            if isinstance(left, ast.Name) and left.id in self.candidates_params and \
+               self._contains_pid_dim(right, pid_dim):
+                candidates.add(left.id)
+            if isinstance(right, ast.Name) and right.id in self.candidates_params and \
+               self._contains_pid_dim(left, pid_dim):
+                candidates.add(right.id)
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        return None
+
+    def _contains_num_programs_multiplied_candidate(self, node, candidate_name, pid_dim):
+        if node is None:
+            return False
+        for child in ast.walk(node):
+            if not isinstance(child, ast.BinOp) or not isinstance(child.op, ast.Mult):
+                continue
+            if self._is_candidate_name(child.left, candidate_name):
+                if self._contains_num_programs_dim(child.right, pid_dim):
+                    return True
+            if self._is_candidate_name(child.right, candidate_name):
+                if self._contains_num_programs_dim(child.left, pid_dim):
+                    return True
+        return False
+
+    def _extract_grid_stride_split_param(self, start, step, pid_dim):
+        if start is None or step is None:
+            return None
+        candidate_name = self._extract_pid_multiplied_candidate(start, pid_dim)
+        if candidate_name is None:
+            return None
+        if self._contains_num_programs_multiplied_candidate(step, candidate_name, pid_dim):
+            return candidate_name
+        return None
+
+    def _mark_tiling_only_param(self, axis, candidate_name):
+        self.grid_stride_tiling_only.setdefault(axis, set()).add(candidate_name)
+        if self.split_axes.get(axis, None) == candidate_name:
+            del self.split_axes[axis]
+            self.split_axis_pid_dims.pop(axis, None)
+
+    def _is_tiling_only_split(self, axis, candidate_name):
+        return candidate_name in self.grid_stride_tiling_only.get(axis, set())
+
+    def _axis_from_expr(self, node):
+        if node is None:
+            return None
+        for k, v in self.keys.items():
+            if self.contains_target_var(node, v):
+                return k
+        return None
+
+    def _record_axis_pid_dim(self, axis, pid_dim):
+        self.axis_pid_dims[axis] = pid_dim
+        if axis in self.split_axes:
+            self.split_axis_pid_dims[axis] = pid_dim
 
 
 class TilingAxesParser(AxesKeyParser):
@@ -266,12 +479,13 @@ class TilingAxesParser(AxesKeyParser):
         return self.tiling_axes
     
     def visit_For(self, node):
-        if isinstance(node.iter, ast.Call) and \
-           len(node.iter.args) == 3 and \
-           isinstance(node.iter.args[2], ast.Name):
-            for_loop_param = node.iter.args[2].id
-            if for_loop_param in self.candidates_params and \
-               for_loop_param not in self.candidates_params_for_loop:
+        if isinstance(node.iter, ast.Call) and len(node.iter.args) == 3:
+            step_expr = node.iter.args[2]
+            for_loop_param = self._extract_unique_candidate(step_expr)
+            if (
+                for_loop_param is not None
+                and for_loop_param not in self.candidates_params_for_loop
+            ):
                 self.candidates_params_for_loop.append(for_loop_param)
         self.generic_visit(node)
 
@@ -280,10 +494,10 @@ class TilingAxesParser(AxesKeyParser):
             # handle FloorDiv
             if isinstance(node.value, ast.BinOp) and isinstance(node.value.op, ast.FloorDiv):
                 denominator = node.value.right
-                if isinstance(denominator, ast.Name) and \
-                   denominator.id in self.candidates_params and \
-                   denominator.id not in self.candidates_params_for_loop:
-                    self.candidates_params_for_loop.append(denominator.id)
+                denominator_param = self._extract_unique_candidate(denominator)
+                if denominator_param is not None and \
+                   denominator_param not in self.candidates_params_for_loop:
+                    self.candidates_params_for_loop.append(denominator_param)
                     self.visit(self.func_ast)
 
             tiling_axes_val = self.get_tiling_axes_val(node.value)
@@ -314,6 +528,21 @@ class TilingAxesParser(AxesKeyParser):
                 val = self.get_tiling_axes_val(value)
                 if val:
                     return val
+        return None
+
+    def _extract_unique_candidate(self, expr):
+        """
+        Extract a unique tiling candidate from an expression.
+        Return None when no candidate or ambiguous (more than one candidate) appears.
+        """
+        if expr is None:
+            return None
+        candidates = [
+            param for param in self.candidates_params
+            if self.contains_target_var(expr, param)
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
         return None
 
 

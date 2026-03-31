@@ -18,8 +18,11 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+import unittest.mock as mock
+
 import triton
 import triton.language as tl
+
 from test_common import check_axes_parse_res, mock_autotuner
 
 
@@ -53,7 +56,8 @@ def test_split_axis_parse_base_case1(mock_autotuner):
         "low_dim_axes": ["x"],
         "reduction_axes": [],
     }
-    act_res = triton_split_axis_parse_base_case1[(1,)]()
+    grid = lambda meta: (meta["BLOCK_SIZE"],)
+    act_res = triton_split_axis_parse_base_case1[grid]()
 
     check_axes_parse_res(act_res, ref_res)
 
@@ -87,7 +91,8 @@ def test_split_axis_parse_base_case2(mock_autotuner):
         "low_dim_axes": ["x"],
         "reduction_axes": [],
     }
-    act_res = triton_split_axis_parse_base_case2[(1,)]()
+    grid = lambda meta: (meta["BLOCK_SIZE"],)
+    act_res = triton_split_axis_parse_base_case2[grid]()
 
     check_axes_parse_res(act_res, ref_res)
 
@@ -119,6 +124,44 @@ def test_split_axis_parse_base_case3(mock_autotuner):
         "low_dim_axes": ["x"],
         "reduction_axes": [],
     }
-    act_res = triton_split_axis_parse_base_case3[(1,)]()
+    grid = lambda meta: (meta["BLOCK_SIZE"],)
+    act_res = triton_split_axis_parse_base_case3[grid]()
 
     check_axes_parse_res(act_res, ref_res)
+
+
+def test_grid_stride_loop_block_only_tiling_semantics(mock_autotuner):
+    import triton.backends.ascend.runtime
+
+    @triton.autotune(
+        configs=[],
+        key=["N", "index_len"]
+    )
+    @triton.jit
+    def triton_grid_stride_loop_block_only_tiling_semantics(
+        input_ptr,
+        output_ptr,
+        index_ptr,
+        N: tl.constexpr,
+        index_len: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+    ):
+        pid_x = tl.program_id(axis=0)
+        pid_y = tl.program_id(axis=1)
+        grid_x = tl.num_programs(axis=0)
+        grid_y = tl.num_programs(axis=1)
+        for x in range(pid_x * BLOCK_M, index_len, grid_x * BLOCK_M):
+            row_offsets = x + tl.arange(0, BLOCK_M)
+            indices = tl.load(index_ptr + row_offsets, mask=row_offsets < index_len, other=0)
+            for y in range(pid_y * BLOCK_N, N, grid_y * BLOCK_N):
+                col_offsets = y + tl.arange(0, BLOCK_N)
+                col_mask = col_offsets < N
+                inp_offset = indices[:, None] * N + col_offsets[None, :]
+                out_offset = row_offsets[:, None] * N + col_offsets[None, :]
+                selected = tl.load(input_ptr + inp_offset, mask=col_mask[None, :], other=0.0)
+                tl.store(output_ptr + out_offset, selected, mask=col_mask[None, :])
+
+    act_res = triton_grid_stride_loop_block_only_tiling_semantics[(1, 1)]()
+    assert act_res["split_params"] == {}
+    assert act_res["tiling_params"] == {"y": "BLOCK_M", "x": "BLOCK_N"}

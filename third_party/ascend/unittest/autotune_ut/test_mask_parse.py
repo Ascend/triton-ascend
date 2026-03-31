@@ -88,7 +88,8 @@ def test_triton_dot_case1(mock_autotuner):
         "low_dim_axes": ["y", "z"],
         "reduction_axes": [],
     }
-    act_res = triton_dot_case1[(1,)]()
+    grid = lambda meta: (meta["MBLOCK"], meta["NBLOCK"])
+    act_res = triton_dot_case1[grid]()
 
     check_axes_parse_res(act_res, ref_res)
 
@@ -157,6 +158,7 @@ def test_triton_dot_case2(mock_autotuner):
         "low_dim_axes": ["y", "z"],
         "reduction_axes": [],
     }
-    act_res = triton_dot_case2[(1,)]()
+    grid = lambda meta: (meta["MBLOCK"], meta["NBLOCK"])
+    act_res = triton_dot_case2[grid]()
 
     check_axes_parse_res(act_res, ref_res)

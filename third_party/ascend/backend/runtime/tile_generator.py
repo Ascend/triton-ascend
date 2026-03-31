@@ -52,7 +52,9 @@ class AxisInfo:
     split_name: str = ""
     tiling_name: str = ""
     is_split_axis: bool = False
+    is_tunable_split_axis: bool = False
     is_tiling_axis: bool = False
+    fixed_split_size: int = 0
 
     @property
     def is_reduction(self):
@@ -64,6 +66,7 @@ class KernelMeta:
         self,
         axis_sizes: Dict[str, int],
         split_params: Dict[str, str],
+        fixed_split_params: Dict[str, int],
         tiling_params: Dict[str, str],
         low_dims: List[str],
         dtype: torch.dtype,
@@ -89,7 +92,9 @@ class KernelMeta:
         :param dual_reduction: performing reduction on more than one axis.
         :param persistent_reduction: there is no splitting in reduction axis.
         """
-        self._validate_axis(axis_sizes, split_params, tiling_params, low_dims)
+        self._validate_axis(
+            axis_sizes, split_params, fixed_split_params, tiling_params, low_dims
+        )
 
         axis_dict = {}
         idx = 0
@@ -98,9 +103,11 @@ class KernelMeta:
             if name.startswith("r"):
                 prefix = "r"
 
-            is_split_axis = name in split_params
+            is_tunable_split_axis = name in split_params
+            fixed_split_size = fixed_split_params.get(name, 0)
+            is_split_axis = is_tunable_split_axis or fixed_split_size > 0
             is_tiling_axis = name in tiling_params
-            split_name = "" if name not in split_params else split_params[name]
+            split_name = "" if not is_tunable_split_axis else split_params[name]
             tiling_name = "" if name not in tiling_params else tiling_params[name]
 
             axis_dict[name] = AxisInfo(
@@ -111,12 +118,17 @@ class KernelMeta:
                 split_name=split_name,
                 tiling_name=tiling_name,
                 is_split_axis=is_split_axis,
+                is_tunable_split_axis=is_tunable_split_axis,
                 is_tiling_axis=is_tiling_axis,
+                fixed_split_size=fixed_split_size,
             )
             idx += 1
 
         self.axis_info = list(axis_dict.values())
         self.split_axis = [x for x in axis_dict.values() if x.is_split_axis]
+        self.tunable_split_axis = [
+            x for x in axis_dict.values() if x.is_tunable_split_axis
+        ]
         self.tiling_axis = [x for x in axis_dict.values() if x.is_tiling_axis]
         self.low_dims_axis = [x for x in axis_dict.values() if x.name in low_dims]
         self.dtype = dtype
@@ -130,6 +142,7 @@ class KernelMeta:
         cls,
         axis_sizes: Dict[str, int],
         split_params: Dict[str, str],
+        fixed_split_params: Dict[str, int],
         tiling_params: Dict[str, str],
         low_dims: List[str],
     ) -> None:
@@ -145,6 +158,7 @@ class KernelMeta:
                     )
 
         check_keys(split_params.keys(), "split axis")
+        check_keys(fixed_split_params.keys(), "fixed split axis")
         check_keys(tiling_params.keys(), "tiling axis")
         check_keys(low_dims, "low dim axis")
 
@@ -194,7 +208,7 @@ class TileGenerator:
         for axis in kernel_meta.axis_info:
             block_name = axis.split_name
             sub_block_name = axis.tiling_name
-            block_size = axis.length
+            block_size = axis.fixed_split_size if axis.fixed_split_size > 0 else axis.length
             sub_block_size = block_size
             blocks.append(
                 BlockInfo(block_name, sub_block_name, block_size, sub_block_size)
@@ -247,10 +261,15 @@ class TileGenerator:
                 curr_numel = candi_block[axis.index]
                 if not axis.is_tiling_axis:
                     curr_numel = self.aligned_numel(curr_numel)
-                cfg[block_info.block_name] = curr_numel
+                if block_info.block_name:
+                    cfg[block_info.block_name] = curr_numel
             if axis.is_tiling_axis:
                 tiling_numel = self.aligned_numel(block_info.sub_block_size)
-                cfg[block_info.sub_block_name] = min(tiling_numel, candi_block[axis.index])
+                cfg[block_info.sub_block_name] = (
+                    tiling_numel
+                    if self.is_simt_mode
+                    else min(tiling_numel, candi_block[axis.index])
+                )
 
     def find_config(self, cfg):
         for config_var in self.configs:
@@ -420,7 +439,7 @@ class TileGenerator:
         ]
 
         def descend_split_axis():
-            for axis in self.kernel_meta.split_axis:
+            for axis in self.kernel_meta.tunable_split_axis:
                 if self.descend_one_axis(axis.index, is_split=True):
                     return True
 
