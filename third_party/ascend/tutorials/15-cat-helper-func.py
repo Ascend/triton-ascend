@@ -120,6 +120,149 @@ full_shape = gen_100_cat_shapes(
 
 
 @triton.jit
+def _cat_helper_func_2D_1(
+    in_ptr0,
+    in_ptr1,
+    out_ptr0,
+    in0_x: tl.constexpr,
+    in1_x: tl.constexpr,
+    y0_numel,
+    x1_numel,
+    Y0BLOCK: tl.constexpr,
+    Y0BLOCK_SUB: tl.constexpr,
+
+):
+    y0_offset = tl.program_id(0) * Y0BLOCK_SUB
+    base_y0 = tl.arange(0, Y0BLOCK_SUB)
+    loops_y0 = (Y0BLOCK + Y0BLOCK_SUB - 1) // Y0BLOCK_SUB
+    base_input0_x1 = tl.arange(0, in0_x)[None, :]
+    base_input1_x1 = tl.arange(0, in1_x)[None, :]
+    x1 = tl.arange(0, in0_x + in1_x)[None, :]
+
+    for loop in range(loops_y0):
+        y0 = y0_offset + (loop * Y0BLOCK_SUB) + base_y0[:, None]
+        y0_mask = y0 < min(Y0BLOCK + y0_offset, y0_numel)
+        x1_mask = x1 < x1_numel
+        tmp0 = tl.load(in_ptr0 + (base_input0_x1 + in0_x * y0), y0_mask)
+        tmp1 = tl.load(in_ptr1 + (base_input1_x1 + in1_x * y0), y0_mask)
+        tmp2 = tl.zeros((Y0BLOCK_SUB, in0_x + in1_x), dtype=tmp0.dtype)
+        tmp3 = extension.insert_slice(tmp2, tmp0, [0, 0], [Y0BLOCK_SUB, in0_x], [1, 1])
+        tmp4 = extension.insert_slice(tmp3, tmp1, [0, in0_x], [Y0BLOCK_SUB, in1_x], [1, 1])
+        tl.store(out_ptr0 + (x1 + (in0_x + in1_x) * y0), tmp4, x1_mask & y0_mask)
+
+
+@triton.jit
+def triton_unk_fused_cat_dim0_sameshape(output_ptr, x_ptr, y_ptr, y0_numel, x1_numel, Y0BLOCK: tl.constexpr, Y0BLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
+    y0_offset = tl.program_id(0) * Y0BLOCK
+    base_y0 = tl.arange(0, Y0BLOCK_SUB)
+    loops_y0 = (Y0BLOCK + Y0BLOCK_SUB - 1) // Y0BLOCK_SUB
+    base_x1 = tl.arange(0, X1BLOCK_SUB)
+    loops_x1 = (x1_numel + X1BLOCK_SUB - 1) // X1BLOCK_SUB
+    for loop_y0 in range(loops_y0):
+        y0 = y0_offset + (loop_y0 * Y0BLOCK_SUB) + base_y0[:, None]
+        y0_mask = y0 < min(Y0BLOCK + y0_offset, y0_numel)
+        for loop_x1 in range(loops_x1):
+            x1 = (loop_x1 * X1BLOCK_SUB) + base_x1[None, :]
+            x1_mask = x1 < x1_numel
+
+            tmp0 = tl.load(x_ptr + (x1 + x1_numel * y0), x1_mask & y0_mask)
+            tmp8 = tl.load(y_ptr + (x1 + x1_numel * y0), x1_mask & y0_mask)
+            tmp10 = tl.zeros((2 * Y0BLOCK_SUB, X1BLOCK_SUB), dtype=tmp0.dtype)
+            tmp11 = extension.insert_slice(tmp10, tmp0, [0, 0], [Y0BLOCK_SUB, X1BLOCK_SUB], [1, 1])
+            tmp12 = extension.insert_slice(tmp11, tmp8, [Y0BLOCK_SUB, 0], [Y0BLOCK_SUB, X1BLOCK_SUB], [1, 1])
+            tmp13 = tl.reshape(tmp12, (2, Y0BLOCK_SUB, X1BLOCK_SUB))
+
+            new_base_x2 = tl.arange(0, X1BLOCK_SUB)
+            new_x2 = (loop_x1 * X1BLOCK_SUB) + new_base_x2[None, None, :]
+            new_base_y1 = tl.arange(0, Y0BLOCK_SUB)
+            new_y1 = y0_offset + (loop_y0 * Y0BLOCK_SUB) + new_base_y1[None, :, None]
+            new_z0 = tl.arange(0, 2)[:, None, None]
+            new_x2_mask = new_x2 < x1_numel
+            new_y1_mask = new_y1 < y0_numel
+            tl.store(output_ptr + (new_x2 + x1_numel * (new_y1 + y0_numel * new_z0)), tmp13, new_x2_mask & new_y1_mask)
+
+
+@triton.jit
+def triton_unk_fused_cat_dim0_diffshape(output_ptr, x_ptr, y_ptr, y0_numel, y1_numel, x1_numel, YBLOCK: tl.constexpr,
+                                   YBLOCK_2: tl.constexpr, YBLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
+    y0_offset = tl.program_id(0) * YBLOCK
+    base_y0 = tl.arange(0, YBLOCK_SUB)
+    loops_y0 = (YBLOCK + YBLOCK_SUB - 1) // YBLOCK_SUB
+    base_x1 = tl.arange(0, X1BLOCK_SUB)
+    loops_x1 = (x1_numel + X1BLOCK_SUB - 1) // X1BLOCK_SUB
+    min_numel = 0
+    max_numel = 0
+    clone_numel = 0
+    if y0_numel < y1_numel:
+        min_numel = y0_numel
+        max_numel = y1_numel
+        clone_numel = y1_numel - y0_numel
+    else:
+        min_numel = y1_numel
+        max_numel = y0_numel
+        clone_numel = y0_numel - y1_numel
+
+    for loops_y in range(loops_y0):
+        y0 = y0_offset + (loops_y * YBLOCK_SUB) + base_y0[:, None]
+        y0_mask = y0 < min(YBLOCK + y0_offset, min_numel)
+        for loop_x1 in range(loops_x1):
+            x1 = (loop_x1 * X1BLOCK_SUB) + base_x1[None, :]
+            x1_mask = x1 < x1_numel
+
+            tmp0 = tl.load(x_ptr + (x1 + x1_numel * y0), x1_mask & y0_mask)
+            tmp8 = tl.load(y_ptr + (x1 + x1_numel * y0), x1_mask & y0_mask)
+            tmp10 = tl.zeros((2 * YBLOCK_SUB, X1BLOCK_SUB), dtype=tmp0.dtype)
+            tmp11 = extension.insert_slice(tmp10, tmp0, [0, 0], [YBLOCK_SUB, X1BLOCK_SUB], [1, 1])
+            tmp12 = extension.insert_slice(tmp11, tmp8, [YBLOCK_SUB, 0], [YBLOCK_SUB, X1BLOCK_SUB], [1, 1])
+            tmp13 = tl.reshape(tmp12, (2, YBLOCK_SUB, X1BLOCK_SUB))
+
+            new_base_x2 = tl.arange(0, X1BLOCK_SUB)
+            new_x2 = (loop_x1 * X1BLOCK_SUB) + new_base_x2[None, None, :]
+            new_base_y1 = tl.arange(0, YBLOCK_SUB)
+            new_y1 = y0_offset + (loops_y * YBLOCK_SUB) + new_base_y1[None, :, None]
+            new_z0 = tl.arange(0, 2)[:, None, None]
+            new_x2_mask = new_x2 < x1_numel
+            new_y1_mask = new_y1 < min_numel
+            tl.store(output_ptr + (new_x2 + x1_numel * new_y1 + x1_numel * y0_numel * new_z0), tmp13, new_x2_mask & new_y1_mask)
+
+    loops_y1 = (YBLOCK_2 + YBLOCK_SUB - 1) // YBLOCK_SUB
+    y2_offset = tl.program_id(0) * YBLOCK_2 + min_numel
+    if y0_numel < y1_numel:
+        for loops_y1 in range(loops_y1):
+            y0 = y2_offset + (loops_y1 * YBLOCK_SUB) + base_y0[:, None]
+            y0_mask = y0 < min(YBLOCK_2 + y2_offset, y1_numel)
+            for loop_x1 in range(loops_x1):
+                x1 = (loop_x1 * X1BLOCK_SUB) + base_x1[None, :]
+                x1_mask = x1 < x1_numel
+
+                tmp8 = tl.load(y_ptr + (x1 + x1_numel * y0), x1_mask & y0_mask)
+                new_base_x2 = tl.arange(0, X1BLOCK_SUB)
+                new_x2 = (loop_x1 * X1BLOCK_SUB) + new_base_x2[None, :]
+                new_base_y1 = tl.arange(0, YBLOCK_SUB)
+                new_y1 = y2_offset + y0_numel + (loops_y1 * YBLOCK_SUB) + new_base_y1[:, None]
+                sum_numel = y0_numel + y1_numel
+                new_x2_mask = new_x2 < x1_numel
+                new_y1_mask = new_y1 < sum_numel
+                tl.store(output_ptr + (new_x2 + x1_numel * new_y1), tmp8, new_x2_mask & new_y1_mask)
+    else:
+        for loops_y1 in range(loops_y1):
+            y0 = y2_offset + (loops_y1 * YBLOCK_SUB) + base_y0[:, None]
+            y0_mask = y0 < min(YBLOCK_2 + y2_offset, y0_numel)
+            for loop_x1 in range(loops_x1):
+                x1 = (loop_x1 * X1BLOCK_SUB) + base_x1[None, :]
+                x1_mask = x1 < x1_numel
+
+                tmp8 = tl.load(x_ptr + (x1 + x1_numel * y0), x1_mask & y0_mask)
+                new_base_x2 = tl.arange(0, X1BLOCK_SUB)
+                new_x2 = (loop_x1 * X1BLOCK_SUB) + new_base_x2[None, :]
+                new_base_y1 = tl.arange(0, YBLOCK_SUB)
+                new_y1 = y2_offset + (loops_y1 * YBLOCK_SUB) + new_base_y1[:, None]
+                new_x2_mask = new_x2 < x1_numel
+                new_y1_mask = new_y1 < y0_numel
+                tl.store(output_ptr + (new_x2 + x1_numel * new_y1), tmp8, new_x2_mask & new_y1_mask)
+
+
+@triton.jit
 def triton_unk_fused_cat_dim1_sameshape(output_ptr, x_ptr, y_ptr, y0_numel, x1_numel, Y0BLOCK: tl.constexpr, Y0BLOCK_SUB: tl.constexpr, X1BLOCK_SUB: tl.constexpr):
     y0_offset = tl.program_id(0) * Y0BLOCK
     base_y0 = tl.arange(0, Y0BLOCK_SUB)
@@ -500,10 +643,10 @@ testlist = [
     ((15, 10), (17, 10), 0),
     ((19, 11), (21, 11), 0),
     ((23, 13), (25, 13), 0),
-    ((1001, 200), (1003, 200), 0),
+    ((1501, 200), (1003, 200), 0),
     ((2005, 300), (2007, 300), 0),
-    ((3007, 400), (3009, 400), 0),
-    ((4001, 500), (4003, 500), 0),
+    ((2307, 400), (3009, 400), 0),
+    ((4001, 500), (303, 500), 0),
     # dim1（列拼接，行维度一致）
     ((5, 3), (5, 7), 1),
     ((7, 9), (7, 11), 1),
@@ -511,10 +654,10 @@ testlist = [
     ((11, 15), (11, 17), 1),
     ((13, 19), (13, 21), 1),
     ((15, 23), (15, 25), 1),
-    ((100, 1001), (100, 1003), 1),
-    ((200, 2005), (200, 2007), 1),
-    ((300, 3007), (300, 3009), 1),
-    ((400, 4001), (400, 4003), 1),
+    ((100, 1001), (100, 2003), 1),
+    ((200, 2005), (200, 207), 1),
+    ((300, 707), (300, 309), 1),
+    ((400, 3001), (400, 4003), 1),
 
     # ===================== 3D场景（15组，dim0/dim1/dim2） =====================
     # dim0（第0维拼接，d1/d2一致）
@@ -586,11 +729,11 @@ def test_cat_bigshape(testlists, dtype):
         else:
             if x0.shape[0] == x1.shape[0]:
                 Y0BLOCK = (x0.shape[0] + num_core - 1) // num_core
-                pytest.skip("triton_unk_fused_cat_dim0_sameshape: cat dim == 0 for 2D tensor, skipping.")
+                triton_unk_fused_cat_dim0_sameshape[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x0.shape[1], Y0BLOCK, 1, 256)
             else:
                 YBLOCK = (min(x0.shape[0], x1.shape[0]) + num_core - 1) // num_core
                 YBLOCK_2 = (max(x0.shape[0], x1.shape[0]) - min(x0.shape[0], x1.shape[0]) + num_core - 1) // num_core
-                pytest.skip("triton_unk_fused_cat_dim0_diffshape: cat dim == 0 for 2D tensor, skipping.")
+                triton_unk_fused_cat_dim0_diffshape[num_core, 1, 1](triton_res, x0, x1, x0.shape[0], x1.shape[0], x1.shape[1], YBLOCK, YBLOCK_2, 1, 256)
         if squeeze_flag:
             triton_res = triton_res.squeeze()
     else:
@@ -600,7 +743,7 @@ def test_cat_bigshape(testlists, dtype):
             x0 = torch.unsqueeze(x0, dim=0)
             x1 = torch.unsqueeze(x1, dim=0)
             triton_res = torch.unsqueeze(triton_res, dim=0)
-        pytest.skip("_cat_helper_func_2D_1: cat directly for 2D tensor, skipping.")
+        _cat_helper_func_2D_1[num_core, 1, 1](x0, x1, triton_res, x0.shape[1], x1.shape[1], x0.shape[0], x0.shape[1] + x1.shape[1], 256, 16)
         if squeeze_flag:
             triton_res = triton_res.squeeze()
 

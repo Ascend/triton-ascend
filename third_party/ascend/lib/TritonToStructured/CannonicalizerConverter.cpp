@@ -178,6 +178,149 @@ LogicalResult SplatCmpConverter::matchAndRewrite(arith::CmpIOp cmpOp, PatternRew
     return success();
 }
 
+// Convert AddPtr when ptr is produced by tt.splat and offset is produced by
+// tt.broadcast of a smaller-shaped value. Transformation:
+//   %ptr_splat = tt.splat %ptr_src : tensor<Large x !tt.ptr<...>>
+//   %offset_b = tt.broadcast %offset_src : tensor<Large x i32>
+//   %res = tt.addptr %ptr_splat, %offset_b
+// =>
+//   %ptr_small_splat = tt.splat %ptr_src : tensor<Small x !tt.ptr<...>>
+//   %add_small = tt.addptr %ptr_small_splat, %offset_src
+//   %res = tt.broadcast %add_small : tensor<Large x !tt.ptr<...>>
+LogicalResult AddPtrSplatConverter::matchAndRewrite(triton::AddPtrOp addPtrOp, PatternRewriter &rewriter) const
+{
+    // Match ptr produced by splat
+    auto ptr = addPtrOp.getPtr();
+    auto ptrSplatOp = ptr.getDefiningOp<triton::SplatOp>();
+    if (!ptrSplatOp) return failure();
+
+    // Match offset produced by broadcast
+    auto offset = addPtrOp.getOffset();
+    auto offsetBroadcastOp = offset.getDefiningOp<triton::BroadcastOp>();
+    if (!offsetBroadcastOp) return failure();
+
+    // Extract sources
+    auto ptrSrc = ptrSplatOp.getSrc();
+    auto offsetSrc = offsetBroadcastOp.getSrc();
+
+    // Types must be ranked to reason about shapes
+    auto resultType = dyn_cast<RankedTensorType>(addPtrOp.getResult().getType());
+    auto offsetSrcType = dyn_cast<RankedTensorType>(offsetSrc.getType());
+    if (!resultType || !offsetSrcType) return failure();
+
+    // If offset source already has same shape as result, nothing to do
+    if (resultType.getShape() == offsetSrcType.getShape()) return failure();
+
+    auto loc = addPtrOp.getLoc();
+
+    // Build pointer tensor type corresponding to offset's (smaller) shape
+    // ptrSrc should be a pointer type (element type)
+    auto ptrElementType = dyn_cast<triton::PointerType>(ptrSrc.getType());
+    auto smallPtrTensorType = RankedTensorType::get(offsetSrcType.getShape(), ptrElementType);
+
+    // Create splat of ptrSrc to the smaller shape
+    auto smallPtrSplat = rewriter.create<triton::SplatOp>(loc, smallPtrTensorType, ptrSrc);
+
+    // Create addptr on the smaller shape
+    auto smallAdd = rewriter.create<triton::AddPtrOp>(loc, smallPtrTensorType, smallPtrSplat.getResult(), offsetSrc);
+
+    // Broadcast the small add result back to the original (larger) shape
+    auto broadcasted = rewriter.create<triton::BroadcastOp>(loc, resultType, smallAdd.getResult());
+
+    rewriter.replaceOp(addPtrOp, broadcasted.getResult());
+    return success();
+}
+
+// Move load before broadcast when possible:
+// If load.ptr is a triton::BroadcastOp and
+//  - load.mask is null; or
+//  - load.mask is a triton::BroadcastOp and the broadcast sources (before broadcast)
+//    of ptr and mask have identical shapes,
+// then replace
+//   %ptr_b = tt.broadcast %ptr_src
+//   %mask_b = tt.broadcast %mask_src?         (optional)
+//   %v = tt.load %ptr_b, %mask_b
+// with
+//   %v_small = tt.load %ptr_src, %mask_src?
+//   %v = tt.broadcast %v_small
+LogicalResult LoadBroadcastConverter::matchAndRewrite(triton::LoadOp loadOp, PatternRewriter &rewriter) const
+{
+    // Match when ptr is defined by BroadcastOp
+    Value ptr = loadOp.getPtr();
+    auto ptrBroadcast = ptr.getDefiningOp<triton::BroadcastOp>();
+    if (!ptrBroadcast) return failure();
+
+    auto ptrSrcType = dyn_cast<RankedTensorType>(ptrBroadcast.getSrc().getType());
+    if (!ptrSrcType) return failure();
+
+    // mask can be null
+    Value mask = loadOp.getMask();
+    Value maskSrc = nullptr;
+    if (mask) {
+        auto maskBroadcast = mask.getDefiningOp<triton::BroadcastOp>();
+        if (!maskBroadcast) return failure();
+        maskSrc = maskBroadcast.getSrc();
+        // shapes of ptrBroadcast.src and maskBroadcast.src must match
+        auto ptrSrcType = dyn_cast<RankedTensorType>(ptrBroadcast.getSrc().getType());
+        auto maskSrcType = dyn_cast<RankedTensorType>(maskSrc.getType());
+        if (!ptrSrcType || !maskSrcType) return failure();
+        if (ptrSrcType.getShape() != maskSrcType.getShape()) return failure();
+    }
+
+    // Prepare the smaller load: load from ptrBroadcast.src with maskSrc (or null)
+    Location loc = loadOp.getLoc();
+    Value smallPtr = ptrBroadcast.getSrc();
+
+    // Preserve other operands of load (like 'other', cache, evict, isVolatile)
+    Value other = loadOp.getOther();
+    auto cache = loadOp.getCache();
+    auto evict = loadOp.getEvict();
+    auto isVolatile = loadOp.getIsVolatile();
+
+    // If 'other' exists, it must be a constant DenseElementsAttr so we can
+    // construct a smaller-shaped constant to feed the small load. If it's
+    // non-constant, abort the transformation.
+    Value newOther = other;
+    if (other) {
+        Attribute otherAttr;
+        if (!matchPattern(other, m_Constant(&otherAttr)))
+            return failure();
+        auto denseOther = dyn_cast<DenseElementsAttr>(otherAttr);
+        if (!denseOther) return failure();
+
+        // Build a small-shaped tensor type that uses the ptr src's shape but the element type of the 'other' constant
+        auto ptrSrcRT = dyn_cast<RankedTensorType>(ptrBroadcast.getSrc().getType());
+        if (!ptrSrcRT) return failure();
+
+        auto elemType = denseOther.getType().getElementType();
+        if (!elemType) return failure();
+
+        auto smallType = RankedTensorType::get(ptrSrcRT.getShape(), elemType);
+
+        DenseElementsAttr newDense;
+        if (denseOther.isSplat()) {
+            // Reuse the splat value; assume element/value types are compatible.
+            newDense = DenseElementsAttr::get(smallType, denseOther.getSplatValue<Attribute>());
+        } else {
+            // Multi-element dense constant cannot be safely reshaped here
+            return failure();
+        }
+
+        auto constOp = rewriter.create<arith::ConstantOp>(loc, newDense);
+        newOther = constOp.getResult();
+    }
+
+    auto newLoad = rewriter.create<triton::LoadOp>(loc, smallPtr, maskSrc, newOther, cache, evict, isVolatile);
+
+    // Broadcast result back to original result type
+    auto resultType = dyn_cast<RankedTensorType>(loadOp.getResult().getType());
+    if (!resultType) return failure();
+    auto broadcasted = rewriter.create<triton::BroadcastOp>(loc, resultType, newLoad.getResult());
+
+    rewriter.replaceOp(loadOp, broadcasted.getResult());
+    return success();
+}
+
 LogicalResult PromotePointerIterArgsPattern::matchAndRewrite(
     scf::ForOp forOp,
     PatternRewriter &rewriter) const
@@ -1086,4 +1229,1308 @@ Value PromotePointerIterArgsPattern::reconstructPointer(
         info->basePointer,
         splatOffset);
 }
+
+void SimplifyTensorIterArgsPattern::ShapeChainInfo::dump() const
+{
+    LLVM_DEBUG({
+        llvm::dbgs() << "ShapeChainInfo:\n";
+        llvm::dbgs() << "  base: " << base << "\n";
+        llvm::dbgs() << "  chain:\n";
+        for (Operation *op : chain) {
+            llvm::dbgs() << "    " << *op << "\n";
+        }
+    });
+}
+
+void SimplifyTensorIterArgsPattern::CandidateInfo::dump() const
+{
+    LLVM_DEBUG({
+        llvm::dbgs() << "CandidateInfo:\n";
+        llvm::dbgs() << "  idx: " << idx << "\n";
+        llvm::dbgs() << "  ShapeInfo: \n";
+        shapeInfo.dump();
+        for (Operation *op : arithOps) {
+            llvm::dbgs() << "  ArithOp: " << *op << "\n";
+        }
+    });
+}
+
+Value SimplifyTensorIterArgsPattern::cloneShapeChain(Location loc, Value base, ArrayRef<Operation *> chain, PatternRewriter &rewriter) const
+{
+    Value cur = base;
+    for (Operation *op : chain) {
+        if (auto splat = dyn_cast<triton::SplatOp>(op)) {
+            auto dstTy = cast<RankedTensorType>(splat.getType());
+            cur = rewriter.create<triton::SplatOp>(loc, dstTy, cur);
+            continue;
+        }
+        if (auto bcast = dyn_cast<triton::BroadcastOp>(op)) {
+            auto dstTy = cast<RankedTensorType>(bcast.getType());
+            cur = rewriter.create<triton::BroadcastOp>(loc, dstTy, cur);
+            continue;
+        }
+        if (auto expand = dyn_cast<triton::ExpandDimsOp>(op)) {
+            auto dstTy = cast<RankedTensorType>(expand.getType());
+            cur = rewriter.create<triton::ExpandDimsOp>(loc, dstTy, cur, expand.getAxis());
+            continue;
+        }
+        return Value();
+    }
+    return cur;
+}
+
+bool SimplifyTensorIterArgsPattern::isBlockArgumentFromAnotherForLoop(Value v) const
+{
+    auto barg = dyn_cast<BlockArgument>(v);
+    if (!barg) {
+        return false;
+    }
+
+    Block *owner = barg.getOwner();
+    if (!owner) {
+        return false;
+    }
+
+    auto parentFor = dyn_cast_or_null<scf::ForOp>(owner->getParentOp());
+    if (!parentFor) {
+        return false;
+    }
+
+    // Only handle block args that belong to the body block of scf.for.
+    if (&parentFor.getRegion().front() != owner) {
+        return false;
+    }
+
+    // scf.for body block args layout:
+    //   arg#0                : induction variable
+    //   arg#1..arg#N         : region iter args
+    unsigned argNo = barg.getArgNumber();
+    if (argNo == 0) {
+        // IV: not an iter arg init source.
+        return false;
+    }
+
+    unsigned iterIdx = argNo - 1;
+    if (iterIdx >= parentFor.getInitArgs().size()) {
+        return false;
+    }
+
+    return true;
+}
+
+Value SimplifyTensorIterArgsPattern::normalizeInitArgForShapePeel(Value v) const
+{
+    if (!isBlockArgumentFromAnotherForLoop(v)) {
+        // Not a block argument from another for loop, return as is.
+        return v;
+    }
+    auto barg = dyn_cast<BlockArgument>(v);
+    if (!barg) {
+        return v;
+    }
+
+    Block *owner = barg.getOwner();
+    if (!owner) {
+        return v;
+    }
+
+    auto parentFor = dyn_cast_or_null<scf::ForOp>(owner->getParentOp());
+    if (!parentFor) {
+        return v;
+    }
+
+    unsigned argNo = barg.getArgNumber();
+    if (argNo == 0) {
+        return v;
+    }
+
+    unsigned iterIdx = argNo - 1;
+    if (iterIdx >= parentFor.getInitArgs().size()) {
+        return v;
+    }
+    // For the simple nested relay case:
+    // inner.initArg = outer.regionIterArg  ==> resolve to outer.initArg
+    return parentFor.getInitArgs()[iterIdx];
+}
+
+std::optional<SimplifyTensorIterArgsPattern::RelayMapM1> SimplifyTensorIterArgsPattern::getRelayMapM1(
+    scf::ForOp innerFor, scf::ForOp outerFor, unsigned innerIdx) const
+{
+    if (innerIdx >= innerFor.getInitArgs().size() || innerIdx >= innerFor.getNumResults()) {
+        return std::nullopt;
+    }
+
+    // 1) inner initArg -> outer iterArg idx
+    Value innerInit = innerFor.getInitArgs()[innerIdx];
+    if (!isBlockArgumentFromAnotherForLoop(innerInit)) {
+        return std::nullopt;
+    }
+
+    auto barg = dyn_cast<BlockArgument>(innerInit);
+    if (!barg) {
+        return std::nullopt;
+    }
+
+    unsigned outerInitIdx = barg.getArgNumber() - 1;
+    if (outerInitIdx >= outerFor.getRegionIterArgs().size()) {
+        return std::nullopt;
+    }
+
+    // NEW: ensure outer iterArg lane is used only as the mapped inner initArg.
+    // i.e. no extra users in outer body.
+    Value outerIterArg = outerFor.getRegionIterArgs()[outerInitIdx];
+    if (!outerIterArg.hasOneUse()) {
+        return std::nullopt;
+    }
+    OpOperand &onlyUse = *outerIterArg.getUses().begin();
+    if (onlyUse.getOwner() != innerFor.getOperation() ||
+        onlyUse.get() != innerFor.getInitArgs()[innerIdx]) {
+        return std::nullopt;
+    }
+
+    // 2) inner result -> outer yield slot
+    if (!outerFor.getBody() || !outerFor.getBody()->mightHaveTerminator()) {
+        return std::nullopt;
+    }
+    auto outerYield = dyn_cast<scf::YieldOp>(outerFor.getBody()->getTerminator());
+    if (!outerYield) {
+        return std::nullopt;
+    }
+
+    // only handle the case where inner result directly feeds into outer yield operand, without any intermediate use/def.
+    Value innerRes = innerFor.getResult(innerIdx);
+    std::optional<unsigned> outerYieldIdx;
+    for (unsigned k = 0; k < outerYield.getNumOperands(); ++k) {
+        if (outerYield.getOperand(k) == innerRes) {
+            outerYieldIdx = k;
+            break;
+        }
+    }
+    if (!outerYieldIdx.has_value()) {
+        return std::nullopt;
+    }
+
+    if (outerInitIdx != *outerYieldIdx) {
+        // The position of iterArg and yield operand should be the same in this simple relay case.
+        return std::nullopt;
+    }
+
+    return RelayMapM1{
+        .innerIdx = innerIdx,
+        .outerInitIdx = outerInitIdx,
+        .outerYieldIdx = *outerYieldIdx,
+    };
+}
+
+void SimplifyTensorIterArgsPattern::splitCandidatesByRelay(
+    SmallVector<SimplifyTensorIterArgsPattern::CandidateInfo> all,
+    SmallVector<SimplifyTensorIterArgsPattern::CandidateInfo> &locals,
+    SmallVector<SimplifyTensorIterArgsPattern::CandidateInfo> &relays) const
+{
+    for (const auto &c : all) {
+        if (c.relayMap.has_value()) {
+            relays.push_back(c);
+        } else {
+            locals.push_back(c);
+        }
+    }
+}
+
+std::optional<SimplifyTensorIterArgsPattern::ShapeChainInfo> SimplifyTensorIterArgsPattern::peelShapeChain(Value v) const
+{
+    ShapeChainInfo info;
+    Value cur = v;
+    SmallVector<Operation *> rev;
+    while (Operation *def = cur.getDefiningOp()) {
+        if (isa<triton::BroadcastOp, triton::SplatOp, triton::ExpandDimsOp>(def)) {
+            rev.push_back(def);
+            cur = def->getOperand(0);
+            continue;
+        }
+        break;
+    }
+    if (rev.empty()) {
+        return std::nullopt;
+    }
+    std::reverse(rev.begin(), rev.end());
+    info.base = cur;
+    info.chain = std::move(rev);
+    return info;
+}
+
+bool SimplifyTensorIterArgsPattern::isArithWithConst(Operation *op, Value curVal, Value &nextVal, Value &constVal) const
+{
+    nextVal = Value();
+    constVal = Value();
+
+    Value lhs;
+    Value rhs;
+    if (!extractBinaryArithOperands(op, lhs, rhs)) {
+        return false;
+    }
+
+    bool lhsIsConst = matchPattern(lhs, m_Constant());
+    bool rhsIsConst = matchPattern(rhs, m_Constant());
+    if (lhsIsConst == rhsIsConst) {
+        return false;
+    }
+
+    if (lhs == curVal && rhsIsConst) {
+        nextVal = op->getResult(0);
+        constVal = rhs;
+        return true;
+    }
+    if (rhs == curVal && lhsIsConst) {
+        nextVal = op->getResult(0);
+        constVal = lhs;
+        return true;
+    }
+
+    return false;
+}
+
+Value SimplifyTensorIterArgsPattern::getNewConstLikeOperand(Value cst, Type targetTy, PatternRewriter &rewriter) const
+{
+    Attribute attr;
+    if (!matchPattern(cst, m_Constant(&attr))) {
+        return Value();
+    }
+    auto tensorTy = dyn_cast<RankedTensorType>(targetTy);
+    if (!tensorTy) {
+        return Value();
+    }
+    // Only support arith.constant dense right now.
+    auto dense = dyn_cast<DenseElementsAttr>(attr);
+    if (!dense || !dense.isSplat()) {
+        return Value();
+    }
+    auto splatAttr = DenseElementsAttr::get(tensorTy, dense.getSplatValue<Attribute>());
+    return rewriter.create<arith::ConstantOp>(cst.getLoc(), tensorTy, splatAttr);
+}
+
+bool SimplifyTensorIterArgsPattern::canBuildConstLikeOperand(Value cst, Type targetTy) const
+{
+    Attribute attr;
+    if (!matchPattern(cst, m_Constant(&attr))) {
+        return false;
+    }
+    auto tensorTy = dyn_cast<RankedTensorType>(targetTy);
+    if (!tensorTy) {
+        return false;
+    }
+    auto dense = dyn_cast<DenseElementsAttr>(attr);
+    return dense && dense.isSplat();
+}
+
+LogicalResult SimplifyTensorIterArgsPattern::collectReverseLinearYieldPath(
+    Value yielded,
+    Value iterArg,
+    SmallVectorImpl<Operation *> &opsInExecOrder) const
+{
+    SmallVector<Operation *> revOps;
+    Value cur = yielded;
+
+    while (cur != iterArg) {
+        Operation *def = cur.getDefiningOp();
+        if (!def || isa<scf::ForOp, scf::YieldOp>(def)) {
+            return failure();
+        }
+
+        Value lhs;
+        Value rhs;
+        if (!extractBinaryArithOperands(def, lhs, rhs)) {
+            return failure();
+        }
+
+        bool lhsIsConst = matchPattern(lhs, m_Constant());
+        bool rhsIsConst = matchPattern(rhs, m_Constant());
+        if (lhsIsConst == rhsIsConst) {
+            return failure();
+        }
+
+        Value upstream = lhsIsConst ? rhs : lhs;
+        if (!upstream) {
+            return failure();
+        }
+
+        // Safety: only accept a strict linear chain.
+        // The current def result must be consumed exclusively by `cur`.
+        // If there is any extra user, rewriting this lane may break semantics.
+        if (def->getNumResults() != 1) {
+            return failure();
+        }
+        Value defRes = def->getResult(0);
+        if (!defRes.hasOneUse()) {
+            return failure();
+        }
+        OpOperand &onlyUse = *defRes.getUses().begin();
+        if (onlyUse.get() != cur) {
+            return failure();
+        }
+
+        revOps.push_back(def);
+        cur = upstream;
+    }
+
+    opsInExecOrder.assign(revOps.rbegin(), revOps.rend());
+    return success();
+}
+
+
+LogicalResult SimplifyTensorIterArgsPattern::matchAndRewrite(scf::ForOp forOp, PatternRewriter &rewriter) const
+{
+    LLVM_DEBUG({
+        llvm::dbgs() << "Now Handling For Op: \n";
+        forOp.dump();
+    });
+
+    // if you want only simplify iter args once to avoid infinite pattern application, return failure when meeting done label
+    if (forOp->hasAttr(kSimplifiedAttr)) {
+        LLVM_DEBUG({
+            llvm::dbgs() << "This For Op has been simplified before.\n";
+            forOp.dump();
+        });
+    }
+    // If the forOp has been marked as failed before, it means we attempted to simplify it but couldn't, so we should not try again.
+    if (forOp->hasAttr(kFailedAttr) || forOp->hasAttr(kIncompleteAttr)) {
+        return failure();
+    }
+
+    Block &oldBody = *forOp.getBody();
+    if (!oldBody.mightHaveTerminator()) {
+        return failure();
+    }
+    auto oldYield = dyn_cast<scf::YieldOp>(oldBody.getTerminator());
+    if (!oldYield) {
+        return failure();
+    }
+
+    SmallVector<CandidateInfo> candidates;
+    auto regionIterArgs = forOp.getRegionIterArgs();
+    auto initArgs = forOp.getInitArgs();
+
+    for (unsigned i = 0; i < regionIterArgs.size(); ++i) {
+        Value iterArg = regionIterArgs[i];
+        Value initArg = initArgs[i];
+        Value yielded = oldYield.getOperand(i);
+
+        auto iterTy = dyn_cast<RankedTensorType>(iterArg.getType());
+        if (!iterTy || !iterTy.hasStaticShape()) {
+            continue;
+        }
+
+        // if initArg comes from another iterArg of an outer loop, get the ultimate source initArg.
+        // This handles the common nested relay pattern where inner loop iter arg is directly yielded from outer loop iter arg without modification.
+        // multiple for-loop levels of relay may require more complex data flow analysis to resolve the ultimate source initArg.
+        Value normalizedInitArg = normalizeInitArgForShapePeel(initArg);
+
+        auto shapeInfoOpt = peelShapeChain(normalizedInitArg);
+        if (!shapeInfoOpt.has_value()) {
+            continue;
+        }
+        auto shapeInfo = *shapeInfoOpt;
+
+        SmallVector<Operation *> chainOps;
+        if (failed(collectReverseLinearYieldPath(yielded, iterArg, chainOps))) {
+            continue;
+        }
+
+        std::optional<RelayMapM1> relayMap;
+        if (auto outerFor = dyn_cast_or_null<scf::ForOp>(forOp->getParentOp())) {
+            relayMap = getRelayMapM1(forOp, outerFor, i);
+        }
+
+        if (!relayMap.has_value() && isBlockArgumentFromAnotherForLoop(initArg)) {
+            LLVM_DEBUG({
+                llvm::dbgs() << "Init arg is a block argument from another for loop, but does not form a simple relay pattern. Skipping candidate.\n";
+            });
+            continue;
+        }
+
+        candidates.push_back(CandidateInfo{
+            .idx = i,
+            .shapeInfo = std::move(shapeInfo),
+            .arithOps = std::move(chainOps),
+            .relayMap = relayMap,
+        });
+    }
+
+    if (candidates.empty()) {
+        return failure();
+    }
+
+    // Pre-validate all candidate chains before mutating IR.
+    // This avoids creating partial new IR and then returning failure().
+    for (auto &c : candidates) {
+        auto baseTensorTy = dyn_cast<RankedTensorType>(c.shapeInfo.base.getType());
+        if (!baseTensorTy) {
+            return failure();
+        }
+
+        Value iterCur = regionIterArgs[c.idx];
+        for (Operation *oldOp : c.arithOps) {
+            Value nextVal, oldConst;
+            if (!isArithWithConst(oldOp, iterCur, nextVal, oldConst)) {
+                return failure();
+            }
+            if (!canBuildConstLikeOperand(oldConst, baseTensorTy)) {
+                return failure();
+            }
+            iterCur = nextVal;
+        }
+    }
+
+    if (!isSafeToRewriteLanesByResultUses(forOp, candidates)) {
+        return failure();
+    }
+
+    LLVM_DEBUG({
+        llvm::dbgs() << "Now Simplify For Op: \n";
+        forOp.dump();
+        llvm::dbgs() << "Found " << candidates.size() << " candidate iter args to simplify in for loop at "
+                     << forOp.getLoc() << "\n";
+        for (auto &c : candidates) {
+            c.dump();
+        }
+    });
+
+    SmallVector<CandidateInfo> localCandidates;
+    SmallVector<CandidateInfo> relayCandidates;
+    splitCandidatesByRelay(candidates, localCandidates, relayCandidates);
+
+    FailureOr<scf::ForOp> newForRes = rewriteForWithLocalCandidates(forOp, localCandidates, /*outerCaptureMap=*/ nullptr, rewriter);
+    if (failed(newForRes)) {
+        return failure();
+    }
+    auto newFor = *newForRes;
+
+    // case A: has relay -> continue relay pipeline
+    // If there are relay candidates, we need to rewrite the innerFor and outerFor together to maintain the relay relationship.
+    // The innerFor needs to be rewritten because the iterArg shape is changed after peeling,
+    // and the outerFor needs to be rewritten together to maintain the relay relationship between inner and outer iter args.
+    if (!relayCandidates.empty()) {
+        LLVM_DEBUG({
+            llvm::dbgs() << "Nested For-loop args need to be rewritten to maintain relay relationship\n";
+        });
+        scf::ForOp oldFor = forOp;
+        if (failed(rewriteForWithRelayCandidates(newFor, oldFor, relayCandidates, rewriter))) {
+            newFor->setAttr(kFailedAttr, rewriter.getUnitAttr());
+            return failure();
+        }
+        return success();
+    }
+
+    LLVM_DEBUG({
+        llvm::dbgs() << "Only local candidates found, committing local rewrite\n";
+    });
+    // case B: no relay -> commit local rewrite now
+    if (newFor->hasAttr(kIncompleteAttr)) {
+        newFor->removeAttr(kIncompleteAttr);
+    }
+    newFor->setAttr(kSimplifiedAttr, rewriter.getUnitAttr());
+    LLVM_DEBUG({
+        llvm::dbgs() << "Successfully rewrote ForOp to: \n";
+        newFor.dump();
+    });
+    rewriter.replaceOp(forOp, newFor.getResults());
+    return success();
+}
+
+bool SimplifyTensorIterArgsPattern::extractBinaryArithOperands(Operation *op, Value &lhs, Value &rhs) const
+{
+    if (auto v = dyn_cast<arith::AddIOp>(op)) { lhs = v.getLhs(); rhs = v.getRhs(); return true; }
+    if (auto v = dyn_cast<arith::SubIOp>(op)) { lhs = v.getLhs(); rhs = v.getRhs(); return true; }
+    if (auto v = dyn_cast<arith::MulIOp>(op)) { lhs = v.getLhs(); rhs = v.getRhs(); return true; }
+    if (auto v = dyn_cast<arith::DivSIOp>(op)) { lhs = v.getLhs(); rhs = v.getRhs(); return true; }
+
+    if (auto v = dyn_cast<arith::AddFOp>(op)) { lhs = v.getLhs(); rhs = v.getRhs(); return true; }
+    if (auto v = dyn_cast<arith::SubFOp>(op)) { lhs = v.getLhs(); rhs = v.getRhs(); return true; }
+    if (auto v = dyn_cast<arith::MulFOp>(op)) { lhs = v.getLhs(); rhs = v.getRhs(); return true; }
+    if (auto v = dyn_cast<arith::DivFOp>(op)) { lhs = v.getLhs(); rhs = v.getRhs(); return true; }
+
+    return false;
+}
+
+Value SimplifyTensorIterArgsPattern::createSameBinaryArithOp(
+    Operation *oldOp, Location loc, Value lhs, Value rhs, PatternRewriter &rewriter) const
+{
+    if (isa<arith::AddIOp>(oldOp)) return rewriter.create<arith::AddIOp>(loc, lhs, rhs).getResult();
+    if (isa<arith::SubIOp>(oldOp)) return rewriter.create<arith::SubIOp>(loc, lhs, rhs).getResult();
+    if (isa<arith::MulIOp>(oldOp)) return rewriter.create<arith::MulIOp>(loc, lhs, rhs).getResult();
+    if (isa<arith::DivSIOp>(oldOp)) return rewriter.create<arith::DivSIOp>(loc, lhs, rhs).getResult();
+
+    if (isa<arith::AddFOp>(oldOp)) return rewriter.create<arith::AddFOp>(loc, lhs, rhs).getResult();
+    if (isa<arith::SubFOp>(oldOp)) return rewriter.create<arith::SubFOp>(loc, lhs, rhs).getResult();
+    if (isa<arith::MulFOp>(oldOp)) return rewriter.create<arith::MulFOp>(loc, lhs, rhs).getResult();
+    if (isa<arith::DivFOp>(oldOp)) return rewriter.create<arith::DivFOp>(loc, lhs, rhs).getResult();
+
+    return Value();
+}
+
+FailureOr<scf::ForOp> SimplifyTensorIterArgsPattern::rewriteForWithLocalCandidates(
+    scf::ForOp forOp, ArrayRef<SimplifyTensorIterArgsPattern::CandidateInfo> candidates,
+    const IRMapping *outerCaptureMap, PatternRewriter &rewriter) const
+{
+    // This function is used to rewrite the forOp with local candidate.
+    // The caller should have already validated that the candidate's shape chain can be peeled and the arithmetic chain can be rebuilt with constants.
+    if (candidates.empty()) {
+        return forOp;
+    }
+
+    Block &oldBody = *forOp.getBody();
+    if (!oldBody.mightHaveTerminator()) {
+        return failure();
+    }
+    auto oldYield = dyn_cast<scf::YieldOp>(oldBody.getTerminator());
+    if (!oldYield) {
+        return failure();
+    }
+
+    auto regionIterArgs = forOp.getRegionIterArgs();
+    auto initArgs = forOp.getInitArgs();
+
+    DenseMap<unsigned, const CandidateInfo *> candMap;
+    for (auto &c : candidates) {
+        candMap[c.idx] = &c;
+    }
+
+    DenseMap<Operation *, unsigned> arithOpToCandIdx;
+    DenseSet<Operation *> candidateArithSet;
+    for (auto &c : candidates) {
+        for (Operation *op : c.arithOps) {
+            candidateArithSet.insert(op);
+            arithOpToCandIdx[op] = c.idx;
+        }
+    }
+
+    // Build new init args (candidate iter arg uses base)
+    SmallVector<Value> newInitArgs;
+    newInitArgs.reserve(initArgs.size());
+    for (unsigned i = 0; i < initArgs.size(); ++i) {
+        if (auto it = candMap.find(i); it != candMap.end()) {
+            newInitArgs.push_back(it->second->shapeInfo.base);
+            continue;
+        }
+        Value v = initArgs[i];
+        if (outerCaptureMap) {
+            if (Value mapped = outerCaptureMap->lookupOrNull(v)) {
+                v = mapped;
+            }
+        }
+        newInitArgs.push_back(v);
+    }
+
+    auto newFor = rewriter.create<scf::ForOp>(
+        forOp.getLoc(), forOp.getLowerBound(), forOp.getUpperBound(), forOp.getStep(), newInitArgs);
+    newFor->setAttr(kIncompleteAttr, rewriter.getUnitAttr());
+
+    auto failAfterCreate = [&]() -> LogicalResult {
+        newFor->setAttr(kFailedAttr, rewriter.getUnitAttr());
+        return failure();
+    };
+
+    IRMapping mapping;
+    mapping.map(forOp.getInductionVar(), newFor.getInductionVar());
+
+    // map region args
+    for (unsigned i = 0; i < regionIterArgs.size(); ++i) {
+        Value oldArg = regionIterArgs[i];
+        Value newArg = newFor.getRegionIterArgs()[i];
+        mapping.map(oldArg, newArg);
+    }
+
+    rewriter.setInsertionPointToStart(newFor.getBody());
+
+    // Materialize candidate iter-shape values and remap old iterArg semantic values.
+    for (auto &c : candidates) {
+        Value baseArg = newFor.getRegionIterArgs()[c.idx];
+        Value mat = cloneShapeChain(forOp.getLoc(), baseArg, c.shapeInfo.chain, rewriter);
+        if (!mat) {
+            return failAfterCreate();
+        }
+        mapping.map(regionIterArgs[c.idx], mat);
+    }
+
+    // Track current base-domain running value for each candidate lane.
+    DenseMap<unsigned, Value> baseCurByCand;
+    for (auto &c : candidates) {
+        baseCurByCand[c.idx] = newFor.getRegionIterArgs()[c.idx];
+    }
+
+    // Replay old body in-order:
+    // - candidate arith op: rebuild now and map old result -> new result
+    // - other op: clone with mapping
+    for (Operation &op : oldBody.without_terminator()) {
+        if (candidateArithSet.contains(&op)) {
+            auto itIdx = arithOpToCandIdx.find(&op);
+            if (itIdx == arithOpToCandIdx.end()) {
+                return failAfterCreate();
+            }
+            unsigned candIdx = itIdx->second;
+
+            Value baseCur = baseCurByCand[candIdx];
+            auto baseTensorTy = dyn_cast<RankedTensorType>(baseCur.getType());
+            if (!baseTensorTy) {
+                return failAfterCreate();
+            }
+
+            Value lhs;
+            Value rhs;
+            if (!extractBinaryArithOperands(&op, lhs, rhs)) {
+                return failAfterCreate();
+            }
+
+            bool lhsIsCst = matchPattern(lhs, m_Constant());
+            bool rhsIsCst = matchPattern(rhs, m_Constant());
+            if (lhsIsCst == rhsIsCst) {
+                return failAfterCreate();
+            }
+
+            Value oldConst = lhsIsCst ? lhs : rhs;
+            Value baseConst = getNewConstLikeOperand(oldConst, baseTensorTy, rewriter);
+            if (!baseConst) {
+                return failAfterCreate();
+            }
+
+            Value newRes = createSameBinaryArithOp(&op, op.getLoc(), baseCur, baseConst, rewriter);
+            if (!newRes) {
+                return failAfterCreate();
+            }
+
+            mapping.map(op.getResult(0), newRes);
+            baseCurByCand[candIdx] = newRes;
+            continue;
+        }
+
+        // Non-candidate op: clone as-is with mapping.
+        if (outerCaptureMap) {
+            for (Value operand : op.getOperands()) {
+                if (mapping.lookupOrNull(operand)) {
+                    continue; // already mapped (iv/iterArg/local rebuilt values)
+                }
+                if (Value mappedOuter = outerCaptureMap->lookupOrNull(operand)) {
+                    mapping.map(operand, mappedOuter);
+                }
+            }
+        }
+        rewriter.clone(op, mapping);
+    }
+
+    // Rebuild yield.
+    SmallVector<Value> newYieldOperands;
+    newYieldOperands.reserve(oldYield.getNumOperands());
+    for (unsigned i = 0; i < oldYield.getNumOperands(); ++i) {
+        if (candMap.count(i)) {
+            auto it = baseCurByCand.find(i);
+            if (it == baseCurByCand.end() || !it->second) {
+                return failAfterCreate();
+            }
+            newYieldOperands.push_back(it->second);
+        } else {
+            Value mapped = mapping.lookupOrDefault(oldYield.getOperand(i));
+            if (!mapped) {
+                return failAfterCreate();
+            }
+            newYieldOperands.push_back(mapped);
+        }
+    }
+    rewriter.create<scf::YieldOp>(oldYield.getLoc(), newYieldOperands);
+    if (newFor->hasAttr(kIncompleteAttr)) {
+        newFor->removeAttr(kIncompleteAttr);
+    }
+    newFor->setAttr(kSimplifiedAttr, rewriter.getUnitAttr());
+    return newFor;
+}
+
+bool SimplifyTensorIterArgsPattern::isSafeToRewriteLanesByResultUses(
+    scf::ForOp forOp,
+    ArrayRef<SimplifyTensorIterArgsPattern::CandidateInfo> candidates) const
+{
+    if (candidates.empty()) {
+        return false;
+    }
+
+    SmallVector<unsigned> laneIdxs;
+    laneIdxs.reserve(candidates.size());
+    for (const auto &c : candidates) {
+        laneIdxs.push_back(c.idx);
+    }
+
+    auto parentOuter = dyn_cast_or_null<scf::ForOp>(forOp->getParentOp());
+    if (!parentOuter || !parentOuter.getBody() || !parentOuter.getBody()->mightHaveTerminator()) {
+        // No parent loop or parent loop body is malformed, be conservative and return false to avoid unsafe rewrite.
+        return false;
+    }
+    auto parentOuterYield = parentOuter ? dyn_cast<scf::YieldOp>(parentOuter.getBody()->getTerminator()) : nullptr;
+
+    for (const auto &c : candidates) {
+        unsigned idx = c.idx;
+        if (idx >= forOp.getNumResults()) {
+            return false;
+        }
+
+        Value r = forOp.getResult(idx);
+        if (r.use_empty()) {
+            continue;
+        }
+
+        // relay case: the rewritten lane can only be used by the corresponding outer yield operand in the parent loop,
+        // and cannot have any other uses.
+        if (c.relayMap.has_value()) {
+            if (!parentOuter || !parentOuterYield) {
+                return false;
+            }
+            unsigned outerYieldIdx = c.relayMap->outerYieldIdx;
+            if (outerYieldIdx >= parentOuterYield.getNumOperands()) {
+                return false;
+            }
+
+            for (OpOperand &use : r.getUses()) {
+                auto y = dyn_cast<scf::YieldOp>(use.getOwner());
+                if (!y || y != parentOuterYield) {
+                    return false;
+                }
+                if (use.getOperandNumber() != outerYieldIdx) {
+                    return false;
+                }
+            }
+
+            // outer result cannot have any uses outside of the parent loop's yield operand
+            unsigned outerLane = c.relayMap->outerYieldIdx;
+            if (outerLane >= parentOuter.getNumResults()) {
+                return false;
+            }
+            if (!parentOuter.getResult(outerLane).use_empty()) {
+                return false;
+            }
+
+            continue;
+        }
+
+        // local case: the rewritten lane cannot have any uses outside of the forOp results
+        return false;
+    }
+
+    return true;
+}
+
+LogicalResult SimplifyTensorIterArgsPattern::precheckRelayCandidates(
+    scf::ForOp innerFor,
+    ArrayRef<SimplifyTensorIterArgsPattern::CandidateInfo> relayCandidates,
+    scf::ForOp &outerForOut) const
+{
+    if (relayCandidates.empty()) {
+        return failure();
+    }
+
+    auto outerFor = dyn_cast_or_null<scf::ForOp>(innerFor->getParentOp());
+    if (!outerFor) {
+        return failure();
+    }
+
+    DenseSet<unsigned> usedOuterInitIdx;
+    DenseSet<unsigned> usedOuterYieldIdx;
+    if (!outerFor.getBody() || !outerFor.getBody()->mightHaveTerminator()) {
+        return failure();
+    }
+    auto outerYield = dyn_cast<scf::YieldOp>(outerFor.getBody()->getTerminator());
+    if (!outerYield) {
+        return failure();
+    }
+
+    for (const auto &c : relayCandidates) {
+        if (!c.relayMap.has_value()) {
+            return failure();
+        }
+        const auto &m = *c.relayMap;
+
+        // must be the same level mapping for the current innerFor
+        if (m.innerIdx != c.idx) {
+            return failure();
+        }
+
+        // M1 strict lane
+        if (m.outerInitIdx != m.outerYieldIdx) {
+            return failure();
+        }
+
+        if (m.outerInitIdx >= outerFor.getInitArgs().size()) {
+            return failure();
+        }
+        if (m.outerYieldIdx >= outerYield.getNumOperands()) {
+            return failure();
+        }
+
+        // Conflict check: outer lane cannot be occupied multiple times
+        // different inner iter args mapped to the same outer iter arg or yield operand is not supported in this simple relay case,
+        // as it may require more complex data flow analysis to resolve the ultimate source init arg and final yield operand.
+        if (!usedOuterInitIdx.insert(m.outerInitIdx).second) {
+            return failure();
+        }
+        if (!usedOuterYieldIdx.insert(m.outerYieldIdx).second) {
+            return failure();
+        }
+    }
+
+    outerForOut = outerFor;
+    return success();
+}
+
+FailureOr<scf::ForOp> SimplifyTensorIterArgsPattern::rewriteInnerForWithRelayCandidates(
+    scf::ForOp innerFor,
+    ArrayRef<SimplifyTensorIterArgsPattern::CandidateInfo> relayCandidates,
+    const IRMapping *outerCaptureMap,
+    PatternRewriter &rewriter) const
+{
+    if (!innerFor || relayCandidates.empty()) {
+        return failure();
+    }
+
+    // Reuse local-like rebuild on the already-correct inner init args.
+    // IMPORTANT: For relay mode, caller must ensure innerFor init args on relay lanes
+    // are already wired to new outer iter args.
+    return rewriteForWithLocalCandidates(innerFor, relayCandidates, outerCaptureMap, rewriter);
+}
+
+FailureOr<scf::ForOp> SimplifyTensorIterArgsPattern::rewriteOuterForWithRelayCandidates(
+    scf::ForOp innerFor, scf::ForOp oldInnerFor, scf::ForOp outerFor,
+    ArrayRef<SimplifyTensorIterArgsPattern::CandidateInfo> relayCandidates,
+    PatternRewriter &rewriter) const
+{
+    if (!outerFor || !innerFor || relayCandidates.empty()) {
+        return failure();
+    }
+
+    constexpr llvm::StringLiteral kFailedAttr = "tts.simplify_tensor_iter_args.failed";
+
+    Block &oldOuterBody = *outerFor.getBody();
+    if (!oldOuterBody.mightHaveTerminator()) {
+        return failure();
+    }
+    auto oldOuterYield = dyn_cast<scf::YieldOp>(oldOuterBody.getTerminator());
+    if (!oldOuterYield) {
+        return failure();
+    }
+
+    // Build new outer init args: relay lanes switch to base.
+    SmallVector<Value> newOuterInitArgs(outerFor.getInitArgs().begin(), outerFor.getInitArgs().end());
+    for (const auto &c : relayCandidates) {
+        if (!c.relayMap.has_value()) {
+            return failure();
+        }
+        const auto &m = *c.relayMap;
+        if (m.outerInitIdx >= newOuterInitArgs.size()) {
+            return failure();
+        }
+        newOuterInitArgs[m.outerInitIdx] = c.shapeInfo.base;
+    }
+
+    rewriter.setInsertionPoint(outerFor);
+    auto newOuterFor = rewriter.create<scf::ForOp>(
+        outerFor.getLoc(),
+        outerFor.getLowerBound(),
+        outerFor.getUpperBound(),
+        outerFor.getStep(),
+        newOuterInitArgs);
+    newOuterFor->setAttr(kIncompleteAttr, rewriter.getUnitAttr());
+
+    auto failAfterCreate = [&]() -> FailureOr<scf::ForOp> {
+        newOuterFor->setAttr(kFailedAttr, rewriter.getUnitAttr());
+        return failure();
+    };
+
+    IRMapping outerMap;
+    outerMap.map(outerFor.getInductionVar(), newOuterFor.getInductionVar());
+    for (unsigned i = 0; i < outerFor.getRegionIterArgs().size(); ++i) {
+        outerMap.map(outerFor.getRegionIterArgs()[i], newOuterFor.getRegionIterArgs()[i]);
+    }
+
+    rewriter.setInsertionPointToStart(newOuterFor.getBody());
+
+    scf::ForOp rewrittenInnerInNewOuter;
+
+    // Clone outer body with special handling for old inner.
+    for (Operation &op : oldOuterBody.without_terminator()) {
+        // Fast path: not the anchor inner op we want to rebuild.
+        if (&op != innerFor.getOperation()) {
+            if (&op == oldInnerFor.getOperation()) {
+                // Drop old inner only when it is different from anchor inner.
+                continue;
+            }
+            rewriter.clone(op, outerMap);
+            continue;
+        }
+
+        // Build relay-wired inner init args:
+        // relay lane: inner init <- new outer iterArg[outerInitIdx]
+        // non-relay lane: mapped old inner init
+        SmallVector<Value> relayWiredInnerInitArgs;
+        relayWiredInnerInitArgs.reserve(innerFor.getInitArgs().size());
+
+        DenseMap<unsigned, unsigned> innerIdxToOuterInitIdx;
+        for (const auto &c : relayCandidates) {
+            const auto &m = *c.relayMap;
+            innerIdxToOuterInitIdx[m.innerIdx] = m.outerInitIdx;
+        }
+
+        for (unsigned i = 0; i < innerFor.getInitArgs().size(); ++i) {
+            auto it = innerIdxToOuterInitIdx.find(i);
+            if (it != innerIdxToOuterInitIdx.end()) {
+                unsigned outerInitIdx = it->second;
+                if (outerInitIdx >= newOuterFor.getRegionIterArgs().size()) {
+                    return failAfterCreate();
+                }
+                relayWiredInnerInitArgs.push_back(newOuterFor.getRegionIterArgs()[outerInitIdx]);
+            } else {
+                relayWiredInnerInitArgs.push_back(outerMap.lookupOrDefault(innerFor.getInitArgs()[i]));
+            }
+        }
+
+        // Build inner relay candidates whose base comes from new outer iter args.
+        SmallVector<CandidateInfo> relayCandidatesForInner;
+        relayCandidatesForInner.reserve(relayCandidates.size());
+        for (const auto &c : relayCandidates) {
+            CandidateInfo cc = c; // copy
+
+            if (!cc.relayMap.has_value()) {
+                return failAfterCreate();
+            }
+            unsigned outerInitIdx = cc.relayMap->outerInitIdx;
+            if (outerInitIdx >= newOuterFor.getRegionIterArgs().size()) {
+                return failAfterCreate();
+            }
+
+            // relay semantics: inner base is new outer iter arg on mapped lane
+            cc.shapeInfo.base = newOuterFor.getRegionIterArgs()[outerInitIdx];
+            relayCandidatesForInner.push_back(std::move(cc));
+        }
+
+        FailureOr<scf::ForOp> rewrittenInnerRes = failure();
+        {
+            PatternRewriter::InsertionGuard guard(rewriter);
+            rewrittenInnerRes =
+                rewriteInnerForWithRelayCandidates(innerFor, relayCandidatesForInner, &outerMap, rewriter);
+        }
+        if (failed(rewrittenInnerRes)) {
+            return failAfterCreate();
+        }
+        rewrittenInnerInNewOuter = *rewrittenInnerRes;
+
+        // Map old inner results to rewritten inner results for outer cloning/yield mapping.
+        if (innerFor.getNumResults() != rewrittenInnerInNewOuter.getNumResults()) {
+            return failAfterCreate();
+        }
+        for (unsigned r = 0; r < innerFor.getNumResults(); ++r) {
+            outerMap.map(innerFor.getResult(r), rewrittenInnerInNewOuter.getResult(r));
+        }
+    }
+
+    if (!rewrittenInnerInNewOuter) {
+        return failAfterCreate();
+    }
+
+    // Rebuild outer yield; relay lanes forced from rewritten inner results.
+    SmallVector<Value> newOuterYieldOps;
+    newOuterYieldOps.reserve(oldOuterYield.getNumOperands());
+    DenseMap<unsigned, unsigned> outerYieldToInnerIdx;
+    for (const auto &c : relayCandidates) {
+        const auto &m = *c.relayMap;
+        outerYieldToInnerIdx[m.outerYieldIdx] = m.innerIdx;
+    }
+
+    for (unsigned i = 0; i < oldOuterYield.getNumOperands(); ++i) {
+        auto it = outerYieldToInnerIdx.find(i);
+        if (it != outerYieldToInnerIdx.end()) {
+            unsigned innerIdx = it->second;
+            if (innerIdx >= rewrittenInnerInNewOuter.getNumResults()) {
+                return failAfterCreate();
+            }
+            newOuterYieldOps.push_back(rewrittenInnerInNewOuter.getResult(innerIdx));
+        } else {
+            newOuterYieldOps.push_back(outerMap.lookupOrDefault(oldOuterYield.getOperand(i)));
+        }
+    }
+
+    rewriter.setInsertionPointToEnd(newOuterFor.getBody());
+    rewriter.create<scf::YieldOp>(oldOuterYield.getLoc(), newOuterYieldOps);
+
+    if (newOuterFor->hasAttr(kIncompleteAttr)) {
+        newOuterFor->removeAttr(kIncompleteAttr);
+    }
+    newOuterFor->setAttr(kSimplifiedAttr, rewriter.getUnitAttr());
+    return newOuterFor;
+}
+
+LogicalResult SimplifyTensorIterArgsPattern::rewriteForWithRelayCandidates(
+    scf::ForOp newfor, scf::ForOp oldFor,
+    ArrayRef<CandidateInfo> relayCandidates,
+    PatternRewriter &rewriter) const
+{
+    // forOp is innerFor (already local-rewritten or to-be-relay-rewritten)
+    scf::ForOp innerFor = newfor;
+    scf::ForOp outerFor;
+    if (failed(precheckRelayCandidates(innerFor, relayCandidates, outerFor))) {
+        return failure();
+    }
+
+    FailureOr<scf::ForOp> newOuterRes =
+        rewriteOuterForWithRelayCandidates(innerFor, oldFor, outerFor, relayCandidates, rewriter);
+    if (failed(newOuterRes)) {
+        return failure();
+    }
+
+    scf::ForOp newOuterFor = *newOuterRes;
+    LLVM_DEBUG({
+        llvm::dbgs() << "Successfully rewrote outer ForOp to: \n";
+        newOuterFor.dump();
+    });
+
+    // Only replace outer; old inner is nested under old outer and will be removed together.
+    rewriter.replaceOp(outerFor, newOuterFor.getResults());
+    return success();
+}
+
+bool IfYieldAddHoistConverter::isSupportedTensorResultType(Type type) const
+{
+    auto tensorType = dyn_cast<RankedTensorType>(type);
+    return tensorType && !isa<triton::PointerType>(tensorType.getElementType());
+}
+
+bool IfYieldAddHoistConverter::isDefinedOutsideIf(Value value, scf::IfOp ifOp) const
+{
+    if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+        Block *owner = blockArg.getOwner();
+        return owner && owner->getParentOp() != ifOp.getOperation();
+    }
+
+    Operation *defOp = value.getDefiningOp();
+    return defOp && !ifOp->isAncestor(defOp);
+}
+
+bool IfYieldAddHoistConverter::extractAddendFromAddExpr(
+    Value maybeAddExpr, Value baseValue, Value &addendOut) const
+{
+    if (auto addi = maybeAddExpr.getDefiningOp<arith::AddIOp>()) {
+        if (addi.getLhs() == baseValue) {
+            addendOut = addi.getRhs();
+            return true;
+        }
+        if (addi.getRhs() == baseValue) {
+            addendOut = addi.getLhs();
+            return true;
+        }
+        return false;
+    }
+
+    if (auto addf = maybeAddExpr.getDefiningOp<arith::AddFOp>()) {
+        if (addf.getLhs() == baseValue) {
+            addendOut = addf.getRhs();
+            return true;
+        }
+        if (addf.getRhs() == baseValue) {
+            addendOut = addf.getLhs();
+            return true;
+        }
+        return false;
+    }
+
+    return false;
+}
+
+Value IfYieldAddHoistConverter::buildZeroTensorLikeType(
+    Type laneType, Location loc, PatternRewriter &rewriter) const
+{
+    auto tensorType = dyn_cast<RankedTensorType>(laneType);
+    if (!tensorType) return Value();
+
+    Type elemType = tensorType.getElementType();
+    Attribute zeroElemAttr;
+    if (isa<FloatType>(elemType)) {
+        zeroElemAttr = rewriter.getFloatAttr(elemType, 0.0);
+    } else if (elemType.isIntOrIndex()) {
+        zeroElemAttr = rewriter.getIntegerAttr(elemType, 0);
+    } else {
+        return Value();
+    }
+
+    auto zeroTensorAttr = DenseElementsAttr::get(tensorType, zeroElemAttr);
+    return rewriter.create<arith::ConstantOp>(loc, laneType, zeroTensorAttr);
+}
+
+bool IfYieldAddHoistConverter::tryRewriteSingleLane(
+    unsigned laneIdx,
+    Value baseBranchYield,
+    Value addExprBranchYield,
+    bool baseInThenBranch,
+    Type laneType,
+    scf::IfOp ifOp,
+    PatternRewriter &rewriter,
+    SmallVectorImpl<Value> &updatedThenYieldOperands,
+    SmallVectorImpl<Value> &updatedElseYieldOperands,
+    SmallVectorImpl<Value> &hoistedBasePerLane,
+    SmallVectorImpl<bool> &laneRewrittenFlags) const
+{
+    if (!isDefinedOutsideIf(baseBranchYield, ifOp)) return false;
+
+    Value addendValue;
+    if (!extractAddendFromAddExpr(addExprBranchYield, baseBranchYield, addendValue)) return false;
+    if (!addendValue || addendValue.getType() != laneType) return false;
+
+    Value zeroTensor = buildZeroTensorLikeType(laneType, ifOp.getLoc(), rewriter);
+    if (!zeroTensor) return false;
+
+    if (baseInThenBranch) {
+        updatedThenYieldOperands[laneIdx] = zeroTensor;
+        updatedElseYieldOperands[laneIdx] = addendValue;
+    } else {
+        updatedThenYieldOperands[laneIdx] = addendValue;
+        updatedElseYieldOperands[laneIdx] = zeroTensor;
+    }
+
+    hoistedBasePerLane[laneIdx] = baseBranchYield;
+    laneRewrittenFlags[laneIdx] = true;
+    return true;
+}
+
+// scf.if lane rewrite:
+// one branch yields A, the other yields A + B
+// => if yields 0 / B, then outside do A + if_result
+LogicalResult IfYieldAddHoistConverter::matchAndRewrite(scf::IfOp ifOp, PatternRewriter &rewriter) const
+{
+    if (ifOp.getNumResults() == 0) {
+        return failure();
+    }
+
+    // Robust guard for malformed / emptied regions.
+    Block *thenBlockPtr = ifOp.thenBlock();
+    Block *elseBlockPtr = ifOp.elseBlock();
+    if (!thenBlockPtr || !elseBlockPtr) {
+        return failure();
+    }
+    if (!thenBlockPtr->mightHaveTerminator() || !elseBlockPtr->mightHaveTerminator()) {
+        return failure();
+    }
+
+    auto thenYieldOp = dyn_cast<scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+    auto elseYieldOp = dyn_cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+    if (!thenYieldOp || !elseYieldOp) {
+        return failure();
+    }
+
+    Location loc = ifOp.getLoc();
+    bool anyLaneRewritten = false;
+
+    SmallVector<Value> updatedThenYieldOperands(
+        thenYieldOp.getOperands().begin(), thenYieldOp.getOperands().end());
+    SmallVector<Value> updatedElseYieldOperands(
+        elseYieldOp.getOperands().begin(), elseYieldOp.getOperands().end());
+
+    // for each lane, record whether we need post-if add with baseYield
+    SmallVector<Value> hoistedBasePerLane(ifOp.getNumResults(), Value());
+    SmallVector<bool> laneRewrittenFlags(ifOp.getNumResults(), false);
+
+    for (unsigned laneIdx = 0; laneIdx < ifOp.getNumResults(); ++laneIdx) {
+        Type laneType = ifOp.getResultTypes()[laneIdx];
+        if (!isSupportedTensorResultType(laneType)) {
+            continue;
+        }
+
+        Value thenYieldVal = thenYieldOp.getOperand(laneIdx);
+        Value elseYieldVal = elseYieldOp.getOperand(laneIdx);
+
+        // Assume that only one of the two branches can have the add pattern, and try both ways to find a rewrite opportunity.
+        bool rewritten =
+            tryRewriteSingleLane(
+                laneIdx, thenYieldVal, elseYieldVal, /* baseInThenBranch= */true,
+                laneType, ifOp, rewriter,
+                updatedThenYieldOperands, updatedElseYieldOperands,
+                hoistedBasePerLane, laneRewrittenFlags) ||
+            tryRewriteSingleLane(
+                laneIdx, elseYieldVal, thenYieldVal, /* baseInThenBranch= */false,
+                laneType, ifOp, rewriter,
+                updatedThenYieldOperands, updatedElseYieldOperands,
+                hoistedBasePerLane, laneRewrittenFlags);
+
+        anyLaneRewritten |= rewritten;
+    }
+
+    if (!anyLaneRewritten) {
+        return failure();
+    }
+
+    rewriter.setInsertionPoint(ifOp);
+    auto rewrittenIfOp = rewriter.create<scf::IfOp>(
+        loc, ifOp.getResultTypes(), ifOp.getCondition(), /* withElseRegion= */true);
+
+    {
+        IRMapping thenMapping;
+        Block *oldThenBlock = ifOp.thenBlock();
+        Block *newThenBlock = rewrittenIfOp.thenBlock();
+
+        rewriter.setInsertionPointToStart(newThenBlock);
+        for (Operation &op : oldThenBlock->without_terminator()) {
+            rewriter.clone(op, thenMapping);
+        }
+
+        SmallVector<Value> mappedThenYieldOperands;
+        mappedThenYieldOperands.reserve(updatedThenYieldOperands.size());
+        for (Value v : updatedThenYieldOperands) {
+            mappedThenYieldOperands.push_back(thenMapping.lookupOrDefault(v));
+        }
+
+        rewriter.create<scf::YieldOp>(loc, mappedThenYieldOperands);
+    }
+
+    {
+        IRMapping elseMapping;
+        Block *oldElseBlock = ifOp.elseBlock();
+        Block *newElseBlock = rewrittenIfOp.elseBlock();
+
+        rewriter.setInsertionPointToStart(newElseBlock);
+        for (Operation &op : oldElseBlock->without_terminator()) {
+            rewriter.clone(op, elseMapping);
+        }
+
+        SmallVector<Value> mappedElseYieldOperands;
+        mappedElseYieldOperands.reserve(updatedElseYieldOperands.size());
+        for (Value v : updatedElseYieldOperands) {
+            mappedElseYieldOperands.push_back(elseMapping.lookupOrDefault(v));
+        }
+
+        rewriter.create<scf::YieldOp>(loc, mappedElseYieldOperands);
+    }
+
+    rewriter.setInsertionPointAfter(rewrittenIfOp);
+    SmallVector<Value> finalResults;
+    finalResults.reserve(ifOp.getNumResults());
+
+    for (unsigned laneIdx = 0; laneIdx < ifOp.getNumResults(); ++laneIdx) {
+        if (!laneRewrittenFlags[laneIdx]) {
+            finalResults.push_back(rewrittenIfOp.getResult(laneIdx));
+            continue;
+        }
+
+        Value hoistedBase = hoistedBasePerLane[laneIdx];
+        Value laneDelta = rewrittenIfOp.getResult(laneIdx);
+
+        auto laneTensorType = dyn_cast<RankedTensorType>(laneDelta.getType());
+        if (!laneTensorType) return failure();
+
+        Type elemType = laneTensorType.getElementType();
+        Value reconstructedLane;
+        if (isa<FloatType>(elemType)) {
+            reconstructedLane = rewriter.create<arith::AddFOp>(loc, hoistedBase, laneDelta);
+        } else if (elemType.isIntOrIndex()) {
+            reconstructedLane = rewriter.create<arith::AddIOp>(loc, hoistedBase, laneDelta);
+        } else {
+            return failure();
+        }
+
+        finalResults.push_back(reconstructedLane);
+    }
+
+    rewriter.replaceOp(ifOp, finalResults);
+    return success();
+}
+
 }

@@ -56,7 +56,7 @@ def fn_npu_(output_ptr, x_ptr, XB: tl.constexpr, YB: tl.constexpr, ZB: tl.conste
                          )
 def test_case(param_list):
     dtype, shape, ncore, XB, YB, ZB = param_list
-    x0 = test_common.generate_tensor(shape, dtype)
+    x0 = test_common.generate_tensor(shape, dtype).npu()
     y_ref = torch.zeros_like(x0, dtype=eval('torch.' + dtype)).npu()
     print(f"y_ref = {y_ref[0, 0, 0:4]}")
     y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()

@@ -140,6 +140,8 @@ private:
   llvm::DenseMap<Value, PtrOffsetInfo> offsetMap;
   llvm::DenseMap<Value, PtrOffsetInfo> offsetMapForLoopArgs;
   llvm::SmallDenseMap<Value, bool> fromTensorArg;
+
+  LogicalResult processIfYieldAddHoistOperations(ModuleOp moduleOp);
 };
 
 } // namespace

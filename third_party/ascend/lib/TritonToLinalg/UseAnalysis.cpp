@@ -24,6 +24,7 @@
 #include "ascend/include/Utils/Utils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "bishengir/Dialect/HIVM/IR/HIVM.h"
 
 #include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
@@ -110,7 +111,7 @@ void triton::UseAnalysis::visitOperation(Operation *op,
       })
       // Consider triton::AtomicRMWOp as store operation
       .Case<triton::AtomicRMWOp>([&](auto atomicOp) {
-        propagateUse(operands[0], UseType::MetaUse);
+        propagateUse(operands[0], UseType::MixUse);
         propagateUse(operands[1], UseType::DataUse);
         auto value = atomicOp.getVal();
         auto mask = atomicOp.getMask();
@@ -147,6 +148,17 @@ void triton::UseAnalysis::visitOperation(Operation *op,
           propagateResults(getLatticeElement(init), {result});
         }
       })
+      .Case<triton::ReduceOp>([&](auto reduceOp) {
+        for (auto operand : operands) {
+          propagateUse(operand, UseType::DataUse);
+        }
+      })
+      .Case<hivm::FixpipeOp>([&](auto fixpipeOp) {
+        propagateUse(operands[0], UseType::DataUse);
+      })
+      .Case<hivm::CopyOp>([&](auto copyOp) {
+        propagateUse(operands[0], UseType::DataUse);
+      })
       .Default([&](Operation *op) {
         // this condition account for tt.addptr
         for (auto operand : operands) {
@@ -179,6 +191,35 @@ void setMixUseRecursively(Operation *rootOp, bool applyRoot = true) {
       LLVM_DEBUG({ op->setAttr("MixUse", UnitAttr::get(b.getContext())); });
       op->removeAttr("MetaUse");
     });
+}
+
+static void setMixUseFromValue(Value v)
+{
+  if (auto *defOp = v.getDefiningOp()) {
+    setMixUseRecursively(defOp);
+    return;
+  }
+
+  auto blockArg = dyn_cast<BlockArgument>(v);
+  if (!blockArg) {
+    return;
+  }
+
+  auto *parentOp = blockArg.getOwner()->getParentOp();
+  auto loopLikeOp = dyn_cast_or_null<LoopLikeOpInterface>(parentOp);
+  if (!loopLikeOp) {
+    return;
+  }
+
+  if (OpOperand *init = loopLikeOp.getTiedLoopInit(blockArg)) {
+    if (auto *initDefOp = init->get().getDefiningOp())
+      setMixUseRecursively(initDefOp);
+  }
+
+  if (OpOperand *yielded = loopLikeOp.getTiedLoopYieldedValue(blockArg)) {
+    if (auto *yieldDefOp = yielded->get().getDefiningOp())
+      setMixUseRecursively(yieldDefOp);
+  }
 }
 
 std::optional<bool> isIterArgMixUse(Value v, Value target, const DataFlowSolver &solver) {
@@ -278,6 +319,16 @@ LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
       LLVM_DEBUG({ op->setAttr("Undefined", UnitAttr::get(context)); });
       return;
     } else if (useType == UseType::MetaUse) {
+      auto memEffect = dyn_cast<MemoryEffectOpInterface>(op);
+      if (memEffect) {
+        if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(op)) {
+          LLVM_DEBUG({
+            os << "force protecting side-effect op:" << *op <<"\n";
+          });
+          op->setAttr("DataUse", UnitAttr::get(context));
+          return;
+        }
+      }
       if (!isa<mlir::scf::IfOp, mlir::scf::ForOp, mlir::scf::WhileOp, triton::ReduceOp>(op)) {
         assert(op->getNumResults() == 1 &&
                "Ops used for meta computation are expected to have one result");
@@ -447,8 +498,7 @@ LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
           },
           /*actionFn*/
           [](OpBuilder &b, Operation *op) {
-            LLVM_DEBUG({ op->setAttr("MixUse", UnitAttr::get(b.getContext())); });
-            op->removeAttr("MetaUse");
+            setMixUseRecursively(op);
           },
           stopOps);
       LLVM_DEBUG({
@@ -478,8 +528,7 @@ LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
       if (!ifOp.getElseRegion().empty())
         yields.append(llvm::to_vector(ifOp.elseYield().getOperands()));
       for (auto yield : yields) {
-        if (auto *defOp = yield.getDefiningOp())
-          setMixUseRecursively(defOp);
+        setMixUseFromValue(yield);
       }
     } else if(auto atomicRmwOp = dyn_cast<triton::AtomicRMWOp>(op)) {
       auto mask = atomicRmwOp.getMask();

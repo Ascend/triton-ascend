@@ -154,6 +154,7 @@ tl.load() 和 tl.store()
 | enable_hivm_auto_cv_balance                   | set_workspace_multibuffer只有在limit_auto_multi_buffer_only_for_local_buffer=false场景下生效 | 默认None；true , false。 autotune中可配置 |
 | tile_mix_vector_loop                          | CV算子的一个优化项,当前vector可以切几份                        | 默认None；如 [2,4,8]，autotune中可配置                       |
 | tile_mix_cube_loop                            | CV算子一个优化项,当前cube可以切几份      | 默认None；如 [2,4,8]，autotune中可配置                      |
+| auto_blockify_size                            | TRITON_ALL_BLOCKS_PARALLEL优化项，用于指定扩展的左起第一个维度的大小。 | 默认1；如 [2,4,8]，autotune中可配置                       |
 
 - 注：优化编译选项在ascend/backend/compiler.py代码中。
 - 注：CV算子表示该算子运算过程中既使用了AI Core又使用了Vector Core。

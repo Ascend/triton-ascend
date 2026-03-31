@@ -73,15 +73,22 @@ struct PtrOffsetInfo {
   */
 
 public:
+  enum class AxisInfo {
+    unstructured,
+    structured,
+    scalarlike,
+    scalar
+  };
+
   explicit PtrOffsetInfo();
   PtrOffsetInfo(const PtrOffsetInfo &other);
 
   explicit PtrOffsetInfo(const Value &ptr);
-  explicit PtrOffsetInfo(ArrayRef<bool> structured);
-  explicit PtrOffsetInfo(const Value &ptr, bool structured);
-  explicit PtrOffsetInfo(const Value &ptr, ArrayRef<bool> structured);
-  explicit PtrOffsetInfo(const Value &ptr, const Value &offset, bool structured);
-  explicit PtrOffsetInfo(const Value &ptr, const Value &offset, ArrayRef<bool> structured);
+  explicit PtrOffsetInfo(ArrayRef<AxisInfo> structured);
+  explicit PtrOffsetInfo(const Value &ptr, AxisInfo structured);
+  explicit PtrOffsetInfo(const Value &ptr, ArrayRef<AxisInfo> structured);
+  explicit PtrOffsetInfo(const Value &ptr, const Value &offset, AxisInfo structured);
+  explicit PtrOffsetInfo(const Value &ptr, const Value &offset, ArrayRef<AxisInfo> structured);
 
   PtrOffsetInfo &operator=(const PtrOffsetInfo &other);
 
@@ -90,8 +97,8 @@ public:
   SmallVector<Value> getOffsets() const;
   SmallVector<Value> &getOffsetsRef();
   bool isScalarLike() const;
-  SmallVector<bool> &getStructuredRef();
-  const SmallVector<bool> &getStructured() const;
+  SmallVector<AxisInfo> &getStructuredRef();
+  const SmallVector<AxisInfo> &getStructured() const;
   int getRank() const;
 
   void setPtr(const Value &ptr);
@@ -99,15 +106,17 @@ public:
   void setOffsets(ValueRange offsets);
   void setStructured();
   void setStructured(int rank);
+  void setStructured(int rank, AxisInfo info);
   void setUnstructured();
   void setUnstructured(int rank);
-  void setStructured(ArrayRef<bool> structured);
+  void setStructured(ArrayRef<AxisInfo> structured);
   void setStructured(const PtrOffsetInfo &other);
   void setScalarLike(bool scalarLike);
 
   bool isStructured(int dim) const;
   bool isStructured() const;
   bool isUnstructured() const;
+  bool isUnstructuredOrScalarlike() const;
 
   void setZeroOffset();
 private:
@@ -117,7 +126,7 @@ private:
 
   bool scalarLike = false;
 
-  SmallVector<bool> structured;
+  SmallVector<AxisInfo> structured;
 };
 
 PtrOffsetInfo combineInfo(const PtrOffsetInfo &lhs, const PtrOffsetInfo &rhs);
@@ -243,9 +252,17 @@ void parseExtractSlice(tensor::ExtractSliceOp op, const Location &loc,
                        RewriterBase &rewriter,
                        llvm::DenseMap<Value, PtrOffsetInfo> &offsetMap);
 
+void parseInsertSlice(tensor::InsertSliceOp op, const Location &loc,
+                      RewriterBase &rewriter,
+                      llvm::DenseMap<Value, PtrOffsetInfo> &offsetMap);
+
 void parseExtract(tensor::ExtractOp op, const Location &loc,
                   RewriterBase &rewriter,
                   llvm::DenseMap<Value, PtrOffsetInfo> &offsetMap);
+
+void parseInsert(tensor::InsertOp op, const Location &loc,
+                 RewriterBase &rewriter,
+                 llvm::DenseMap<Value, PtrOffsetInfo> &offsetMap);
 
 void parseIntToPtr(triton::IntToPtrOp op, const Location &loc,
                    RewriterBase &rewriter,

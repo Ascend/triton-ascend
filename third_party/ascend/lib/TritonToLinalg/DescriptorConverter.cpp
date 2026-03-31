@@ -55,20 +55,6 @@ bool hasATensorDescriptorType(mlir::TypeRange types)
     return llvm::any_of(types, [](mlir::Type t) { return llvm::isa<mlir::triton::TensorDescType>(t); });
 }
 
-/**
- * @brief Filter out operand segment sizes from the list of attributes since
- * this attribute is operation specific and shouldn't be set arbitrarily.
- */
-mlir::SmallVector<NamedAttribute> filterSegmentSizes(mlir::ArrayRef<NamedAttribute> attrs)
-{
-    mlir::SmallVector<NamedAttribute> ret;
-    llvm::copy_if(attrs, std::back_inserter(ret), [](const NamedAttribute &attr) {
-        auto attrName = attr.getName().getValue();
-        return attrName != "operandSegmentSizes";
-    });
-    return ret;
-}
-
 Descriptor unpackDescriptor(TensorDescType type, Value desc, ConversionPatternRewriter &rewriter)
 {
     auto makeDescOp = desc.getDefiningOp<triton::MakeTensorDescOp>();

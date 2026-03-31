@@ -129,9 +129,36 @@ tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
                                                 dims, strides);
 }
 
+tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
+                                                  const Location &loc,
+                                                  OpBuilder &builder,
+                                                  SmallVector<OpFoldResult> offsets,
+                                                  SmallVector<OpFoldResult> dims) const
+{
+  auto sourceRType = cast<RankedTensorType>(source.getType());
+  SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
+
+  auto dstRType = tensor::ExtractSliceOp::inferResultType(sourceRType, offsets,
+                                                          dims, strides);
+  return builder.create<tensor::ExtractSliceOp>(loc, dstRType, source, offsets,
+                                                dims, strides);
+}
+
+// insertSlice
 tensor::InsertSliceOp MaskState::getInsertSlice(Value source, Value dest,
                                                 const Location &loc,
                                                 OpBuilder &builder) const {
+  SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
+  return builder.create<tensor::InsertSliceOp>(loc, source, dest, offsets, dims,
+                                               strides);
+}
+
+tensor::InsertSliceOp MaskState::getInsertSlice(Value source, Value dest,
+                                                const Location &loc,
+                                                OpBuilder &builder,
+                                                SmallVector<OpFoldResult> offsets,
+                                                SmallVector<OpFoldResult> dims) const
+{
   SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
   return builder.create<tensor::InsertSliceOp>(loc, source, dest, offsets, dims,
                                                strides);
@@ -174,6 +201,14 @@ LogicalResult MaskState::addStateScalar(const MaskState &state,
   end = addOpFoldResult(state.end, scalar, loc, builder);
   dims = state.dims;
   offsets = state.offsets;
+
+  bool allDimsOne = llvm::all_of(state.dims, [](OpFoldResult dim) {
+    return getConstantIntValue(dim).value() == std::optional<int64_t>(1);
+  });
+  if (allDimsOne) {
+    this->scalar = this->start;
+  }
+
   return success();
 }
 

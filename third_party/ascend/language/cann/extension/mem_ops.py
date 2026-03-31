@@ -111,7 +111,7 @@ def index_put(
         end_offset: Tuple,
         start_offset: Tuple,
         dst_stride: Tuple,
-        builder: ir.builder
+        _builder: ir.builder
     ):
         assert index.dtype.is_int(), "index must be an integer tensor"
         if not ptr.dtype.element_ty.is_floating():
@@ -129,7 +129,7 @@ def index_put(
         if idx_rank != 1:
             # flatten index to 1D, shape (index.numel,)
             flat_numel = index.numel
-            index = reshape(index, (flat_numel,), True, builder)
+            index = _semantic.reshape(index, (flat_numel,), True)
             idx_rank = 1
 
         if value.shape[dim] != index.shape[0]:
@@ -139,16 +139,16 @@ def index_put(
             )
 
         require_i64 = index.dtype.is_int64()
-        end_offset = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in end_offset]
-        start_offset = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in start_offset]
-        dst_stride = [_convert_elem_to_ir_value(builder, elem, require_i64) for elem in dst_stride]
+        end_offset = [_convert_elem_to_ir_value(_builder, elem, require_i64) for elem in end_offset]
+        start_offset = [_convert_elem_to_ir_value(_builder, elem, require_i64) for elem in start_offset]
+        dst_stride = [_convert_elem_to_ir_value(_builder, elem, require_i64) for elem in dst_stride]
 
         if len(end_offset) != v_rank or len(start_offset) != v_rank or len(dst_stride) != v_rank:
             raise ValueError(f"len(end_offset)==len(start_offset)==len(dst_stride)==value.rank required, "
                             f"got {len(end_offset)}, {len(start_offset)}, {len(dst_stride)}, {v_rank}")
 
-        return tl.tensor(builder.create_index_put(ptr.handle, index.handle, value.handle, dim,
-                                                  index_boundary, end_offset, start_offset, dst_stride), tl.void)
+        return tl.tensor(_builder.create_index_put(ptr.handle, index.handle, value.handle, dim,
+                                                   index_boundary, end_offset, start_offset, dst_stride), tl.void)
 
 
     dim = _unwrap_if_constexpr(dim)
@@ -548,7 +548,7 @@ def index_select_simd(
         src_shape: List[Union[int, tl.tensor]],
         src_offset: List[Union[int, tl.tensor]],
         read_shape: List[Union[int, tl.tensor]],
-        builder: ir.builder
+        _builder: ir.builder
     ) -> tl.tensor:
         # Validate inputs
         ndim = len(src_shape)
@@ -589,7 +589,7 @@ def index_select_simd(
         ]
         element_ty = src.type.element_ty
         output_ty = tl.block_type(element_ty, return_shape)
-        out = builder.create_index_select_simd(src.handle, index.handle, dim, newsrc_shape, newsrc_offset, read_shape, return_shape)
+        out = _builder.create_index_select_simd(src.handle, index.handle, dim, newsrc_shape, newsrc_offset, read_shape, return_shape)
         return tl.tensor(out, output_ty)
 
     dim = _unwrap_if_constexpr(dim)

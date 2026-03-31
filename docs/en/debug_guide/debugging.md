@@ -77,7 +77,7 @@ Cache files are usually named using MD5 hash values to ensure that the same kern
 Periodic clearing: Cache files may occupy a large amount of disk space. You can periodically clear the cache files.
 
 ```bash
-rm -rf ~/.triton/cache/*
+rm -rf ~/.triton/cache
 ```
 Disabling cache during debugging: You are advised to temporarily disable the cache to ensure that the compilation is performed each time when debugging compilation issues.
 

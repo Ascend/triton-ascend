@@ -6,14 +6,17 @@
 
 Triton-Ascend requires Python 3.9 to 3.11.
 
-### Installing Ascend CANN
+### Installing CANN
 
 Compute Architecture for Neural Networks (CANN) is a heterogeneous compute architecture developed by Ascend for AI scenarios.
 It plays a pivotal bridging role: providing upward integration with multiple AI frameworks (including MindSpore, PyTorch, and TensorFlow), while offering downward support for AI processors and programming. This establishes it as a key platform for improving the computing efficiency of Ascend AI processors.
 
-You can visit the Ascend community website, and install and configure CANN according to the provided software installation guide.
+You can visit the Ascend community website, and install and configure CANN according to the provided [software installation guide](https://www.hiascend.com/cann/download). Developers can select the CANN version, product series, CPU architecture, operating system, and installation method to find the corresponding installation commands.
 
-During the installation, select one of the following CANN versions in *{version}*:
+During the installation, select one of the following CANN versions in *{version}*. It is advisable to download and install version 8.5.0.
+
+- Note: If the installation path is not specified, software will be installed in the default path. The default installation paths are as follows: For the **root** user, the path is `/usr/local/Ascend`. For non-root users, the path is `${HOME}/Ascend`, where `${HOME}` indicates the current user's directory.
+The preceding environment variable configurations take effect only in the current window. You can add the `source ${HOME}/Ascend/ascend-toolkit/set_env.sh` command to the environment variable configuration file (such as the .bashrc file) as required.
 
 **CANN version:**
 
@@ -22,57 +25,14 @@ During the installation, select one of the following CANN versions in *{version}
 | Triton-Ascend Version| CANN Commercial Version| CANN Release Date|
 |-------------------|----------------------|--------------------|
 | 3.2.0             | CANN 8.5.0           | 2026-01-16        |
-| 3.2.0rc4          | CANN 8.3.RC2         | 2025-11-20        |
-|                   | CANN 8.3.RC1         | 2025-10-30        |
+| 3.2.0rc4          | CANN 8.3.RC2<br>CANN 8.3.RC1         | 2025/11/20<br>2025/10/30         |
 
 - Community edition
 
 | Triton-Ascend Version| CANN Community Version| CANN Release Date|
 |-------------------|----------------------|--------------------|
 | 3.2.0             | CANN 8.5.0           | 2026-01-16        |
-| 3.2.0rc4          | CANN 8.3.RC2         | 2025-11-20        |
-|                   | CANN 8.5.0.alpha001  | 2025-11-12        |
-|                   | CANN 8.3.RC1         | 2025-10-30        |
-
-Specify the actual CPU architecture in *{arch}* (**aarch64** or **x86_64**) and the software package corresponding to the software version (*{version}*).
-
-It is advisable to download and install version 8.5.0.
-
-| Software Type   | Software Package Description      | Software Package Name                      |
-|---------|------------------|----------------------------------|
-| Toolkit | CANN development kit  | **Ascend-cann-toolkit_***{version}***_linux-***{arch}***.run** |
-| Ops     | CANN binary operator package| **Ascend-cann-A3-ops_***{version}***_linux-***{arch}***.run**|
-
-Note 1: The naming of A2 series Ops packages is slightly different from that of the A3 series. Here is a reference naming format: **Ascend-cann-910b-ops_***{version}***_linux-***{arch}***.run**.
-
-Note 2: The naming of Ops packages corresponding to versions earlier than 8.5.0 is slightly different. Here is a reference naming format: **Atlas-A3-cann-kernels_***{version}***_linux-***{arch}***.run**.
-
-You can find the relevant software packages at the [community](https://www.hiascend.com/developer/download/community/result?module=cann).
-
-The [community installation guide](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/softwareinst/instg/instg_quick.html?Mode=PmIns&InstallType=local&OS=Ubuntu&Software=cannToolKit) provides the complete installation process and dependency configuration suggestions, and is therefore applicable to users opting for a comprehensive deployment of the CANN environment.
-
-#### CANN Installation Script
-
-The following uses A3 CANN 8.5.0 as an example and provides a script-based installation process for your reference.
-```bash
-
-# Modify the execute permission on the .run packages.
-chmod +x Ascend-cann-toolkit_8.5.0_linux-aarch64.run
-chmod +x Ascend-cann-A3-ops_8.5.0_linux-aarch64.run
-
-# Common installation (default installation path: /usr/local/Ascend)
-sudo ./Ascend-cann-toolkit_8.5.0_linux-aarch64.run --install
-# Default installation path (same as the toolkit package: /usr/local/Ascend)
-sudo ./Ascend-cann-A3-ops_8.5.0_linux-aarch64.run --install
-# Put the environment variable defining the default path into effect.
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
-
-# Install the Python dependencies of CANN.
-pip install attrs==24.2.0 numpy==1.26.4 scipy==1.13.1 decorator==5.1.1 psutil==6.0.0 pyyaml
-```
-
-- Note: If the installation path is not specified, software will be installed in the default path. The default installation paths are as follows: For the **root** user, the path is `/usr/local/Ascend`. For non-root users, the path is `${HOME}/Ascend`, where `${HOME}` indicates the current user's directory.
-The preceding environment variable configurations take effect only in the current window. You can add the `source ${HOME}/Ascend/ascend-toolkit/set_env.sh` command to the environment variable configuration file (such as the .bashrc file) as required.
+| 3.2.0rc4          | CANN 8.3.RC2<br>CANN 8.5.0.alpha001<br>CANN 8.3.RC1         | 2025/11/20<br>2025/11/12<br>2025/10/30         |
 
 
 ### Installing torch_npu
@@ -97,9 +57,11 @@ You can install the latest stable version of Triton-Ascend using pip.
 pip install triton-ascend
 ```
 
-- Note: If the community edition of Triton has been installed, uninstall it first. Then install Triton-Ascend. Doing so helps prevent conflicts.
+- Note: Community Triton and Triton-Ascend cannot coexist. When you install other software that depends on Triton, community Triton will be automatically installed, which will overwrite the installed Triton-Ascend directory.
+In this case, you need to uninstall community Triton and Triton-Ascend first, and then install Triton-Ascend.
 ```shell
 pip uninstall triton
+pip uninstall triton-ascend
 pip install triton-ascend
 ```
 
@@ -119,8 +81,13 @@ If you need to develop or customize Triton-Ascend, you should install it by comp
 
 ### System Requirements
 
-- GCC >= 9.4.0
-- GLIBC >= 2.27
+| Pytorch Version | Recommended GCC version | Recommended GLIBC version |
+|-------------------|----------------------|--------------------|
+| PyTorch2.6.0      | (aarch64)11.2.1<br>(x86) 9.3.1 | (aarch64)>=2.28<br>(x86)>=2.17 |
+| PyTorch2.7.1      | 11.2.1               | 2.28               |
+| PyTorch2.8.0      | 13.3.1               | 2.28               |
+| PyTorch2.9.1      | 13.3.1               | 2.28               |
+| PyTorch2.10       | 13.3.1               | 2.28               |
 
 ### Dependencies
 
@@ -248,10 +215,10 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend/pytho
    python3 setup.py install
    ```
 
-- Note 3: GCC 9.4.0 or later is recommended. If the GCC version is earlier than 9.4.0, "ld.lld: error: unable to find library -lstdc++fs" may be reported, indicating that the linker cannot find the stdc++fs library.
+Note 3: For the recommended GCC version, please refer to the earlier section "System Requirements". If the GCC version is earlier than 9.4.0, "ld.lld: error: unable to find library -lstdc++fs" may be reported, indicating that the linker cannot find the stdc++fs library.
 This library supports the file system features of versions earlier than GCC 9. In this case, you need to manually uncomment the related code snippet in the CMake file.
 
-- triton-ascend/CMakeLists.txt
+triton-ascend/CMakeLists.txt
 
    ```bash
    if (NOT WIN32 AND NOT APPLE)
@@ -265,14 +232,16 @@ This library supports the file system features of versions earlier than GCC 9. I
 
    Install the runtime dependencies. Refer to the following command:
    ```bash
+   # Pull the triton-ascend source code repository and examples (optional; required to pull the source code repository when running examples without source code compilation and installation).
+   git clone https://gitcode.com/Ascend/triton-ascend.git
    cd triton-ascend && pip install -r requirements_dev.txt
    ```
-   Run the [01-vector-add.py](../../ascend/examples/tutorials/01-vector-add.py) instance.
+   Run the [01-vector-add.py](../../third_party/ascend/tutorials/01-vector-add.py) instance.
    ```bash
    # Set the CANN environment variables (for example, as the root user and with the default installation path /usr/local/Ascend).
    source /usr/local/Ascend/ascend-toolkit/set_env.sh
    # Run the tutorials example.
-   python3 ./triton-ascend/ascend/examples/tutorials/01-vector-add.py
+   python3 ./third_party/ascend/tutorials/01-vector-add.py
    ```
     If an output similar to the following is displayed, the environment is correctly configured:
     ```

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import subprocess
+import os
 import triton
 import triton.language as tl
 import triton.language.extra.cann.extension as al
@@ -38,6 +39,9 @@ class my_custom_op:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMT
+    symbol = "my_custom_func"
+    # fake path, this test only check Triton successfully lowered to MLIR
+    bitcode = os.path.abspath(__file__)
 
     def __init__(self, x, ptr1, ptr2, offset: tl.int64, other, out=None):
         pass

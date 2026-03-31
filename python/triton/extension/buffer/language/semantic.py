@@ -1,4 +1,3 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 # Copyright 2018-2020 Philippe Tillet
 # Copyright 2020-2022 OpenAI
 #
@@ -41,6 +40,8 @@ def alloc(
     builder: ir.builder
 ) -> bl.buffer:
     shape = tl._unwrap_shape(shape)
+    if etype == tl.int1:
+        raise TypeError("Unsupported alloc int1 type")
     if not isinstance(shape, (tl.tuple, list)):
         raise TypeError("shape must be list/tuple")
     etype = tl._unwrap_if_constexpr(etype)
@@ -82,7 +83,7 @@ def to_buffer(
     buffer_ty = bl.buffer_type(element_ty=tensor.dtype, shape=tensor.shape, space=address_space)
     return bl.buffer(handle, buffer_ty)
 
-
+        
 def to_tensor(
     memref: bl.buffer,
     writable: bool,

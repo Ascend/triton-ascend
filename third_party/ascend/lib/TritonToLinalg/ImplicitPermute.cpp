@@ -377,6 +377,7 @@ Value MemOpTransformer::createNewTensorPtr(Value oldPtr, const Location loc,
 {
     TritonToStructured::PtrAnalysis ptrAnalysis;
     auto makeTPtrOp = oldPtr.getDefiningOp<triton::MakeTensorPtrOp>();
+    auto oldOrderAttr = makeTPtrOp->getAttr("order");
     if (!makeTPtrOp) {
         InFlightDiagnostic diag =
         emitWarning(loc) << "PtrAnalysis: load pointer must originate from 'make_tensor_ptr' operation";
@@ -394,8 +395,9 @@ Value MemOpTransformer::createNewTensorPtr(Value oldPtr, const Location loc,
         ptrState.dump();
         llvm::dbgs() << "----------------------------------------------\n";
     });
-
-    return ptrState.createMakeTensorPtrOp(rewriter, loc);
+    auto new_op = ptrState.createMakeTensorPtrOp(rewriter, loc);
+    new_op->setAttr("original_order", oldOrderAttr);
+    return new_op;
 }
 
 Value MemOpTransformer::createNewAdvancePtr(Value oldPtr, const Location loc,

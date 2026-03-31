@@ -24,6 +24,7 @@
 #define TRITON_ADAPTER_TRITON_TO_LINALG_CONVERSION_PASSES_H
 
 #include "TritonToLinalgPass.h"
+#include "MarkTensorKindPass.h"
 
 namespace mlir::triton {
 

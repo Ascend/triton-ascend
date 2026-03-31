@@ -1,5 +1,6 @@
 #pragma once
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h"
+#include "ascend/include/AutoBlockify/Passes.h"
 #include "ascend/include/TritonToAnnotation/Passes.h"
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToHIVM/Passes.h"
@@ -94,15 +95,16 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerConvertTritonGPUToLLVMPass();
   mlir::triton::registerConvertNVGPUToLLVMPass();
   mlir::triton::registerAllocateSharedMemoryNvPass();
+  mlir::triton::registerTritonToLinalgPasses();
 
   mlir::triton::registerDiscreteMaskAccessConversion();
-  mlir::triton::registerTritonToAnnotationPass();
-  mlir::triton::registerTritonToHFusionPass();
-  mlir::triton::registerTritonToHIVMPass();
-  mlir::triton::registerTritonToLinalgPass();
-  mlir::triton::registerTritonToLLVMPass();
-  mlir::triton::registerTritonToStructuredPass();
-  mlir::triton::registerTritonToUnstructurePass();
+  mlir::triton::registerTritonToStructuredPasses();
+  mlir::triton::registerTritonToAnnotationPasses();
+  mlir::triton::registerTritonToUnstructurePasses();
+  mlir::triton::registerTritonToHIVMPasses();
+  mlir::triton::registerTritonToHFusionPasses();
+  mlir::triton::registerTritonToLLVMPasses();
+  mlir::triton::registerAutoBlockifyPasses();
   mlir::triton::registerBubbleUpOperationPass();
 
   mlir::registerLLVMDIScope();

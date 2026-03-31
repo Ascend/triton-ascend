@@ -280,8 +280,8 @@ std::optional<Operation *> getFullShapeOp(Value val,
         return std::nullopt;
       }
 
-      emitError(val.getLoc())
-          << "getFullShapeOp() only support ReinterpretCastOp "
+      emitWarning(val.getLoc())
+          << "getFullShapeOp() only support ReinterpretCastOp, UnrealizedConversionCastOp "
              "and scf.for's block argument, but got : "
           << val << "\n";
       return std::nullopt;
@@ -309,8 +309,8 @@ std::optional<Operation *> getFullShapeOp(Value val,
     continue;
     }
 
-    emitError(val.getLoc())
-        << "getFullShapeOp() only support ReinterpretCastOp "
+    emitWarning(val.getLoc())
+        << "getFullShapeOp() only support ReinterpretCastOp, UnrealizedConversionCastOp "
            "and scf.for's block argument, but got : "
         << val << "\n";
     return std::nullopt;
@@ -326,12 +326,16 @@ getBoundarySizes(llvm::ArrayRef<int32_t> boundaryCheck, Value ptr,
 
   auto shapedType = dyn_cast_if_present<ShapedType>(ptr.getType());
   if (!shapedType) {
-    llvm::dbgs() << "ptr is not a ShapedType.\n";
+    LLVM_DEBUG(
+      llvm::dbgs() << "ptr is not a ShapedType.\n";
+    );
     return {};
   }
 
   if (!shapedType.hasStaticShape()) {
-    llvm::dbgs() << "shapedType does not have a static shape\n";
+    LLVM_DEBUG(
+      llvm::dbgs() << "shapedType does not have a static shape\n";
+    );
     return {};
   }
 
@@ -684,6 +688,13 @@ ModuleOp getModuleOpFromOperation(Operation *op) {
   return cast<ModuleOp>(parent); // 如果没找到会抛出异常
 }
 
+bool isTensorPtrType(Type type) {
+  auto ptrType = dyn_cast<triton::PointerType>(type);
+  if (!ptrType)
+    return false;
+  return isa<RankedTensorType>(ptrType.getPointeeType());
+}
+
 } // namespace triton
 
 
@@ -908,8 +919,8 @@ OpFoldResult maxOpFoldResult(const OpFoldResult &lhs, const OpFoldResult &rhs,
   if (rhsInt) {
     rhsValue = createConstIndexValueOp(loc, b, rhsInt.value());
   } else {
-    lhsValue = convertToIndexIfNeeded(lhsValue, loc, b);
-    assert(isa<IndexType>(lhsValue.getType()));
+    rhsValue = convertToIndexIfNeeded(rhsValue, loc, b);
+    assert(isa<IndexType>(rhsValue.getType()));
   }
 
   return b.create<arith::MaxSIOp>(loc, lhsValue, rhsValue).getResult();
@@ -1278,5 +1289,21 @@ Value convertToIndexIfNeeded(Value input, const Location &loc, OpBuilder &b) {
       }
     }
     return input;
+}
+
+RankedTensorType getExtractSlicedType(ArrayRef<OpFoldResult> shape,
+                                      const llvm::SmallBitVector &droppedDims,
+                                      Type elemType) {
+  SmallVector<int64_t> targetShape;
+  for (auto [idx, dimOfr] : llvm::enumerate(shape)) {
+    if (!droppedDims[idx]) {
+      if (auto dim = getConstantIntValue(dimOfr)) {
+        targetShape.push_back(dim.value());
+      } else {
+        targetShape.push_back(ShapedType::kDynamic);
+      }
+    }
+  }
+  return RankedTensorType::get(targetShape, elemType);
 }
 } // namespace mlir

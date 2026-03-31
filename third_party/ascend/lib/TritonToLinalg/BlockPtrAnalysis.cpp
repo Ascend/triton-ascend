@@ -471,7 +471,10 @@ void BlockDataParser::parse(
                  operand.getDefiningOp<tensor::ExtractSliceOp>()) {
     parseExtractSlice(extractSliceOp, data, loc, rewriter, known);
   } else if (auto forOp = operand.getDefiningOp<scf::ForOp>()) {
-    parseIndirectLoad<scf::ForOp>(forOp, data, loc, rewriter, known);
+    auto opResult = dyn_cast<OpResult>(operand);
+    assert(opResult && "expected OpResult for scf.for result");
+    unsigned resultIdx = opResult.getResultNumber();
+    parseIndirectLoad<scf::ForOp>(forOp, data, loc, rewriter, known, resultIdx);
   } else if (auto tensorCastOp = operand.getDefiningOp<tensor::CastOp>()) {
     // Used for identity operation.
     parse(tensorCastOp.getSource(), data, loc, rewriter, known);
@@ -479,6 +482,13 @@ void BlockDataParser::parse(
     parseFill(fillOp, data, loc, rewriter, known);
   } else if (auto selectOp = operand.getDefiningOp<arith::SelectOp>()){
     parseSelect(selectOp, data, loc, rewriter, known);
+  } else if (auto genericOp = operand.getDefiningOp<linalg::GenericOp>()) {
+    if (genericOp->hasAttr("tt.from_make_range")) {
+      parseLinalgGenericFromMakeRange(genericOp, data, loc, rewriter, known);
+    } else {
+      operand.dump();
+      llvm_unreachable("encountered AddPtrOp produced by unsupported operation");
+    }
   } else {
     operand.dump();
     llvm_unreachable("encountered AddPtrOp produced by unsupported operation");
@@ -551,6 +561,27 @@ void BlockDataParser::parseMakeRange(
   data.getOffsetsRef().push_back(rewriter.getIndexAttr(start));
   data.getSizesRef().push_back(rewriter.getIndexAttr(shape[0]));
   data.getStridesRef().push_back(rewriter.getIndexAttr(stride));
+}
+
+void BlockDataParser::parseLinalgGenericFromMakeRange(
+    linalg::GenericOp op, BlockData &data, const Location &loc,
+    ConversionPatternRewriter &rewriter,
+    const llvm::SmallDenseMap<Value, BlockData> &known) {
+  assert(data.isEmpty());
+  assert(op->hasAttr("tt.from_make_range") &&
+         "expected tt.from_make_range attribute");
+
+  auto offsetAttr = op->getAttr("tt.make_range_offset");
+  auto sizeAttr = op->getAttr("tt.make_range_size");
+  assert(offsetAttr && sizeAttr &&
+         "tt.make_range_offset and tt.make_range_size required");
+
+  int64_t offset = cast<IntegerAttr>(offsetAttr).getInt();
+  int64_t size = cast<IntegerAttr>(sizeAttr).getInt();
+
+  data.getOffsetsRef().push_back(rewriter.getIndexAttr(offset));
+  data.getSizesRef().push_back(rewriter.getIndexAttr(size));
+  data.getStridesRef().push_back(rewriter.getIndexAttr(1));
 }
 
 void BlockDataParser::parseExpandDims(
@@ -895,9 +926,12 @@ void BlockDataParser::parseReduce(
 template <typename OpTy>
 void parseIndirectLoad(OpTy op, BlockData &data, const Location &loc,
                        ConversionPatternRewriter &rewriter,
-                       const llvm::SmallDenseMap<Value, BlockData> &known) {
-  // FIXME: assume single result of operation
-  auto opRes = op->getResult(0);
+                       const llvm::SmallDenseMap<Value, BlockData> &known,
+                       unsigned resultIdx)
+{
+  assert(resultIdx < op->getNumResults() &&
+         "resultIdx out of range for parseIndirectLoad");
+  auto opRes = op->getResult(resultIdx);
   auto opResTy = opRes.getType();
   std::vector<int64_t> resShape;
   if (auto shapedResTy = dyn_cast<ShapedType>(opResTy)) {
@@ -953,33 +987,85 @@ void BlockDataParser::parseFill(linalg::FillOp op, BlockData &data,
 void BlockDataParser::parseSelect(
     arith::SelectOp op, BlockData &data, const Location &loc,
     ConversionPatternRewriter &rewriter,
-    const llvm::SmallDenseMap<Value, BlockData> &known) {
+    const llvm::SmallDenseMap<Value, BlockData> &known)
+{
   assert(data.isEmpty());
+
   auto res = op.getResult();
-  auto resType = dyn_cast<ShapedType>(op.getResult().getType());
-
-  assert(llvm::all_of(resType.getShape(), [](int64_t dim) { return dim == 1; }));
+  auto resType = dyn_cast<ShapedType>(res.getType());
+  assert(resType && "arith.select result should be a ShapedType");
   assert(isa<IntegerType>(resType.getElementType()) ||
-        isa<IndexType>(resType.getElementType()));
+         isa<IndexType>(resType.getElementType()));
 
+  OpFoldResult indexOfr;
   size_t loopLimit = resType.getShape().size();
-  SmallVector<Value> indices;
 
-  for (auto i = 0; i < loopLimit; i++) {
-    indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
+  Value cond = op.getCondition();
+  bool condIsScalarI1 =
+      isa<IntegerType>(cond.getType()) &&
+      cast<IntegerType>(cond.getType()).getWidth() == 1 &&
+      !isa<ShapedType>(cond.getType());
+
+  auto trueConst = dyn_cast<arith::ConstantOp>(op.getTrueValue().getDefiningOp());
+  auto falseConst = dyn_cast<arith::ConstantOp>(op.getFalseValue().getDefiningOp());
+  auto trueDense =
+      trueConst ? dyn_cast<DenseElementsAttr>(trueConst.getValue()) : DenseElementsAttr();
+  auto falseDense =
+      falseConst ? dyn_cast<DenseElementsAttr>(falseConst.getValue()) : DenseElementsAttr();
+
+  bool denseConstCase = condIsScalarI1 && trueDense && falseDense;
+
+  if (denseConstCase) {
+    // if cond is scalar i1 and both true and false value are splat dense const,
+    // we can directly use the value of the dense const to create scalar select op.
+    Attribute trueFirst = *trueDense.value_begin<Attribute>();
+    Attribute falseFirst = *falseDense.value_begin<Attribute>();
+
+    Value trueScalar = nullptr;
+    Value falseScalar = nullptr;
+    if (auto tInt = dyn_cast<IntegerAttr>(trueFirst)) {
+        trueScalar = rewriter.create<arith::ConstantOp>(loc, tInt).getResult();
+    } else {
+        llvm_unreachable("unsupported true dense element attr in parseSelect");
+    }
+
+    if (auto fInt = dyn_cast<IntegerAttr>(falseFirst)) {
+        falseScalar = rewriter.create<arith::ConstantOp>(loc, fInt).getResult();
+    } else {
+        llvm_unreachable("unsupported false dense element attr in parseSelect");
+    }
+
+    assert(trueScalar.getType() == falseScalar.getType() &&
+           "scalarized true/false type mismatch");
+
+    auto scalarSelect = rewriter.create<arith::SelectOp>(
+        loc, trueScalar.getType(), cond, trueScalar, falseScalar);
+
+    indexOfr = getOpFoldResultOfLayoutInfo(scalarSelect.getResult(), rewriter);
+  } else {
+    assert(llvm::all_of(resType.getShape(), [](int64_t dim) { return dim == 1; }) &&
+           "parseSelect currently supports all-ones shape unless cond=i1 with dense constants");
+
+    SmallVector<Value> indices;
+    indices.reserve(loopLimit);
+    for (size_t i = 0; i < loopLimit; ++i) {
+      indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
+    }
+
+    auto extractOp = rewriter.create<tensor::ExtractOp>(loc, res, indices);
+    indexOfr = extractOp.getResult();
+    if (isa<IntegerType>(extractOp.getType())) {
+      indexOfr = getOpFoldResultOfLayoutInfo(extractOp.getResult(), rewriter);
+    }
   }
-  auto extractOp = rewriter.create<tensor::ExtractOp>(loc, res, indices);
-  OpFoldResult IndexOfr = extractOp.getResult();
-  if (isa<IntegerType>(extractOp.getType())) {
-    IndexOfr = getOpFoldResultOfLayoutInfo(extractOp.getResult(), rewriter);
-  }
+
   // Set scalar for mul state
-  data.setScalar(IndexOfr);
+  data.setScalar(indexOfr);
 
-  for (auto i = 0; i < loopLimit; i++) {
-    // Add original dense val to first dim offset for add state
+  for (size_t i = 0; i < loopLimit; ++i) {
+    // Add scalar to first dim offset for add state
     if (i == 0) {
-      data.getOffsetsRef().push_back(IndexOfr);
+      data.getOffsetsRef().push_back(indexOfr);
     } else {
       data.getOffsetsRef().push_back(rewriter.getIndexAttr(0));
     }
@@ -1217,8 +1303,6 @@ void BlockDataParser::rewriteMakeTensorPtrOp(
     assert(data.getRank() == 1);
   }
 
-  known[op.getResult()] = data;
-
   // special handling for davinci
   // create redundant reinterpret_cast op for record shape info
   auto redundantOp = createRedundantOp(op, rewriter, data);
@@ -1226,6 +1310,7 @@ void BlockDataParser::rewriteMakeTensorPtrOp(
 
   // create reinterpret_cast op for the target block
   data.setSource(redundantOp.getResult());
+  known[op.getResult()] = data;
   auto castOp = data.createCastOp(resultShape, loc, rewriter);
   rewriter.replaceOp(op, castOp.getResult());
 
@@ -1512,31 +1597,48 @@ BlockDataParser::rewriteTerminator(
 
 // This function is util function for rewriteLoopOp that
 // check if given regionIterArg is used with given condition
-bool isUsedWithCondition(Value v, std::function<bool(OpOperand *)> cond, int depth = 0) {
-  for (auto &use: v.getUses()) {
+bool isUsedWithCondition(
+    Value v,
+    std::function<bool(OpOperand *)> cond,
+    int depth = 0,
+    llvm::SmallSetVector<Value, 8> *visited = nullptr) {
+  llvm::SmallSetVector<Value, 8> localVisited;
+  if (!visited) {
+    visited = &localVisited;
+  }
+
+  if (visited->contains(v)) {
+    return false;
+  }
+  visited->insert(v);
+
+  for (auto &use : v.getUses()) {
     auto *user = use.getOwner();
-    if (user->hasAttr(ConverterUtils::discreteAttrName))
+    if (user->hasAttr(ConverterUtils::discreteAttrName) ||
+        isa<tensor::ExtractOp>(user))
       continue;
     if (cond(&use))
       return true;
     if (auto loopOp = dyn_cast<LoopLikeOpInterface>(user);
         loopOp && !loopOp->hasAttr("ExtractedLoadOrStore")) {
-      if(isUsedWithCondition(loopOp.getTiedLoopRegionIterArg(&use), cond, depth + 1))
+      Value tiedArg = loopOp.getTiedLoopRegionIterArg(&use);
+      if (tiedArg && isUsedWithCondition(tiedArg, cond, depth + 1, visited))
         return true;
     } else if (auto yieldOp = dyn_cast<scf::YieldOp>(user);
                yieldOp && !isa<scf::WhileOp>(user->getParentOp())) {
-      if (depth && isUsedWithCondition(yieldOp->getParentOp()->getResult(use.getOperandNumber()), cond, depth - 1))
+      if (depth && isUsedWithCondition(yieldOp->getParentOp()->getResult(use.getOperandNumber()),
+          cond, depth - 1, visited))
         return true;
     } else if (auto conditionOp = dyn_cast<scf::ConditionOp>(user);
                conditionOp && use.getOperandNumber() > 0) {
       auto whileOp = cast<scf::WhileOp>(conditionOp->getParentOp());
-      if (depth && isUsedWithCondition(whileOp->getResult(use.getOperandNumber() - 1), cond, depth - 1))
+      if (depth && isUsedWithCondition(whileOp->getResult(use.getOperandNumber() - 1), cond, depth - 1, visited))
         return true;
-      if (isUsedWithCondition(whileOp.getAfterArguments()[use.getOperandNumber() - 1], cond, depth))
+      if (isUsedWithCondition(whileOp.getAfterArguments()[use.getOperandNumber() - 1], cond, depth, visited))
         return true;
     }
-    for (auto res: user->getResults()) {
-      if (isUsedWithCondition(res, cond, depth))
+    for (auto res : user->getResults()) {
+      if (isUsedWithCondition(res, cond, depth, visited))
         return true;
     }
   }
