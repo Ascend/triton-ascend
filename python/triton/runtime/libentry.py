@@ -30,9 +30,21 @@ import inspect
 import sqlite3
 import threading
 import weakref
-from typing import Dict
 import ast
 from collections import OrderedDict
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    Iterator,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+    overload,
+)
 
 import triton
 from triton._C import libentryC
