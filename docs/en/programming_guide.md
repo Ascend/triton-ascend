@@ -12,10 +12,10 @@ Therefore, the core allocation logic needs to be modified based on the Ascend pl
 * For pure vector operators, the number of cores is equal to the **number of vector cores**.
 * For CV fusion operators, the number of cores is equal to the **number of cube cores** (usually half of the number of vector cores). During operator execution, vector cores are called at a ratio of 1:2.
 
-You can obtain the **number of vector cores** and **number of cube cores** through the following interfaces:
+Generally, on an NPU card, a computing core (AI Core) consists of one cube core, with each cube core paired with two vector cores. So you can obtain the **number of vector cores(vectorcore_num)** and **number of cube cores(aicore_num)** through the following interfaces:
 
 ```python
-import torch_npu
+import torch
 import triton.runtime.driver as driver
 import torch_npu
 
@@ -35,6 +35,7 @@ _attn_fwd[grid](Q, K, V, M, Out, acc, scale......)
 @triton.jit
 def _attn_fwd(Q, K, V, M, Out, acc, scale,  
               ......
+              stride_qz, stride_qh, 
               Z: tl.constexpr, H: tl.constexpr,
               N_CTX: tl.constexpr,
               HEAD_DIM: tl.constexpr,
@@ -98,7 +99,7 @@ def add_kernel(x_ptr,
 
         output = x + y
 
-        tl.store(output_ptr + offsets, output, mask=mask)
+        tl.store(out_ptr + offsets, output, mask=mask)
 ```
 
 ### Aligning the Size of the Tail Axis of the Tensor
@@ -151,10 +152,10 @@ def pick_kernel(
 
 You can use the msProf tool to execute the test case to obtain the **PROF_***\** folder, which contains the **op_summary_***\****.csv** file. This file can be used to analyze the pipeline. Note: *\** indicates the timestamp. For details, see the [performance data collection methods](./debug_guide/profiling.md).
 
-||Op Name|aiv_time(us)|
-|:---- |:--------|:--------|
-|Unoptimized|pick_kernel|574.124|
-|Optimized|pick_kernel|171.175|
+||Op Name|aiv_mte2_time(us)|aiv_mte2_ratio|
+|:---- |:--------|:--------|:--------|
+|Unoptimized|pick_kernel|0.686|0.008|
+|Optimized|pick_kernel|1.041|0.066|
 
 According to the data in the table, the values of **aiv_mte2_time(us)** and **aiv_mte2_ratio** before and after the optimization are greatly different. The optimization solution first transfers most of the data to the UB, reducing the number of times that small batches of data are transferred to the UB through the L2 and the total time for transferring data to the UB through the L2.
 
@@ -274,11 +275,6 @@ Implement basic data operation operators (such as addition, subtraction, multipl
 Single-kernel computation corresponds to block-level data processing.   
 Single-kernel data computation example: vector addition 
 ```diff
-import torch
-import torch_npu
-
-import triton
-import triton.language as tl
 
 @triton.jit
 def add_kernel(x_ptr, # Pointer to first input vector.

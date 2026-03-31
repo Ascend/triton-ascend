@@ -63,6 +63,7 @@ First off, you need to understand the basic steps for migrating from GPUs to NPU
 ```diff
 import pytest
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 
@@ -132,6 +133,7 @@ Code before optimization:
 ```diff
 import logging
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 logger = logging.getLogger(name)
@@ -150,9 +152,9 @@ def zeros_kernel(
 def zeros_like(x, *, dtype=None, layout=None, device=None, pin_memory=None, memory_format=None):
     logger.debug("GEMS ZEROS_LIKE")
     if device is None:
-    device = x.device # x.device = "npu"
+        device = x.device # x.device = "npu"
     if dtype is None:
-    dtype = x.dtype
+        dtype = x.dtype
 
     out = torch.empty_like(x, device=device, dtype=dtype)
     N = x.numel()
@@ -165,6 +167,7 @@ Code after optimization:
 ```diff
 import logging
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 logger = logging.getLogger(name)
@@ -183,9 +186,9 @@ def zeros_kernel(
 def zeros_like(x, *, dtype=None, layout=None, device=None, pin_memory=None, memory_format=None):
     logger.debug("GEMS ZEROS_LIKE")
     if device is None:
-    device = x.device # x.device = "npu"
+        device = x.device # x.device = "npu"
     if dtype is None:
-    dtype = x.dtype
+        dtype = x.dtype
 
     out = torch.empty_like(x, device=device, dtype=dtype)
     N = x.numel()
@@ -220,6 +223,7 @@ Code before optimization:
 ```diff
 import logging
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 logger = logging.getLogger(name)
@@ -248,6 +252,7 @@ Code after optimization:
 ```diff
 import logging
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 logger = logging.getLogger(name)
@@ -302,7 +307,7 @@ Set the environment variable *TRITON_DEBUG* to **1**, save **~/.triton/cache/xxx
 ```diff
 bishengir-compile xxx.ttadapter --target=Ascend910B3 --enable-auto-multi-buffer=True --enable-hfusion-compile=true --enable-hivm-compile=true --enable-triton-kernel-compile=true --hivm-compile-args=bishengir-print-ir-after=hivm-inject-sync  
 ```
-Compare the Triton-Python algorithm's logic with the internal operations of the output intermediate representations (IRs) to identify any operations that are not mapped to instructions. 
+Compare the Triton kernel's logic with the internal operations of the output intermediate representations (IRs) to identify any operations that are not mapped to instructions. 
 Check whether pure scalar transfer or computation exists in the HIVM IR phase without being mapped to SIMD instructions. If such cases exist, they will create a significant performance bottleneck.   
 
 Problem: Discrete memory access and inefficient scalar mapping 

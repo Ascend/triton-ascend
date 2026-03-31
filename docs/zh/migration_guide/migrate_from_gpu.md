@@ -63,6 +63,7 @@ f'{torch.max(torch.abs(output_torch - output_triton))}')
 ```diff
 import pytest
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 
@@ -132,6 +133,7 @@ export TRITON_ALL_BLOCKS_PARALLEL=1
 ```diff
 import logging
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 logger = logging.getLogger(name)
@@ -150,9 +152,9 @@ def zeros_kernel(
 def zeros_like(x, *, dtype=None, layout=None, device=None, pin_memory=None, memory_format=None):
     logger.debug("GEMS ZEROS_LIKE")
     if device is None:
-    device = x.device # x.device = "npu"
+        device = x.device # x.device = "npu"
     if dtype is None:
-    dtype = x.dtype
+        dtype = x.dtype
 
     out = torch.empty_like(x, device=device, dtype=dtype)
     N = x.numel()
@@ -165,6 +167,7 @@ def zeros_like(x, *, dtype=None, layout=None, device=None, pin_memory=None, memo
 ```diff
 import logging
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 logger = logging.getLogger(name)
@@ -183,9 +186,9 @@ def zeros_kernel(
 def zeros_like(x, *, dtype=None, layout=None, device=None, pin_memory=None, memory_format=None):
     logger.debug("GEMS ZEROS_LIKE")
     if device is None:
-    device = x.device # x.device = "npu"
+        device = x.device # x.device = "npu"
     if dtype is None:
-    dtype = x.dtype
+        dtype = x.dtype
 
     out = torch.empty_like(x, device=device, dtype=dtype)
     N = x.numel()
@@ -220,6 +223,7 @@ return out
 ```diff
 import logging
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 logger = logging.getLogger(name)
@@ -248,6 +252,7 @@ def masked_fill_kernel(inp, expand_mask, value, out, N, BLOCK_SIZE: tl.constexpr
 ```diff
 import logging
 import torch
+import torch_npu
 import triton
 import triton.language as tl
 logger = logging.getLogger(name)
@@ -302,7 +307,7 @@ def masked_fill(inp, mask, value):
 ```diff
 bishengir-compile xxx.ttadapter --target=Ascend910B3 --enable-auto-multi-buffer=True --enable-hfusion-compile=true --enable-hivm-compile=true --enable-triton-kernel-compile=true --hivm-compile-args=bishengir-print-ir-after=hivm-inject-sync  
 ```
-会有输出IR ， 对比Triton-python 算法逻辑与IR内部的操作，观察是否有未映射成指令的操作。  
+会有输出IR ， 对比Triton 算子逻辑与IR内部的操作，观察是否有未映射成指令的操作。  
 观察HIVM IR阶段是否存在纯scalar搬运或者计算， 没有映射为simd指令，这会成为性能瓶颈。    
 
 问题：离散访存 && scalar低效映射  
