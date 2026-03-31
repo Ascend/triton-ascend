@@ -23,12 +23,13 @@
 #
 # Test matrix (mask type x operation type):
 #
-#  | mask type                   | load only | store only | load + store |
-#  |-----------------------------|-----------|------------|--------------|
-#  | single discrete mask        | (A)       | (B)        | -            |
-#  | single continuous mask      | (C)       | (D)        | -            |
-#  | continuous & discrete 2-way | (E)       | (F)        | (G)          |
-#  | continuous & discrete 4-way | -         | -          | (H)          |
+#  | mask type                       | load only | store only | load + store |
+#  |---------------------------------|-----------|------------|--------------|
+#  | single discrete mask            | (A)       | (B)        | -            |
+#  | single continuous mask          | (C)       | (D)        | -            |
+#  | continuous & discrete 2-way     | (E)       | (F)        | (G)          |
+#  | continuous & discrete 4-way     | -         | -          | (H)          |
+#  | broadcast(cont & disc) 2-D AND  | (I)       | -          | (J)          |
 #
 # =============================================================================
 
@@ -325,5 +326,96 @@ def test_multi_cont_disc_mask_load_store(M, N, BLOCK_M, BLOCK_N):
 
     assert torch.allclose(out_tensor, expected), (
         f"BLOCK=({BLOCK_M},{BLOCK_N}), valid=({M},{N})\n"
+        f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}"
+    )
+
+
+# =============================================================================
+# (I) broadcast(continuous & discrete) 2-D AND -- load only
+# =============================================================================
+@triton.jit
+def broadcast_cont_disc_2d_load_kernel(
+    in_ptr,
+    out_ptr,
+    M: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    row_offs = tl.arange(0, BLOCK_M)
+    col_offs = tl.arange(0, BLOCK_N)
+
+    row_boundary = row_offs < M
+    row_disc = (row_offs * 2) < BLOCK_M
+    mask = row_boundary[:, None] & row_disc[:, None] & (col_offs < BLOCK_N)[None, :]
+
+    ptr_in = in_ptr + row_offs[:, None] * BLOCK_N + col_offs[None, :]
+    ptr_out = out_ptr + row_offs[:, None] * BLOCK_N + col_offs[None, :]
+
+    data = tl.load(ptr_in, mask=mask, other=0.0)
+    tl.store(ptr_out, data)
+
+
+@pytest.mark.parametrize("M,BLOCK_M,BLOCK_N", [(3, 4, 8)])
+def test_broadcast_cont_disc_2d_load(M, BLOCK_M, BLOCK_N):
+    in_tensor = torch.ones((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
+    out_tensor = torch.empty((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
+
+    broadcast_cont_disc_2d_load_kernel[(1,)](
+        in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
+
+    disc_true_rows = BLOCK_M // 2
+    both_true_rows = min(M, disc_true_rows)
+
+    expected = torch.zeros((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
+    expected[:both_true_rows, :] = 1.0
+
+    assert torch.allclose(out_tensor, expected), (
+        f"M={M}, BLOCK_M={BLOCK_M}, BLOCK_N={BLOCK_N}\n"
+        f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}"
+    )
+
+
+# =============================================================================
+# (J) broadcast(continuous & discrete) 2-D AND -- load + store
+# =============================================================================
+@triton.jit
+def broadcast_cont_disc_2d_load_store_kernel(
+    in_ptr,
+    out_ptr,
+    M: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    row_offs = tl.arange(0, BLOCK_M)
+    col_offs = tl.arange(0, BLOCK_N)
+
+    row_boundary = row_offs < M
+    row_disc = (row_offs * 2) < BLOCK_M
+
+    combined = row_boundary[:, None] & row_disc[:, None] & (col_offs < BLOCK_N)[None, :]
+
+    ptr_in = in_ptr + row_offs[:, None] * BLOCK_N + col_offs[None, :]
+    ptr_out = out_ptr + row_offs[:, None] * BLOCK_N + col_offs[None, :]
+
+    data = tl.load(ptr_in, mask=combined, other=0.0)
+    tl.store(ptr_out, data, mask=combined)
+
+
+@pytest.mark.parametrize("M,BLOCK_M,BLOCK_N", [(3, 4, 8)])
+def test_broadcast_cont_disc_2d_load_store(M, BLOCK_M, BLOCK_N):
+    in_tensor = torch.ones((BLOCK_M, BLOCK_N), dtype=torch.float16, device='npu')
+    out_tensor = torch.full((BLOCK_M, BLOCK_N), -1.0, dtype=torch.float16, device='npu')
+
+    broadcast_cont_disc_2d_load_store_kernel[(1,)](
+        in_tensor, out_tensor, M=M, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N)
+
+    disc_true_rows = BLOCK_M // 2
+    both_true_rows = min(M, disc_true_rows)
+
+    expected = torch.full((BLOCK_M, BLOCK_N), -1.0, dtype=torch.float16, device='npu')
+    expected[:both_true_rows, :] = 1.0
+
+    assert torch.allclose(out_tensor, expected), (
+        f"M={M}, BLOCK_M={BLOCK_M}, BLOCK_N={BLOCK_N}\n"
         f"Expected:\n{expected.cpu()}\nGot:\n{out_tensor.cpu()}"
     )
