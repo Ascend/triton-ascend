@@ -29,7 +29,8 @@ aicore_num = properties["num_aicore"]
 According to the sample code, fix the number of cores, and then process task blocks in batches through an internal loop.
 
 ```python
-grid = (NUM_CORE ,)
+NUM_CORE = vectorcore_num
+grid = (NUM_CORE ,) 
 _attn_fwd[grid](Q, K, V, M, Out, acc, scale......)
 
 @triton.jit
@@ -78,6 +79,8 @@ def _attn_fwd(Q, K, V, M, Out, acc, scale,
 Take **add_kernel** as an example. The variables and operations determine the on-chip memory usage. You can change the value of **BLOCK_SIZE** to adjust the size of the data block in the loop and the size of the intermediate result. If the upper limit is exceeded, the expected usage size is displayed and an error is reported during operator compilation. To achieve the maximum compute-to-memory ratio, **BLOCK_SIZE** needs to be as large as possible without exceeding the on-chip space. You can set different **BLOCK_SIZE** values in advance by using [autotune](#triton-autotune) of Triton-Ascend. The optimal setting is automatically selected during running.
 
 ```python
+import triton.language as tl
+
 @triton.jit
 def add_kernel(x_ptr, 
                y_ptr, 
@@ -139,11 +142,12 @@ def pick_kernel(
     idx = tl.load(idx_ptr + rn * stride_idx)
     mask = idx < M
 
--   val = tl.load(x_ptr + idx * stride_x, mask=mask)
-
-+   rm = tl.arange(0, M)
-+   x_shared = tl.load(x_ptr + rm * stride_x)  # [M]
-+   val = tl.gather(x_shared, idx, 0)
+    # the original code
+    # val = tl.load(x_ptr + idx * stride_x, mask=mask)
+    # the modified code
+    rm = tl.arange(0, M)
+    x_shared = tl.load(x_ptr + rm * stride_x)  # [M]
+    val = tl.gather(x_shared, idx, 0)
 
     tl.store(y_ptr + rn * stride_y, val, mask=mask)
 ```
@@ -220,6 +224,8 @@ Tuning result caching: The optimal configuration after tuning is cached. The opt
 
 - Simple example
     ```diff
+    import triton.language as tl
+
     @triton.autotune(
     configs=[ # List of parameter configurations to be tested. The candidate parameter values must be powers of 2.
             triton.Config({'BLOCK_SIZE': 128}),

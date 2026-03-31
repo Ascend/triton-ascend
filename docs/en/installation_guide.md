@@ -129,9 +129,9 @@ Triton uses LLVM 20 to generate code for GPUs and CPUs. Similarly, the BiSheng C
    git checkout b5cc222d7429fe6f18c787f633d5262fac2e676f
    ```
 
-#### Method 1: Installing LLVM Using Clang
+#### Installing LLVM Using Clang
 
-- Step 1: You are advised to use Clang to install LLVM. Install Clang and LLD in the environment and specify their versions (Clang >= 15 and LLD >= 15 are recommended).
+- Step 1: We use Clang to install LLVM. Install Clang and LLD in the environment and specify their versions (Clang >= 15 and LLD >= 15 are recommended).
   If Clang, LLD, and ccache are not installed, run the following commands to install them:
 
   ```bash
@@ -164,34 +164,6 @@ Triton uses LLVM 20 to generate code for GPUs and CPUs. Similarly, the BiSheng C
   ninja install
   ```
 
-#### Method 2: Installing LLVM Using GCC
-
-- Step 1: Clang is recommended. However, when only GCC is available, pay attention to [Note 1](#note1) and [Note 2](#note2). Set the environment variable *LLVM_INSTALL_PREFIX* to your target installation path.
-
-   ```bash
-   export LLVM_INSTALL_PREFIX=/path/to/llvm-install
-   ```
-
-- Step 2: Run the following commands to build and install LLVM:
-
-   ```bash
-   cd $HOME/llvm-project  # your clone of LLVM.
-   mkdir build
-   cd build
-   cmake -G Ninja  ../llvm  \
-      -DLLVM_CCACHE_BUILD=OFF \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DLLVM_ENABLE_ASSERTIONS=ON \
-      -DLLVM_ENABLE_PROJECTS="mlir;llvm"  \
-      -DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU" \
-      -DCMAKE_INSTALL_PREFIX=${LLVM_INSTALL_PREFIX}
-   ninja install
-   ```
-
-<a id="note1"></a>Note 1: If `ld.lld: error: undefined symbol` is displayed during compilation, you can add `-DLLVM_ENABLE_LLD=ON` during Step 2.
-
-<a id="note2"></a>Note 2: If ccache has been installed and is running properly in the environment, you can set `-DLLVM_CCACHE_BUILD=ON` to accelerate the build process. Otherwise, do not enable it.
-
 #### Cloning Triton-Ascend
 
 ```bash
@@ -215,7 +187,7 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend/pytho
    python3 setup.py install
    ```
 
-Note 3: For the recommended GCC version, please refer to the earlier section "System Requirements". If the GCC version is earlier than 9.4.0, "ld.lld: error: unable to find library -lstdc++fs" may be reported, indicating that the linker cannot find the stdc++fs library.
+Note 1: For the recommended GCC version, please refer to the earlier section "System Requirements". If the GCC version is earlier than 9.4.0, "ld.lld: error: unable to find library -lstdc++fs" may be reported, indicating that the linker cannot find the stdc++fs library.
 This library supports the file system features of versions earlier than GCC 9. In this case, you need to manually uncomment the related code snippet in the CMake file.
 
 triton-ascend/CMakeLists.txt

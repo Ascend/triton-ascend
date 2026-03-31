@@ -5,7 +5,7 @@
 | 类别 | 环境变量 | 默认值 | 功能说明 | 配置说明 | 变更声明 |
 |------|----------|--------|----------|----------|----------|
 | **调试与日志** | TRITON_DEBUG | 0 或未设置 | 启用 Triton 的调试输出功能，用于在运行时打印详细的调试信息。这对于排查编译或执行阶段的问题非常有用。 当设置为 1 时，Triton 会输出更多关于编译过程、内核生成和执行的信息。 某些实现中可能支持更细粒度的调试级别（如 2, 3 等），具体取决于 Triton 的版本和实现。 | 0：不启用DEBUG<br>1：启用DEBUG | |
-| **调试与日志** | MLIR_ENABLE_DUMP | 0 或未设置 | 在每次 MLIR 优化前转储所有内核的 IR。使用 `MLIR_ENABLE_DUMP=kernelName`可以只转储特定内核的IR。 | 0：不转储<br>1：转储所有内核IR kernelName：转储特定内核IR | Triton 缓存可能干扰转储。如果 `MLIR_ENABLE_DUMP=1`  不生效，可尝试清理 Triton 缓存： `rm -r ～/.triton/cache/*` |
+| **调试与日志** | MLIR_ENABLE_DUMP | 0 或未设置 | 在每次 MLIR 优化前转储所有内核的 IR。使用 `MLIR_ENABLE_DUMP=kernelName`可以只转储特定内核的IR。 | 0：不转储<br>1：转储所有内核IR kernelName：转储特定内核IR | Triton 缓存可能干扰转储。如果 `MLIR_ENABLE_DUMP=1`  不生效，可尝试清理 Triton 缓存： `rm -r ~/.triton/cache` |
 | **调试与日志** | LLVM_IR_ENABLE_DUMP | 0 或未设置 | 在每次 LLVM IR 优化前转储 IR。 | 0：不转储<br>1：转储IR | |
 | **调试与日志** | TRITON_REPRODUCER_PATH | 未设置 | 在每个 MLIR 编译阶段前生成 MLIR 复现文件。如果某阶段失败，`<reproducer_path>`  将保存失败前的 MLIR 状态。 | <reproducer_path>：保存路径 | |
 | **调试与日志** | TRITON_INTERPRET | 0 或未设置 | 使用 Triton 解释器而非 GPU 运行，支持在核函数代码中插入 Python 断点 | 0：不支持断点<br>1：支持断点 | |
