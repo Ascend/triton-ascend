@@ -40,6 +40,9 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
+#include "mlir/Dialect/Linalg/Utils/Utils.h"
 
 #include "Utils/Utils.h"
 #include "llvm/ADT/SmallVector.h"
@@ -69,6 +72,7 @@ struct DAGSSBufferPass
   void runOnOperation() override;
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<LLVM::LLVMDialect>();
+    registry.insert<linalg::LinalgDialect>();
   }
 };
 } // namespace
@@ -4608,7 +4612,7 @@ SmallVector<Value> buildNBufferProducer(OpBuilder &builder, Location loc,
                                         Value frontCnt, Value newDepVal,
                                         ArrayRef<Value> buffs,
                                         ArrayRef<Value> constants) {
-  // N-buffer producer:根据 frontCnt % N 决定哪个 buffer 被写入 newDepVal
+  // N-buffer producer: determines which buffer is written to newDepVal based on frontCnt % N
   const int N = buffs.size();
   SmallVector<Value> results;
 
@@ -4616,20 +4620,21 @@ SmallVector<Value> buildNBufferProducer(OpBuilder &builder, Location loc,
   Value bufferIndex =
       builder.create<arith::RemSIOp>(loc, frontCnt, constants[N]);
 
-  // 1. buffer0：第一个 buffer 单独处理
+  // 1. buffer0: handle the first buffer separately
   Value isBuffer0 = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
                                                   bufferIndex, constants[0]);
 
-  Value newBuff0 =
-      builder.create<arith::SelectOp>(loc, isBuffer0, newDepVal, buffs[0]);
+  auto dstShapedType = mlir::dyn_cast<ShapedType>(newDepVal.getType());
+  auto maskType = RankedTensorType::get(dstShapedType.getShape(), isBuffer0.getType());
+  Value mask = builder.create<tensor::SplatOp>(loc, maskType, isBuffer0);
+  Value newBuff0 = builder.create<arith::SelectOp>(loc, mask, newDepVal, buffs[0]);
 
   results.push_back(newBuff0);
 
-  // 2. 双 buffer 特化（N == 2 时直接 select 即可）
+  // 2. Double-buffer specialization (when N == 2, a direct select is sufficient)
   if (N == 2) {
 
-    Value newBuff1 =
-        builder.create<arith::SelectOp>(loc, isBuffer0, buffs[1], newDepVal);
+    Value newBuff1 = builder.create<arith::SelectOp>(loc, mask, buffs[1], newDepVal);
 
     auto nextCnt = builder.create<arith::AddIOp>(loc, frontCnt, constants[1]);
 
@@ -4639,15 +4644,15 @@ SmallVector<Value> buildNBufferProducer(OpBuilder &builder, Location loc,
     return results;
   }
 
-  // 3. 构建Root IF，当 idx ==
-  // 0时采用第一个buffer，否则进入nestedIf调用链采用其它buffer
+  // 3. Build the root IF: when idx == 0,
+ 	// use the first buffer; otherwise enter the nestedIf chain to use other buffers
   SmallVector<Type> resultTypes;
   for (int i = 1; i < N; ++i)
     resultTypes.push_back(buffs[i].getType());
 
   auto rootIf = builder.create<scf::IfOp>(loc, resultTypes, isBuffer0, true);
 
-  // ---- THEN: buffers 直接透传 ----
+  // ---- THEN: buffers are directly forwarded ----
   {
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(&rootIf.getThenRegion().front());
@@ -4657,7 +4662,7 @@ SmallVector<Value> buildNBufferProducer(OpBuilder &builder, Location loc,
     builder.create<scf::YieldOp>(loc, unchangedBuffers);
   }
 
-  // 4. 构造 nested-if chain，每一层更新一个 buffer
+  // 4. Construct the nested-if chain, updating one buffer at each level
   Block *currentElseBlock = &rootIf.getElseRegion().front();
 
   scf::IfOp parentIf = rootIf;
@@ -4666,26 +4671,30 @@ SmallVector<Value> buildNBufferProducer(OpBuilder &builder, Location loc,
 
     builder.setInsertionPointToStart(currentElseBlock);
 
-    // 当前 buffer 是否命中
+    // Check whether the current buffer is selected
     Value isCurrent = builder.create<arith::CmpIOp>(
         loc, arith::CmpIPredicate::eq, bufferIndex, constants[i]);
 
-    // 更新 buffer[i]
-    Value updatedBuffer =
-        builder.create<arith::SelectOp>(loc, isCurrent, newDepVal, buffs[i]);
+    // Update buffer[i]
+    dstShapedType = mlir::dyn_cast<ShapedType>(newDepVal.getType());
+    maskType = RankedTensorType::get(dstShapedType.getShape(), isCurrent.getType());
+    mask = builder.create<tensor::SplatOp>(loc, maskType, isCurrent);
+    Value updatedBuffer = builder.create<arith::SelectOp>(loc, mask, newDepVal, buffs[i]);
 
-    // 如果当前为最后一层：直接 yield 两个 buffer
+    // If this is the last level: directly yield both buffers
     if (i == N - 2) {
 
-      Value lastBuffer = builder.create<arith::SelectOp>(
-          loc, isCurrent, buffs[N - 1], newDepVal);
+        dstShapedType = mlir::dyn_cast<ShapedType>(newDepVal.getType());
+        maskType = RankedTensorType::get(dstShapedType.getShape(), isCurrent.getType());
+        mask = builder.create<tensor::SplatOp>(loc, maskType, isCurrent);
+        Value lastBuffer = builder.create<arith::SelectOp>(loc, mask, buffs[N - 1], newDepVal);
 
-      builder.create<scf::YieldOp>(loc, ValueRange{updatedBuffer, lastBuffer});
+        builder.create<scf::YieldOp>(loc, ValueRange {updatedBuffer, lastBuffer});
 
-      break;
+        break;
     }
 
-    // 创建下一层 nested if
+    // Create the next nested if
     SmallVector<Type> subResultTypes;
     for (int j = i + 1; j < N; ++j)
       subResultTypes.push_back(buffs[j].getType());
@@ -4693,7 +4702,7 @@ SmallVector<Value> buildNBufferProducer(OpBuilder &builder, Location loc,
     auto nextIf =
         builder.create<scf::IfOp>(loc, subResultTypes, isCurrent, true);
 
-    // THEN: 剩余 buffers 透传
+    // THEN: forward the remaining buffers
     {
       OpBuilder::InsertionGuard guard(builder);
       builder.setInsertionPointToStart(&nextIf.getThenRegion().front());
@@ -4703,7 +4712,7 @@ SmallVector<Value> buildNBufferProducer(OpBuilder &builder, Location loc,
       builder.create<scf::YieldOp>(loc, remainingBuffers);
     }
 
-    // 更新else的yield
+    // Update the else yield
     builder.setInsertionPointToEnd(&parentIf.getElseRegion().front());
 
     SmallVector<Value> yields;
@@ -4716,12 +4725,12 @@ SmallVector<Value> buildNBufferProducer(OpBuilder &builder, Location loc,
     currentElseBlock = &nextIf.getElseRegion().front();
   }
 
-  // 5. frontCnt计数器更新
+  // 5. Update the frontCnt counter
   builder.setInsertionPointAfter(rootIf);
 
   auto nextCnt = builder.create<arith::AddIOp>(loc, frontCnt, constants[1]);
 
-  // 收集结果
+  // Collect results
   results.append(rootIf.getResults().begin(), rootIf.getResults().end());
 
   results.push_back(nextCnt.getResult());
@@ -4732,7 +4741,7 @@ SmallVector<Value> buildNBufferProducer(OpBuilder &builder, Location loc,
 SmallVector<Value> buildNBufferConsumer(OpBuilder &builder, Location loc,
                                         Value postCnt, ArrayRef<Value> oldBuffs,
                                         ArrayRef<Value> constants) {
-  //  consumer: 根据 postCnt % N 选择读取哪个 buffer
+  // Consumer: selects which buffer to read based on postCnt % N
   const int bufferNum = oldBuffs.size();
   SmallVector<Value> results;
 
@@ -4741,14 +4750,14 @@ SmallVector<Value> buildNBufferConsumer(OpBuilder &builder, Location loc,
       builder.create<arith::RemSIOp>(loc, postCnt, constants[bufferNum]);
 
   Value isBuffer0 = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                                  bufferIndex, constants[0]);
+                                                bufferIndex, constants[0]);
+  auto dstShapedType = mlir::dyn_cast<ShapedType>(oldBuffs[0].getType());
+  auto maskType = RankedTensorType::get(dstShapedType.getShape(), isBuffer0.getType());
+  auto mask = builder.create<tensor::SplatOp>(loc, maskType, isBuffer0);
 
-  // 1. 双 buffer 特化（避免生成 scf.if）
+  // 1. Double-buffer specialization (avoid generating scf.if)
   if (bufferNum == 2) {
-
-    Value selected = builder.create<arith::SelectOp>(loc, isBuffer0,
-                                                     oldBuffs[0], oldBuffs[1]);
-
+    Value selected = builder.create<arith::SelectOp>(loc, mask, oldBuffs[0], oldBuffs[1]);
     auto nextCnt = builder.create<arith::AddIOp>(loc, postCnt, constants[1]);
 
     results.push_back(selected);
@@ -4757,20 +4766,20 @@ SmallVector<Value> buildNBufferConsumer(OpBuilder &builder, Location loc,
     return results;
   }
 
-  // 3. 构建Root IF，当 idx ==
-  // 0时采用第一个buffer，否则进入nestedIf调用链采用其它buffer
+  // 2. Build the root IF:
+ 	// when idx == 0, use the first buffer; otherwise enter the nestedIf chain to use other buffers
   SmallVector<Type> resultTypes{oldBuffs[0].getType()};
 
   auto rootIf = builder.create<scf::IfOp>(loc, resultTypes, isBuffer0, true);
 
-  // ---- THEN: 直接返回 buffer0 ----
+  // ---- THEN: directly return buffer0 ----
   {
     builder.setInsertionPointToStart(&rootIf.getThenRegion().front());
 
     builder.create<scf::YieldOp>(loc, oldBuffs[0]);
   }
 
-  // 3. 构造 nested-if chain
+  // 3. Construct the nested-if chain
   Block *currentElse = &rootIf.getElseRegion().front();
 
   for (int i = 1; i < bufferNum - 2; ++i) {
@@ -4783,7 +4792,7 @@ SmallVector<Value> buildNBufferConsumer(OpBuilder &builder, Location loc,
     auto nestedIf = builder.create<scf::IfOp>(
         loc, TypeRange{oldBuffs[0].getType()}, isCurrent, true);
 
-    // THEN → 返回当前 buffer
+    // THEN → return the current buffer
     {
       builder.setInsertionPointToStart(&nestedIf.getThenRegion().front());
 
@@ -4794,11 +4803,11 @@ SmallVector<Value> buildNBufferConsumer(OpBuilder &builder, Location loc,
     builder.setInsertionPointToEnd(currentElse);
     builder.create<scf::YieldOp>(loc, nestedIf.getResult(0));
 
-    // 进入下一层 else
+    // Enter the next else branch
     currentElse = &nestedIf.getElseRegion().front();
   }
 
-  // 4. 最后一层（使用 select 收尾）
+  // 4. Final level (use select to finish)
   builder.setInsertionPointToStart(currentElse);
 
   int last = bufferNum - 2;
@@ -4806,15 +4815,19 @@ SmallVector<Value> buildNBufferConsumer(OpBuilder &builder, Location loc,
   Value isLast = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
                                                bufferIndex, constants[last]);
 
-  Value finalSelect = builder.create<arith::SelectOp>(
-      loc, isLast, oldBuffs[last], oldBuffs[last + 1]);
+  maskType = RankedTensorType::get({}, isLast.getType());
+  dstShapedType = mlir::dyn_cast<ShapedType>(oldBuffs[last].getType());
+  maskType = RankedTensorType::get(dstShapedType.getShape(), isLast.getType());
+  mask = builder.create<tensor::SplatOp>(loc, maskType, isLast);
+
+  Value finalSelect = builder.create<arith::SelectOp>(loc, mask, oldBuffs[last], oldBuffs[last + 1]);
 
   builder.create<scf::YieldOp>(loc, finalSelect);
 
   // rootIf result = selected buffer
   results.push_back(rootIf.getResult(0));
 
-  // 5. postCnt计数器更新
+  // 5. Update the postCnt counter
   builder.setInsertionPointAfter(rootIf);
 
   auto nextCnt = builder.create<arith::AddIOp>(loc, postCnt, constants[1]);
@@ -4901,11 +4914,11 @@ scf::IfOp addResultsForFrontIfOp(scf::IfOp frontIfOp, OpBuilder builder,
 
     builder.setInsertionPointToStart(&newThenBlock);
 
-    // Clone原来的then body
+    // Clone original then body
     for (auto &op : oldThenBlock.without_terminator())
       builder.clone(op, mapping);
 
-    // 顶依赖值在ifOp结果中的位置
+    // Update dependency value position inf ifOp results
     auto result = dyn_cast<OpResult>(depValue);
     if (!result) {
       llvm::outs() << "depValue is not a result Value!\n";
@@ -4921,20 +4934,20 @@ scf::IfOp addResultsForFrontIfOp(scf::IfOp frontIfOp, OpBuilder builder,
 
     builder.setInsertionPointAfter(newDepVal.getDefiningOp());
 
-    // 构建N buffer
+    // Create N buffer
     SmallVector<Value> produced = buildNBufferProducer(
         builder, loc, frontCnt, newDepVal, buffs, constants);
 
-    // 最后一个newbuff为计数器
+    // Last value in newBuffs is the counter
     newBuffs.append(produced.begin(), produced.end() - 1);
 
-    // 重建新的yield
+    // Rebuild new yield
     SmallVector<Value> thenOperands;
 
     for (Value v : oldThenBlock.getTerminator()->getOperands()) {
       Value mapped = mapping.lookupOrDefault(v);
 
-      // 替换第一个buffer
+      // Replace first buffer
       if (mapped == newDepVal) {
         thenOperands.push_back(newBuffs[0]);
         bufferIndices[0] = thenOperands.size() - 1;
@@ -4943,13 +4956,13 @@ scf::IfOp addResultsForFrontIfOp(scf::IfOp frontIfOp, OpBuilder builder,
       }
     }
 
-    // 替换其他的buffer
+    // Replace other buffer
     for (int i = 1; i < bufferNum; ++i) {
       thenOperands.push_back(newBuffs[i]);
       bufferIndices[i] = thenOperands.size() - 1;
     }
 
-    // 添加counter
+    // Add counter
     thenOperands.push_back(produced.back());
     frontCntIndex = thenOperands.size() - 1;
 
@@ -4970,7 +4983,7 @@ scf::IfOp addResultsForFrontIfOp(scf::IfOp frontIfOp, OpBuilder builder,
 
     builder.setInsertionPointToStart(&newElseBlock);
 
-    // Clone原来的else body
+    // Clone original else body
     for (auto &op : oldElseBlock.without_terminator())
       builder.clone(op, mapping);
 
@@ -4981,20 +4994,20 @@ scf::IfOp addResultsForFrontIfOp(scf::IfOp frontIfOp, OpBuilder builder,
     for (Value v : oldElseBlock.getTerminator()->getOperands())
       elseOperands.push_back(mapping.lookupOrDefault(v));
 
-    // 添加buffer
+    // Add buffer
     for (int i = 1; i < bufferNum; ++i)
       elseOperands.push_back(buffs[i]);
 
-    // 添加counter
+    // Add counter
     elseOperands.push_back(frontCnt);
 
     builder.create<scf::YieldOp>(loc, elseOperands);
   }
 
-  // 更新依赖值
+  // Update dependency value
   replaceDepsMap(frontIfOp, newIfOp, newDeps, true, newIfResultDeps);
 
-  // 替换旧ifOp
+  // Replace old ifOp
   frontIfOp.replaceAllUsesWith(newIfOp.getResults().take_front(oldNumResults));
 
   frontIfOp.erase();
@@ -5011,7 +5024,7 @@ scf::IfOp addResultsForPostIfOp(scf::IfOp postIfOp, scf::IfOp newfrontIfOp,
                                 SmallVector<Value> &newDeps,
                                 DenseMap<scf::IfOp, SmallVector<Value>> &newIfResultDeps)
 {
-  // 1. 解析 frontIf 产生的额外 result 索引（添加的buffer和计数器）
+  // 1. Parse the extra result indices produced by frontIf (added buffers and counters)
   SmallVector<int> bufferIndices(extraResultIndices.begin(),
                                  extraResultIndices.end() - 1);
   int frontCntIndex = extraResultIndices[bufferNum];
@@ -5022,7 +5035,7 @@ scf::IfOp addResultsForPostIfOp(scf::IfOp postIfOp, scf::IfOp newfrontIfOp,
   auto &oldThenBlock = postIfOp.getThenRegion().front();
   auto &oldElseBlock = postIfOp.getElseRegion().front();
 
-  // 2. 创建新的 IfOp（新增 postCnt result）
+  // 2. Create a new IfOp (add a new postCnt result)
   SmallVector<Type> newResultTypes(postIfOp.getResultTypes().begin(),
                                    postIfOp.getResultTypes().end());
   newResultTypes.push_back(postCnt.getType());
@@ -5033,17 +5046,16 @@ scf::IfOp addResultsForPostIfOp(scf::IfOp postIfOp, scf::IfOp newfrontIfOp,
 
   mlir::IRMapping mapping;
 
-  // 3. THEN region：clone 原逻辑，插入 multibuffer consumer，更新依赖 buffer
-
+  // 3. THEN region: clone the original logic, insert the multibuffer consumer and update dependency buffers
   auto &newThenBlock = newIfOp.getThenRegion().front();
   builder.setInsertionPointToStart(&newThenBlock);
 
-  // clone 原 then body
+  // clone then body
   for (auto &op : oldThenBlock.without_terminator())
     builder.clone(op, mapping);
   builder.setInsertionPointToStart(&newThenBlock);
 
-  // 找到需要替换的依赖 use（位于当前 IfOp 内）
+   // Find dependency uses that need to be replaced (located inside the current IfOp)
   SmallVector<OpOperand*> replaceUses;
   for (auto &use : newDepValue.getUses()) {
     if (newIfOp == dyn_cast<scf::IfOp>(use.getOwner()->getParentOp())) {
@@ -5051,24 +5063,24 @@ scf::IfOp addResultsForPostIfOp(scf::IfOp postIfOp, scf::IfOp newfrontIfOp,
     }
   }
 
-  // 收集 frontIf 产生的 buffers
+  // Collect buffers produced by frontIf
   SmallVector<Value> oldBuffers;
   for (int i = 0; i < bufferIndices.size(); ++i)
     oldBuffers.push_back(newfrontIfOp.getResult(bufferIndices[i]));
 
-  // multibuffer consumer 计算
+  // Multibuffer consumer caculation
   SmallVector<Value> consumerResults =
       buildNBufferConsumer(builder, ifLoc, postCnt, oldBuffers, constants);
 
   Value selectedBuffer = consumerResults[0];
   Value nextPostCnt = consumerResults[1];
 
-  // 替换依赖 buffer
+  // Replace dependent buffer
   for (auto *usePtr : replaceUses) {
       usePtr->set(selectedBuffer);
   }
 
-  // 构造 then yield
+  // Create then yield
   SmallVector<Value> thenOperands;
   for (auto v : oldThenBlock.getTerminator()->getOperands())
     thenOperands.push_back(mapping.lookupOrDefault(v));
@@ -5078,11 +5090,9 @@ scf::IfOp addResultsForPostIfOp(scf::IfOp postIfOp, scf::IfOp newfrontIfOp,
 
   builder.setInsertionPointToEnd(&newThenBlock);
   builder.create<scf::YieldOp>(ifLoc, thenOperands);
-
-  // 记录新增 result index
   extraResultIndices.push_back(postCntIndex);
 
-  // 4. ELSE region：直接透传 counter
+  // 4. ELSE region：forward counter directly
   auto &newElseBlock = newIfOp.getElseRegion().front();
 
   for (auto &op : oldElseBlock.without_terminator())
@@ -5098,10 +5108,10 @@ scf::IfOp addResultsForPostIfOp(scf::IfOp postIfOp, scf::IfOp newfrontIfOp,
 
   builder.create<scf::YieldOp>(ifLoc, elseOperands);
 
-  // 5. 用新 IfOp 替换旧 IfOp
+  // 5. Replace old ifOp with new one
   auto oldNumResults = postIfOp.getNumResults();
 
-  // 更新依赖值
+  // Update depency value
   replaceDepsMap(postIfOp, newIfOp, newDeps, false, newIfResultDeps);
 
   postIfOp.replaceAllUsesWith(newIfOp.getResults().take_front(oldNumResults));
@@ -5118,11 +5128,11 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
   // ============================================================
   // Overall Idea
   //
-  // 对每一个依赖 Value：
-  //   1. 找到产生它的 front IfOp
-  //   2. 为 front IfOp 增加 multi-buffer 结果
-  //   3. 找到消费该结果的 post IfOp 并同步扩展
-  //   4. 更新 for-loop 的 yield，使 buffer 状态正确传递
+  // For each dependency Value:
+  // 1. Find the front IfOp that produces it
+  // 2. Add multi-buffer results to the front IfOp
+  // 3. Find the post IfOp that consumes the result and extend it accordingly
+  // 4. Update the for-loop yield so that buffer states are correctly propagated
   // ============================================================
 
   OpBuilder builder(module.getContext());
@@ -5139,8 +5149,8 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
     auto newDeps = ifResultDeps[postIfOp];
     for (int depValueIdx = 0; depValueIdx < newDeps.size(); depValueIdx++) {
       Value depValue = newDeps[depValueIdx];
-      // llvm::outs()<<"depValue:"<<depValue;
-      // Step 1. 定位产生 depValue 的 front IfOp
+
+      // Step 1. Locate the front IfOp that produces depValue
       Operation *defOp = depValue.getDefiningOp();
       if (!defOp || !isa<scf::IfOp>(defOp)) {
         llvm::outs() << "Error: depValue is not produced by scf.if\n";
@@ -5149,7 +5159,7 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
 
       scf::IfOp frontIfOp = cast<scf::IfOp>(defOp);
 
-      // depValue 在 IfOp 返回值中的位置
+      // Position of depValue in the IfOp results
       auto result = dyn_cast<OpResult>(depValue);
       if (!result) {
         llvm::outs() << "depValue is not an OpResult!\n";
@@ -5158,31 +5168,31 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
 
       int64_t depResultIndex = result.getResultNumber();
 
-      // then 分支真实 yield 的 value
+      // Position of depValue in the IfOp results
       Value depYieldValue = frontIfOp.thenYield()->getOperand(depResultIndex);
 
-      // Step 2. 找到 ForOp 中 multi-buffer 的位置
+      // Step 2. Find the multi-buffer position in the ForOp
       int64_t extraArgBaseIdx =
           newForOp.getRegionIterArgs().size() -
           (2 + bufferNum - 1) * (newUniqueDeps.size() - processedDepCount++);
 
-      // 收集所有 buffer
+      // Collect all buffers
       SmallVector<Value> buffers;
 
       // buffer0 来自 else yield
       buffers.push_back(frontIfOp.elseYield()->getOperand(depResultIndex));
 
-      // 其余 buffer 来自 for iter args
+      // Other buffers come from for iter args
       for (int i = 1; i < bufferNum; ++i) {
         buffers.push_back(newForOp.getRegionIterArgs()[extraArgBaseIdx + i - 1]);
       }
 
-      // 两个计数器
+      // Two counters
       Value frontCnt =
           newForOp.getRegionIterArgs()[extraArgBaseIdx + bufferNum - 1];
       Value postCnt = newForOp.getRegionIterArgs()[extraArgBaseIdx + bufferNum];
 
-      // Step 3. 创建常量 (0 ~ bufferNum)用于 rem / cmp buffer 选择逻辑
+      // Step 3. Create constants (0 ~ bufferNum) for rem / cmp buffer selection logic
       SmallVector<Value> constants;
       builder.setInsertionPoint(frontIfOp);
 
@@ -5193,11 +5203,11 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
             builder.getIntegerAttr(dataType, i)));
       }
 
-      // 记录新增 result 在 IfOp 中的位置
+      // Record the positions of newly added results in the IfOp
       SmallVector<int> extraResultIndices(bufferNum + 1);
       extraResultIndices.clear();
 
-      // Step 4. 扩展 front IfOp
+      // Step 4. Extend the front IfOp
       scf::IfOp newFrontIfOp = addResultsForFrontIfOp(
           frontIfOp, builder, bufferNum, depValue, constants, buffers, frontCnt,
           postCnt, extraResultIndices, newDeps, ifResultDeps);
@@ -5210,7 +5220,7 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
 
       Value newDepValue = newFrontIfOp.getResult(depResultIndex);
 
-      // Step 5. 找到消费依赖值的 post IfOp
+      // Step 5. Find the post IfOp that consumes the dependency value
       scf::IfOp postIfOp = nullptr;
 
       for (auto &use : newDepValue.getUses()) {
@@ -5225,7 +5235,7 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
         return;
       }
 
-      // Step 6. 扩展 post IfOp
+      // Step 6. Extend the post IfOp
 
       scf::IfOp newPostIfOp = addResultsForPostIfOp(
           postIfOp, newFrontIfOp, builder, bufferNum, newDepValue, constants,
@@ -5235,10 +5245,10 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
 
       int postCntResultIndex = extraResultIndices.back();
 
-      // Step 7. 更新 ForOp yield（buffer 传递）
+      // Step 7. Update the ForOp yield (buffer propagation)
       auto forYield = cast<scf::YieldOp>(newForOp.getBody()->getTerminator());
 
-      // 更新 buffer1 ~ bufferN
+      // Update buffer1 ~ bufferN
       for (int i = 1; i < bufferNum; ++i) {
 
         int yieldIdx = extraArgBaseIdx + (i - 1);
@@ -5254,7 +5264,7 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
         }
       }
 
-      // Step 8. 更新 frontCnt
+      // Step 8. Update frontCnt
       OpOperand *frontCntYieldUse = nullptr;
 
       for (auto &use : frontCnt.getUses()) {
@@ -5267,7 +5277,7 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
 
       frontCntYieldUse->set(newFrontIfOp.getResult(frontCntResultIndex));
 
-      // Step 9. 更新 postCnt
+      // Step 9. Update postCnt
       OpOperand *postCntYieldUse = nullptr;
 
       for (auto &use : postCnt.getUses()) {
@@ -5286,7 +5296,7 @@ void addMultiBuffCaculate(ModuleOp module, SmallVector<Value> newUniqueDeps,
   llvm::outs() << "multibuffer end!\n";
 }
 
-// 计算 ifOp 在指定 forOp 内的嵌套层级
+// Compute the nesting level of an ifOp within the specified forOp
 static int computeIfLevel(scf::IfOp ifOp, scf::ForOp rootForOp)
 {
   int level = 1;
@@ -5307,14 +5317,14 @@ int assignIfOpLevels(scf::ForOp forOp)
 {
   SmallVector<scf::IfOp> targetIfOps;
   int maxLevel = 0;
-  // 收集所有带 ssbuffer 的 ifOp
+  // Collect all ifOp assigned with ssbuffer tag
   forOp.walk([&](scf::IfOp ifOp) {
     if (ifOp->hasAttr("ssbuffer")) {
       targetIfOps.push_back(ifOp);
     }
   });
 
-  // 计算层级并打 attribute
+  // Caculate buffer levels
   for (auto ifOp : targetIfOps) {
     int level = computeIfLevel(ifOp, forOp);
     maxLevel = std::max(level, maxLevel);
@@ -5374,29 +5384,29 @@ SmallVector<Value> collectIfInfo(
     DenseMap<scf::IfOp, SmallVector<Value>> &ifDeps,
     int level)
 {
-  // 根据ifOp输入输出，找到所有的依赖变量
+  // Find all dependency variables based on the inputs and outputs of ifOp
   SmallVector<Value> allDeps;
   DenseSet<Value> producedValues;
   scf::ForOp newForOp = nullptr;
   curForOp.walk([&](scf::IfOp ifOp) {
     auto attr = ifOp->getAttrOfType<IntegerAttr>("ssbuffer.level");
-    // 没有 level 或不相等 → 继续找
+    // No level or level mismatch → continue searching
     if (!attr || attr.getInt() != level)
       return WalkResult::advance();
 
-    // level 相等，检查直接 parent
+    // Levels match → check the direct parent
     if (auto parentFor = dyn_cast<scf::ForOp>(ifOp->getParentOp())) {
       newForOp = parentFor;   // 更新
     }
 
-    // 无论是不是 for，都停止 walk
+    // Stop walking regardless of whether the parent is a for-loop
     return WalkResult::interrupt();
   });
 
   if (newForOp)
     curForOp = newForOp;
 
-  // Step 1：先收集，保证顺序
+  // Step 1: Collect first to preserve order
   SmallVector<scf::IfOp> ifOps;
   curForOp.walk([&](scf::IfOp ifOp) {
     auto curLevel = ifOp->getAttrOfType<IntegerAttr>("ssbuffer.level");
@@ -5412,7 +5422,7 @@ SmallVector<Value> collectIfInfo(
   if (ifOps.size() < miniDepNum) {
     return allDeps;
   }
-  // Step 2：顺序处理
+  // Step 2: Process in order
   for (auto ifOp : ifOps) {
     llvm::outs()<<"ifOp->getOperands():"<<ifOp->getOperands().size()<<"\n";
     SmallVector<Value> deps;
@@ -5456,32 +5466,33 @@ bool isCube(scope::ScopeOp scope) {
   return ret;
 }
 
-// 遍历每个 Vector scope，找到外层 ForOp 并处理内部 IfOp
+// Traverse each Vector scope, find the outer ForOp, and process internal IfOps
 void WalkAIVNestedForAndProcess(
     ModuleOp module, DenseMap<scf::IfOp, SmallVector<Value>> &ifResultDeps,
     int bufferNum) {
   if (bufferNum < 2) {
     return;
   }
-  module.walk([&](scope::ScopeOp scope) {
-    // llvm::outs() << "Come in Scope: \n";
-    if (isCube(scope))
-      return;
 
-    // 遍历 Cube scope 内的 ForOp（外层循环）
+  module.walk([&](scope::ScopeOp scope) {
+    if (isCube(scope)) {
+      return;
+    }
+
+    // Traverse ForOps inside the Cube scope (outer loops)
     SmallVector<scf::ForOp> targetFors;
 
     scope.walk([&](scf::ForOp forOp) {
 
-      // 必须包含 ssbuffer if
+      // Must contain an ssbuffer if
       if (!hasSSBufferIf(forOp))
         return WalkResult::advance();
 
-      // 如果祖先 already 是 root，跳过
+      // Skip if an ancestor is already the root
       if (hasAncestorRootFor(forOp))
         return WalkResult::advance();
 
-      // 找到 rootForOp
+      // Find rootForOp
       targetFors.push_back(forOp);
 
       return WalkResult::advance();
