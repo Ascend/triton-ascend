@@ -1,12 +1,6 @@
 """isort:skip_file"""
 # Import order is significant here.
-try:
-    import acl
-    soc_name = acl.get_soc_name()
-    is_compile_on_910_95 = soc_name.startswith("Ascend910_95") or soc_name.startswith("Ascend950")
-except Exception as e:
-    is_compile_on_910_95 = False
-    
+from triton.tools.get_ascend_devices import is_compile_on_910_95
 from . import math
 from . import extra
 from .standard import (

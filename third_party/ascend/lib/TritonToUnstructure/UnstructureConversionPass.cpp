@@ -21,6 +21,7 @@
  */
 
 #include "TritonToUnstructure/UnstructureConversionPass.h"
+#include "TritonToStructured/CannonicalizerConverter.h"
 #include "TritonToLinalg/MaskAnalysis.h"
 #include "Utils/Utils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -49,7 +50,7 @@ bool forceSimtTemplateFlag = false;
 template <typename MemAccOpTy>
 bool UnstructuredMemAccessConverter<MemAccOpTy>::checkUnstructureAnnotated(
     MemAccOpTy op, PatternRewriter &rewriter) const {
-  return llvm::any_of(op->getUsers(), [&rewriter](Operation *user) {    
+  return llvm::any_of(op->getUsers(), [&rewriter](Operation *user) {
     auto annotationOp = dyn_cast<annotation::MarkOp>(user);
     if (annotationOp && annotationOp->hasAttr("mayDiscretememaccess")) {
       rewriter.eraseOp(annotationOp);
@@ -62,7 +63,7 @@ bool UnstructuredMemAccessConverter<MemAccOpTy>::checkUnstructureAnnotated(
 template <>
 bool UnstructuredMemAccessConverter<triton::StoreOp>::checkUnstructureAnnotated(
     triton::StoreOp op, PatternRewriter &rewriter) const {
-  return llvm::any_of(op.getValue().getUsers(), [&rewriter](Operation *user) {   
+  return llvm::any_of(op.getValue().getUsers(), [&rewriter](Operation *user) {
     auto annotationOp = dyn_cast<annotation::MarkOp>(user);
     if (annotationOp && annotationOp->hasAttr("mayDiscretememaccess")) {
       rewriter.eraseOp(annotationOp);
@@ -79,14 +80,9 @@ Value UnstructuredMemAccessConverter<MemAccOpTy>::createExtractOp(
   if (!value)
     return value;
   SmallVector<Value> indices;
-  for (auto idx : iterIdx) {
-    if (auto val = dyn_cast<Value>(idx)) {
-      indices.push_back(val);
-    } else {
-      auto idxVal = rewriter.create<arith::ConstantOp>(
-          loc, rewriter.getIndexAttr(*getConstantIntValue(idx)));
-      indices.push_back(idxVal);
-    }
+  for (auto idxOfr : iterIdx) {
+    auto idx = getValueOrCreateConstantIndexOp(rewriter, loc, idxOfr);
+    indices.push_back(idx);
   }
   auto extractedOp = rewriter.create<tensor::ExtractOp>(loc, value, indices);
   extractedOp->setAttr(ConverterUtils::discreteAttrName,
@@ -270,7 +266,9 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
     auto &os = llvm::dbgs();
     os << "Converting " << op->getName() << "\n";
     os << op << "\n";
-    os << ptrOffsetInfo.isStructured() << "\n";
+    for (auto structured : ptrOffsetInfo.getStructuredRef())
+      os << static_cast<int>(structured);
+    os << "\n";
     os << ptrOffsetInfo.isScalarLike() << "\n";
   });
 
@@ -342,7 +340,7 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
   // Force scalarize if memory is not aligned
   if (sizeInByte % 32 != 0)
     ptrOffsetInfo.setUnstructured(ptrOffsetInfo.getRank());
-  
+
   LLVM_DEBUG({
     auto &os = llvm::dbgs();
     os << "UnStructured Flag check:\n";
@@ -350,9 +348,9 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
     os << "compileOn91095Flag: " << compileOn91095Flag << "\n";
     os << "forceSimtTemplateFlag: " << forceSimtTemplateFlag << "\n";
   });
-  
+
   // Fast path on A5: rewrite tt.load/store to tt.indirect_load/store directly.
-  if (compileOn91095Flag && forceSimtTemplateFlag && !ptrOffsetInfo.isStructured()) {
+  if (compileOn91095Flag && forceSimtTemplateFlag && ptrOffsetInfo.isUnstructuredOrScalarlike()) {
     if constexpr (std::is_same_v<MemAccOpTy, triton::LoadOp>) {
       assert(isa<triton::PointerType>(srcPtr.getType()) && "src must be ptr type");
       Value mask = op.getMask();
@@ -401,7 +399,7 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
 
   for (size_t i = 0; i < resultShape.size(); i++) {
     auto size = resultShape[i];
-    auto structured = ptrOffsetInfo.getStructuredRef()[i];
+    auto structured = ptrOffsetInfo.getStructuredRef()[i] == PtrOffsetInfo::AxisInfo::structured;
     // handle indirect dimension
     strides.push_back(rewriter.getIndexAttr(1));
     Value sizeVal =
@@ -459,7 +457,7 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
     }
   }
 
-  bool fullyUnstructured = ptrOffsetInfo.isUnstructured();
+  bool fullyUnstructured = ptrOffsetInfo.isUnstructuredOrScalarlike();
   auto extractedType = RankedTensorType::get(extractedShape, resultElementType);
 
   Value extractedOffset;
@@ -524,19 +522,14 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
     if (!isa<RankedTensorType>(value.getType()) &&
         (std::is_same_v<MemAccOpTy, triton::AtomicRMWOp> ||
         std::is_same_v<MemAccOpTy, triton::AtomicCASOp>)) {
-      value =	
+      value =
           rewriter.create<triton::SplatOp>(loc, extractedType, value);
     }
     if (!isa<RankedTensorType>(value.getType())) {
       SmallVector<Value> indices;
-      for (auto idx : offsets) {
-        if (auto val = dyn_cast<Value>(idx)) {
-          indices.push_back(val);
-        } else {
-          auto idxVal = rewriter.create<arith::ConstantOp>(
-              loc, rewriter.getIndexAttr(*getConstantIntValue(idx)));
-          indices.push_back(idxVal);
-        }
+      for (auto idxOfr : offsets) {
+        auto idx = getValueOrCreateConstantIndexOp(rewriter, loc, idxOfr);
+        indices.push_back(idx);
       }
       result = rewriter.create<tensor::InsertOp>(
           loc, value, iterArg, indices);
@@ -617,7 +610,7 @@ void TritonToUnstructurePass::runPreparse(LoopLikeOpInterface op) {
         auto &os = llvm::dbgs();
         os << "Pre-parsing result of\n" << arg << "\nis ";
         for (auto structured : offsetMap[arg].getStructuredRef())
-          os << structured;
+          os << static_cast<int>(structured);
         os << '\n';
       });
     }
@@ -653,6 +646,17 @@ void TritonToUnstructurePass::runParse(MemAccOpTy op) {
   isFromTensorArg(op.getPtr(), fromTensorArg);
 }
 
+LogicalResult TritonToUnstructurePass::processIfYieldAddHoistOperations(ModuleOp moduleOp)
+{
+    mlir::RewritePatternSet patterns(&getContext());
+    patterns.add<CannonicalizerConverter::IfYieldAddHoistConverter>(patterns.getContext());
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
+        moduleOp.emitWarning("IfYieldAddHoist processing failed");
+        return failure();
+    }
+    return success();
+}
+
 TritonToUnstructurePass::TritonToUnstructurePass(
     const TritonToUnstructureOptions &options)
     : TritonToUnstructureBase(options) {}
@@ -675,6 +679,11 @@ void TritonToUnstructurePass::runOnOperation() {
     replacePtrArguments(funcOp, offsetMapForLoopArgs);
   });
   offsetMapForLoopArgs.clear();
+
+  if (failed(processIfYieldAddHoistOperations(moduleOp))) {
+    moduleOp.emitWarning("Failed to process IfYieldAddHoist operations");
+  }
+
   moduleOp->walk([this](LoopLikeOpInterface op) { runPreparse(op); });
   moduleOp->walk([this](Operation *op) {
     if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {

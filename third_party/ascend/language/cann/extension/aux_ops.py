@@ -112,7 +112,7 @@ def compile_hint_impl(ptr: tensor, hint_name: str, hint_val, builder: ir.builder
         hint_val = builder.get_i64_array_attr(hint_val)
     else:
         raise ValueError(f"Unsupported hint value type: {type(hint_val)}")
-    builder.create_annotation(ptr.handle, hint_name, hint_val)
+    builder.create_annotation_mark(ptr.handle, hint_name, hint_val)
 
 @builtin
 def compile_hint(ptr, hint_name, hint_val=None, _semantic=None):
@@ -141,4 +141,4 @@ def multibuffer(src: tensor, size, _semantic=None):
     """
     buffer_size = _unwrap_if_constexpr(size)
     assert isinstance(buffer_size, int) and buffer_size == 2, f"only support bufferize equals 2"
-    compile_hint_impl(src, "multi_buffer", buffer_size, _semantic.builder)
+    compile_hint_impl(src, "hivm.multi_buffer", buffer_size, _semantic.builder)

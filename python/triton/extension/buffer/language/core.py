@@ -1,4 +1,3 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 # Copyright 2018-2020 Philippe Tillet
 # Copyright 2020-2022 OpenAI
 #
@@ -249,6 +248,56 @@ def to_tensor(
     """
     return semantic.to_tensor(memref, writable, _semantic.builder, target_shape=target_shape)
 
+  
+def check_subview(src, offsets, sizes, strides):
+    """
+    Check data of subview methods which the data length and the offset value must be 32-byte aligned.
+
+    The conditions for checking data are as follows:
+    1. offset value must be 32-bytes aligned.
+    2. all strides must be 1.
+    3. the first point's offset in the second row of the last dimension must be 32-bytes aligned.
+
+    For instance, the following example fails to satisfy the specified criteria.
+        %subview = memref.subview %arg0[1, 1][4, 4][2, 2]
+        : memref<8x8xf32, strided<[8, 1], offset: 0>> to
+        memref<4x4xf32, strided<[16, 2], offset: 9>>
+    offsets = [8, 8] | sizes = [4, 4] | strides = [2, 2]
+    result_offset = 9
+    second_row_start_offset = 25
+    The scene will be go wrong because the follow conditions are not meet.
+        1) result_offset is not 32-bytes aligned.
+        2) strides = [2, 2], not all strides are equal to 1.
+        3) second_row_start_offset are not 32-bytes aligned.
+    """
+    bytes_per_block = 32
+    bits_per_byte = 8
+    base_byte = bytes_per_block // (src.dtype.primitive_bitwidth // bits_per_byte)
+    result_strides = []
+    result_offset = 0
+    second_row_start_offset = 0
+    length = len(strides)
+    src_strides = [1] * length
+    if length == 1:
+        if offset[0] % base_byte != 0:
+            raise TypeError(f"all strides should be 1 and the offset value should be 32-bytes aligned.")
+        return
+    for i in range(length - 2, -1, -1):
+        src_strides[i] = src_strides[i + 1] * src.shape[i + 1]
+    for i in range(0, length):
+        if isinstance(offsets[i], tl.tensor):
+            return
+        result_strides.append(src_strides[i] * strides[i])
+        result_offset = result_offset + offsets[i] * src_strides[i]
+    second_row_start_offset = result_offset + src_strides[-2] * strides[-2]
+    is_unaligned = False
+    if sizes[1] > 1:
+        is_unaligned = second_row_start_offset % base_byte != 0
+    stride_1 = all(s == 1 for s in strides)
+    is_unaligned = result_offset % base_byte != 0 or is_unaligned or not stride_1
+    if is_unaligned:
+        raise TypeError(f"all strides should be 1 and the offset value should be 32-bytes aligned.")
+
 
 @builtin
 def subview(
@@ -293,6 +342,7 @@ def subview(
         else:
             raise TypeError(f"strides[{i}] must be constexpr, got {type(stride).__name__}")
 
+    check_offsets = []
     new_offsets = []
     for offset in offsets:
         if isinstance(offset, tl.constexpr):
@@ -300,13 +350,17 @@ def subview(
             if offset < 0:
                 raise ValueError(f"Offset value must be non-negative, got {offset}")
             new_offsets.append(_semantic.to_tensor(offset))
+            check_offsets.append(offset)
         elif isinstance(offset, int):
             # Convert regular integers to constexpr and then to tensor
             if offset < 0:
                 raise ValueError(f"Offset value must be non-negative, got {offset}")
             new_offsets.append(_semantic.to_tensor(tl.constexpr(offset)))
+            check_offsets.append(tl.constexpr(offset))
         else:
             # Assume it's already a tensor
             new_offsets.append(offset)
+            check_offsets.append(offset)
 
+    check_subview(src, check_offsets, new_sizes, new_strides)
     return semantic.subview(src, new_offsets, new_sizes, new_strides, _semantic.builder)

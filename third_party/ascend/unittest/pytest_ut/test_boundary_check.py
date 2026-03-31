@@ -58,7 +58,7 @@ def test_static_base():
         BLOCK_SIZE=BLOCK_SIZE,
     )
     expected = ref_static_base(in_tensor.cpu(), BLOCK_SIZE)
-    assert torch.allclose(out_tensor.cpu(), torch.tensor(expected), atol=1e-4)
+    assert torch.allclose(out_tensor.cpu(), torch.tensor(expected, device='cpu'), atol=1e-4)
 
 
 # ========== Test 2: Simple dynamic base address + boundary_check ==========
@@ -95,7 +95,7 @@ def test_simple_dynamic_base():
         BLOCK_SIZE=BLOCK_SIZE,
     )
     expected = in_tensor.cpu()[offset:offset + BLOCK_SIZE].sum().item()
-    assert torch.allclose(out_tensor.cpu(), torch.tensor(expected), atol=1e-4)
+    assert torch.allclose(out_tensor.cpu(), torch.tensor(expected, device='cpu'), atol=1e-4)
 
 
 # ========== Test 3: Nested loop + dynamic base address + advance + boundary_check ==========
@@ -189,7 +189,7 @@ def test_out_of_bound():
         BLOCK_SIZE=BLOCK_SIZE,
     )
     expected = in_tensor.cpu().sum().item()
-    assert torch.allclose(out_tensor.cpu(), torch.tensor(expected), atol=1e-4)
+    assert torch.allclose(out_tensor.cpu(), torch.tensor(expected, device='cpu'), atol=1e-4)
 
 
 # ========== Test 5：padding_option = NAN + boundary_check==========
@@ -260,7 +260,7 @@ def test_multi_advance():
         BLOCK_SIZE=BLOCK_SIZE,
     )
     expected = in_tensor.cpu()[2 * BLOCK_SIZE:3 * BLOCK_SIZE].sum().item()
-    assert torch.allclose(out_tensor.cpu(), torch.tensor(expected), atol=1e-4)
+    assert torch.allclose(out_tensor.cpu(), torch.tensor(expected, device='cpu'), atol=1e-4)
 
 
 # ========== Test 7：Complex base address calculation + boundary_check ==========
@@ -302,7 +302,7 @@ def test_complex_base():
         BLOCK_SIZE=BLOCK_SIZE,
     )
     expected = in_tensor.cpu()[total_offset:total_offset + BLOCK_SIZE].sum().item()
-    assert torch.allclose(out_tensor.cpu(), torch.tensor(expected), atol=1e-4)
+    assert torch.allclose(out_tensor.cpu(), torch.tensor(expected, device='cpu'), atol=1e-4)
 
 
 if __name__ == "__main__":

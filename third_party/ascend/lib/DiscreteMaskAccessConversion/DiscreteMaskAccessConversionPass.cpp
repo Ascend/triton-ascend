@@ -27,8 +27,10 @@
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/LogicalResult.h"
@@ -39,6 +41,8 @@ namespace triton {
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h.inc"
 } // namespace triton
 } // namespace mlir
+
+#define DEBUG_TYPE "discrete-mask-access-conversion"
 
 using namespace mlir;
 using namespace hivm;
@@ -57,6 +61,85 @@ LogicalResult isDiscreteMask(Operation *op, Value mask,
   return success();
 }
 
+// Recursively collect all leaf operands of a nested arith::AndIOp tree.
+// This function also normalizes masks by distributing broadcast over andi
+//   broadcast(andi(a, b)) = andi(broadcast(a), broadcast(b))
+// so that inner AND operands nested inside a broadcast are still reachable.
+static void collectAndLeaves(Value mask, SmallVectorImpl<Value> &leaves,
+                             Location loc, PatternRewriter &rewriter)
+{
+  if (auto andOp = mask.getDefiningOp<arith::AndIOp>()) {
+    collectAndLeaves(andOp.getLhs(), leaves, loc, rewriter);
+    collectAndLeaves(andOp.getRhs(), leaves, loc, rewriter);
+  } else if (auto broadcastOp = mask.getDefiningOp<triton::BroadcastOp>()) {
+    // Distribute broadcast over andi so we can inspect each factor separately.
+    if (auto innerAnd = broadcastOp.getSrc().getDefiningOp<arith::AndIOp>()) {
+      Type dstType = mask.getType();
+      Value broadcastA =
+          rewriter.create<triton::BroadcastOp>(loc, dstType, innerAnd.getLhs())
+              .getResult();
+      Value broadcastB =
+          rewriter.create<triton::BroadcastOp>(loc, dstType, innerAnd.getRhs())
+              .getResult();
+      collectAndLeaves(broadcastA, leaves, loc, rewriter);
+      collectAndLeaves(broadcastB, leaves, loc, rewriter);
+    } else {
+      leaves.push_back(mask);
+    }
+  } else {
+    leaves.push_back(mask);
+  }
+}
+
+struct MaskDecomposition {
+  // AND of all leaves that MaskState::parse() can analyze as a rectangle mask.
+  // nullptr when no such leaves exist.
+  Value contMask;
+  // AND of all leaves that MaskState::parse() cannot analyze (discrete/runtime).
+  // nullptr when no such leaves exist.
+  Value discMask;
+};
+
+// Decompose an AND-tree mask into its continuous and discrete leaf components
+// so that we can use contMask to bound GM accesses while discMask still drives
+// the per-element selection.
+static MaskDecomposition decomposeAndMask(Operation *op, Value mask,
+                                          const Location &loc,
+                                          PatternRewriter &rewriter)
+{
+  SmallVector<Value> leaves;
+  collectAndLeaves(mask, leaves, loc, rewriter);
+
+  SmallVector<Value> contLeaves;
+  SmallVector<Value> discLeaves;
+
+  for (Value leaf : leaves) {
+    MaskState st;
+    if (st.parse(leaf, loc, rewriter).succeeded()) {
+      if (st.isMask())
+        contLeaves.push_back(leaf);
+      else
+        discLeaves.push_back(leaf);
+    } else {
+      discLeaves.push_back(leaf);
+    }
+  }
+
+  Value contMask = nullptr;
+  for (Value v : contLeaves)
+    contMask = contMask
+                   ? rewriter.create<arith::AndIOp>(loc, contMask, v).getResult()
+                   : v;
+
+  Value discMask = nullptr;
+  for (Value v : discLeaves)
+    discMask = discMask
+                   ? rewriter.create<arith::AndIOp>(loc, discMask, v).getResult()
+                   : v;
+
+  return {contMask, discMask};
+}
+
 struct DiscreteMaskStoreConversion : OpRewritePattern<triton::StoreOp> {
   using OpRewritePattern<triton::StoreOp>::OpRewritePattern;
 
@@ -70,9 +153,26 @@ struct DiscreteMaskStoreConversion : OpRewritePattern<triton::StoreOp> {
     if (failed(isDiscreteMask(op, mask, rewriter)))
       return failure();
 
+    // When mask = contMask & discMask, use contMask to bound GM accesses and
+    // discMask to select the final per-element value. This prevents the
+    // unguarded full-load from reading past the tail-block boundary.
+    auto [contMask, discMask] = decomposeAndMask(op, mask, loc, rewriter);
+    if (contMask && discMask) {
+      auto safeLoad = rewriter.create<triton::LoadOp>(
+          loc, dst, contMask, op.getCache(), op.getEvict(), false);
+      auto selOp = rewriter.create<arith::SelectOp>(
+          loc, discMask, src, safeLoad.getResult());
+      auto newStore = rewriter.create<triton::StoreOp>(
+          loc, dst, selOp, contMask, op.getCache(), op.getEvict());
+      newStore->setAttr(ConverterUtils::discreteMaskAttrName,
+                        UnitAttr::get(rewriter.getContext()));
+      rewriter.replaceOp(op, newStore);
+      return success();
+    }
+
+    // Fallback: original full load + select (contMask absent, pure discrete).
     auto loadFromDstOp = rewriter.create<triton::LoadOp>(
         loc, dst, op.getCache(), op.getEvict(), false);
-
     auto selOp = rewriter.create<arith::SelectOp>(loc, mask, src,
                                                   loadFromDstOp.getResult());
     auto newStore = rewriter.create<triton::StoreOp>(
@@ -99,6 +199,29 @@ struct DiscreteMaskLoadConversion : OpRewritePattern<triton::LoadOp> {
     if (compileOn91095Flag && forceSimtTemplateFlag)
       return failure();
 
+    // When mask = contMask & discMask, load only the safe range defined by
+    // contMask and use discMask for the per-element select, avoiding OOB reads.
+    auto [contMask, discMask] = decomposeAndMask(op, mask, loc, rewriter);
+    if (contMask && discMask) {
+      if (!other) {
+        FailureOr<Value> constant = specializeTypelessValueToConstant(
+            TypelessValue::Zero, ptr.getType(), loc, rewriter);
+        if (failed(constant)) {
+          llvm_unreachable("Unsupported type for constant creation");
+        }
+        other = *constant;
+      }
+      auto safeLoad = rewriter.create<triton::LoadOp>(
+          loc, ptr, contMask, op.getCache(), op.getEvict(), op.getIsVolatile());
+      // Use combined mask to select the result, avoid the uninitialized memory access.
+      auto combinedMask = rewriter.create<arith::AndIOp>(loc, contMask, discMask);
+      auto discreteMaskOp =
+          rewriter.create<arith::SelectOp>(loc, combinedMask, safeLoad.getResult(), other);
+      rewriter.replaceOp(op, discreteMaskOp);
+      return success();
+    }
+
+    // Fallback: original full load + select (contMask absent, pure discrete).
     if (!other) {
       FailureOr<Value> constant = specializeTypelessValueToConstant(
           TypelessValue::Zero, ptr.getType(), loc, rewriter);
@@ -182,6 +305,22 @@ void DiscreteMaskAccessConversionPass::runOnOperation() {
     moduleOp->emitError("failed to apply discrete mask access patterns");
     signalPassFailure();
   }
+
+  // Clean up dead analysis ops left behind by MaskState::parse().
+  // These are trivially-dead auxiliary ops (constants, arithmetic) with no
+  // users that parse() creates as side effects of mask analysis.
+  PassManager pm(&getContext(), moduleOp.getOperationName());
+  pm.addPass(createCSEPass());
+  pm.addPass(createCanonicalizerPass());
+  if (failed(runPipeline(pm, getOperation()))) {
+    moduleOp->emitWarning("DiscreteMaskAccessConversion: dead-code cleanup failed");
+  }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "==============================================\n";
+    llvm::dbgs() << "After DiscreteMaskAccessConversionPass:\n" << moduleOp;
+    llvm::dbgs() << "\n==============================================\n";
+  });
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>

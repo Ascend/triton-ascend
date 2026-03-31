@@ -87,3 +87,31 @@ def test_all_blocks_parallel(param_list, monkeypatch):
     triton_lgamma[ncore, 1, 1](x, y_cal, x.numel(), xblock, xblock_sub)
     test_common.validate_cmp(dtype, y_cal, y_ref)
     monkeypatch.delenv("TRITON_ALL_BLOCKS_PARALLEL")
+
+
+@pytest.mark.parametrize('param_list',
+                         [
+                             ['float32', (2, 2048, 8), 2, 32768, 512],
+                         ]
+                         )
+def test_auto_blockify(param_list, monkeypatch):
+    monkeypatch.setenv("TRITON_ALL_BLOCKS_PARALLEL", "1")
+    dtype, shape, ncore, xblock, xblock_sub = param_list
+    x = test_common.generate_tensor(shape, dtype).npu()
+
+    # Avoid numerical instability near negative integer
+    nearest_int = torch.round(x)
+    neg_mask = nearest_int <= -1
+    threshold = torch.zeros_like(x)
+    if neg_mask.any():
+        neg_ints = nearest_int[neg_mask]
+        threshold[neg_mask] = 5.75e-5 * (2.42 ** (-1 - neg_ints))
+    mask = (torch.abs(x - nearest_int) < threshold) & (nearest_int <= -1)
+    if mask.any():
+        x = torch.where(mask, nearest_int, x) 
+    
+    y_ref = torch.lgamma(x).npu()
+    y_cal = torch.zeros(shape, dtype=eval('torch.' + dtype)).npu()
+    triton_lgamma[ncore, 1, 1](x, y_cal, x.numel(), xblock, xblock_sub, auto_blockify_size=ncore)
+    test_common.validate_cmp(dtype, y_cal, y_ref)
+    monkeypatch.delenv("TRITON_ALL_BLOCKS_PARALLEL")

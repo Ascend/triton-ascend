@@ -31,6 +31,7 @@
 #include "ascend/include/TritonToLinalg/HoistBroadcast.h"
 #include "ascend/include/TritonToLinalg/UseAnalysis.h"
 #include "ascend/include/TritonToLinalg/ImplicitPermute.h"
+#include "ascend/include/TritonToLinalg/MarkTensorKindPass.h"
 #include "ascend/include/TritonToStructured/CannonicalizerConverter.h"
 #include "ascend/include/Utils/InterleaveOptimization.h"
 #include "ascend/include/Utils/Utils.h"
@@ -117,92 +118,6 @@ static bool isSIMTOp(Operation *op)
       triton::ascend::IndirectLoadOp,
       triton::ascend::IndirectStoreOp
       >(op);
-}
-
-
-template <typename T, typename = void> struct has_getPtr : std::false_type {};
-template <typename T>
-struct has_getPtr<T, std::void_t<decltype(std::declval<T>().getPtr())>> : std::true_type {};
-
-template <typename T, typename = void> struct has_getSrc : std::false_type {};
-template <typename T>
-struct has_getSrc<T, std::void_t<decltype(std::declval<T>().getSrc())>> : std::true_type {};
-
-template <typename T, typename = void> struct has_getBase : std::false_type {};
-template <typename T>
-struct has_getBase<T, std::void_t<decltype(std::declval<T>().getBase())>> : std::true_type {};
-
-template <typename OpTy>
-static Value extractPointer(OpTy op) {
-  if constexpr (has_getPtr<OpTy>::value)
-    return op.getPtr();
-  else if constexpr (has_getSrc<OpTy>::value)
-    return op.getSrc();
-  else if constexpr (has_getBase<OpTy>::value)
-    return op.getBase();
-  else {
-    Operation *raw = op.getOperation();
-    if (!raw || raw->getNumOperands() == 0)
-      return Value();
-    return raw->getOperand(0);
-  }
-}
-
-static void setBlockArgumentAttr(BlockArgument blockArg, triton::FuncOp func, TensorKind tensorKind)
-{
-    unsigned argIdx = blockArg.getArgNumber();
-    auto existingAttr = func.getArgAttrOfType<IntegerAttr>(argIdx, "tt.tensor_kind");
-    TensorKind oldVal = existingAttr ? static_cast<TensorKind>(existingAttr.getInt()) : TensorKind::NONE;
-
-    TensorKind finalVal = tensorKind;
-    if ((oldVal == TensorKind::INPUT && tensorKind == TensorKind::OUTPUT) ||
-        (oldVal == TensorKind::OUTPUT && tensorKind == TensorKind::INPUT)) {
-        finalVal = TensorKind::INPUT_OUTPUT;
-    } else if (oldVal == TensorKind::INPUT_OUTPUT) {
-        finalVal = oldVal;
-    }
-
-    LLVM_DEBUG(llvm::dbgs() << "Setting tensor_kind for argument " << argIdx << ": " << finalVal << "\n";);
-
-    func.setArgAttr(argIdx, "tt.tensor_kind",
-                    IntegerAttr::get(IntegerType::get(func.getContext(), INT_BIT_WIDTH), static_cast<int>(finalVal)));
-}
-
-template <typename OpTy>
-void TritonToLinalgPass::addTensorKindToArguments(OpTy op, triton::FuncOp func, TensorKind tensorKind)
-{
-    Value ptr = extractPointer(op);
-    if (!ptr)
-        return;
-
-    LLVM_DEBUG(llvm::dbgs() << "Processing op: " << *op.getOperation() << "\n";);
-
-    Value cur = ptr;
-    llvm::SmallPtrSet<Value, SET_INIT_SIZE> visited;
-    // Walk back the def-use chain to find originating BlockArgument
-    while (visited.insert(cur).second) {
-        // If reach a BlockArgument, set the attribute
-        if (auto blockArg = dyn_cast<BlockArgument>(cur)) {
-            if (blockArg.getOwner() == &func.getBody().front()) {
-                auto type = blockArg.getType();
-                // Check if it's a triton::PointerType
-                if (!isa<triton::PointerType>(type))
-                    break;
-                setBlockArgumentAttr(blockArg, func, tensorKind);
-                break;
-            }
-        }
-
-        Operation *defOp = cur.getDefiningOp();
-        if (!defOp)
-            break;
-        cur = defOp->getOperand(0);
-    }
-}
-
-template <TensorKind Kind, typename... Ops>
-void TritonToLinalgPass::walkAndMarkTensorKind(triton::FuncOp func) {
-  (func.walk([&](Ops op) { this->addTensorKindToArguments(op, func, Kind); }), ...);
 }
 
 TritonTypeConverter::TritonTypeConverter() {
@@ -494,6 +409,10 @@ void TritonToLinalgPass::convertTTFunc(triton::FuncOp func,
   }
   funcFunc->setAttr(kernelParallelModeName, builder.getStringAttr(parallelMode));
 
+  auto autoBlockifyAttr = func->getAttr("auto_blockify_size");
+  if (autoBlockifyAttr)
+    funcFunc->setAttr("auto_blockify_size", autoBlockifyAttr);
+
   auto &funcFuncBody = funcFunc.getBody();
   auto &funcBody = func.getBody();
 
@@ -647,7 +566,7 @@ void TritonToLinalgPass::populateTritonToLinalgCanonicalizationPatterns(RewriteP
         TTOpConverters::ScalarMathCanonicalizer<math::TanhOp>,
         // TTOpConverters::ScalarMathCanonicalizer<math::TruncOp>,
         TTOpConverters::ScalarMathCanonicalizer<arith::AddFOp>, TTOpConverters::ScalarMathCanonicalizer<arith::SubFOp>,
-        TTOpConverters::ScalarMathCanonicalizer<arith::MulFOp>, TTOpConverters::ScalarMathCanonicalizer<arith::DivFOp>,
+        TTOpConverters::ScalarMathCanonicalizer<arith::MulFOp>, // TTOpConverters::ScalarMathCanonicalizer<arith::DivFOp>,
         TTOpConverters::ScalarMathCanonicalizer<arith::NegFOp>, TTOpConverters::ScalarMathCanonicalizer<arith::RemFOp>,
         TTOpConverters::ScalarMathCanonicalizer<arith::MaxNumFOp>,
         TTOpConverters::ScalarMathCanonicalizer<arith::MaximumFOp>,
@@ -678,11 +597,7 @@ void TritonToLinalgPass::populateTritonToLinalgConversionPatterns(
   patterns.add<FunctionConverter::GetNumProgramsConverter>(
       patterns.getContext());
   patterns.add<LoadStoreConverter::LoadConverter>(patterns.getContext());
-  if (compileOn91095Flag && existDotFlag) {
-    patterns.add<LoadStoreConverter::AtomicRMWNewConverter>(patterns.getContext());
-  } else {
-    patterns.add<LoadStoreConverter::AtomicRMWConverter>(patterns.getContext());
-  }
+  patterns.add<LoadStoreConverter::AtomicRMWConverter>(patterns.getContext());
   patterns.add<LoadStoreConverter::AtomicCASConverter>(patterns.getContext());
   patterns.add<TTOpConverters::MakeRangeConverter>(patterns.getContext());
   patterns.add<TTOpConverters::SplatConverter>(patterns.getContext());
@@ -808,27 +723,6 @@ LogicalResult TritonToLinalgPass::processPtrBroadcastOperations(ModuleOp moduleO
     return success();
 }
 
-void TritonToLinalgPass::annotateTensorKindForModule(ModuleOp moduleOp) {
-  moduleOp.walk([&](triton::FuncOp func) {
-    // INPUT tensors
-    this->walkAndMarkTensorKind<TensorKind::INPUT, triton::LoadOp,
-                                                   triton::ascend::IndexSelectSimdOp,
-                                                   triton::ascend::GatherOutToUbOp,
-                                                   triton::ascend::IndirectLoadOp>(func);
-
-    // OUTPUT tensors
-    this->walkAndMarkTensorKind<TensorKind::OUTPUT, triton::StoreOp,
-                                                    triton::ascend::IndexPutOp,
-                                                    triton::ascend::ScatterUbToOutOp,
-                                                    triton::ascend::IndirectStoreOp>(func);
-
-    // INPUT_OUTPUT tensors
-    this->walkAndMarkTensorKind<TensorKind::INPUT_OUTPUT,
-                                triton::AtomicRMWOp,
-                                triton::AtomicCASOp>(func);
-  });
-}
-
 LogicalResult TritonToLinalgPass::processImplicitPermuteOperations(ModuleOp moduleOp)
 {
   mlir::RewritePatternSet patterns(&getContext());
@@ -848,6 +742,28 @@ LogicalResult TritonToLinalgPass::processImplicitPermuteOperations(ModuleOp modu
   pm.addPass(createCSEPass());
   pm.addPass(createCanonicalizerPass());
   return runPipeline(pm, getOperation());
+}
+
+LogicalResult TritonToLinalgPass::processLegalStrideOperations(ModuleOp moduleOp)
+{
+  mlir::ConversionTarget target(getContext());
+  target.addLegalOp<arith::ConstantOp>();
+  target.addDynamicallyLegalOp<memref::ReinterpretCastOp>(
+      [](memref::ReinterpretCastOp op) {
+        return !LoadStoreConverter::ReinterpretCastStrideCanonicalizer::hasFixableZeroStride(op);
+      });
+
+  mlir::RewritePatternSet patterns(&getContext());
+  patterns.add<LoadStoreConverter::ReinterpretCastStrideCanonicalizer>(
+      patterns.getContext());
+
+  if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
+    moduleOp->emitError(
+        "failed to legalize reinterpret_cast dynamic stride(0) with size(1)");
+    return failure();
+  }
+
+  return success();
 }
 
 void TritonToLinalgPass::runOnOperation() {
@@ -897,7 +813,15 @@ void TritonToLinalgPass::runOnOperation() {
   }
 
   // 0. Annotate Memory-Related Triton FuncOps with tensor_kind (used by profiling).
-  annotateTensorKindForModule(moduleOp);
+  {
+    PassManager pm(&getContext(), moduleOp.getOperationName());
+    pm.addPass(triton::createMarkTensorKindPass());
+ 	     if (failed(runPipeline(pm, moduleOp))) {
+ 	       moduleOp->emitError("failed to run LoopCanonicalizerPass");
+ 	       signalPassFailure();
+ 	       return;
+ 	     }
+  }
 
   RewritePatternSet canonicalizerPatterns(&getContext());
   // 1. Canonicalize load/store related patterns.
@@ -906,6 +830,20 @@ void TritonToLinalgPass::runOnOperation() {
                                    std::move(canonicalizerPatterns)))) {
     moduleOp->emitError("failed to apply Canonicalizer Patterns");
     signalPassFailure();
+  }
+
+  // 2.1 Pre-clean dead control-flow before use analysis.
+  // This helps remove unreachable branches such as `scf.if %true` else-region,
+  // so runUseAnalysis won't walk dead ops with missing lattice states.
+  {
+    PassManager pm(&getContext(), moduleOp.getOperationName());
+    pm.addPass(createCSEPass());
+    pm.addPass(createCanonicalizerPass());
+    if (failed(runPipeline(pm, moduleOp))) {
+      moduleOp->emitError("failed to pre-clean dead control-flow before use analysis");
+      signalPassFailure();
+      return;
+    }
   }
 
   // 2. Perform use analysis on FuncOp.
@@ -963,6 +901,11 @@ void TritonToLinalgPass::runOnOperation() {
   // 7. Convert ops.
   if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
     moduleOp->emitError("failed to apply Conversion Patterns");
+    signalPassFailure();
+  }
+
+  // Execute legal stride operations conversion
+  if (failed(processLegalStrideOperations(moduleOp))) {
     signalPassFailure();
   }
 

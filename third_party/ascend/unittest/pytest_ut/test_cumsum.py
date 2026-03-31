@@ -79,7 +79,7 @@ support_dtypes = [dtype for dtype in _all_dtypes_no_bool if dtype not in not_sup
 @pytest.mark.parametrize("dtype", support_dtypes)
 @pytest.mark.parametrize("shape", [(7, 23)])
 @pytest.mark.parametrize("dim", [0, 1])
-@pytest.mark.parametrize("reverse", [False])
+@pytest.mark.parametrize("reverse", [False, True])
 def test_cumsum(dtype, shape, dim, reverse):
     x0 = generate_tensor(shape=shape, dtype=dtype).npu()
     triton_cal = triton_func(x0, dim, reverse)

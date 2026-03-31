@@ -41,11 +41,11 @@ def _init_npu_params():
     ub_size_in_kbytes = 192
     rf_size_in_kbytes = None
 
-    ASCEND_VARIANTS = ["Ascend910B", "Ascend910_93", "Ascend910_95"]
+    ASCEND_VARIANTS = ["Ascend910B", "Ascend910_93", "Ascend910_95", "Ascend950"]
     if any(variant in target.arch for variant in ASCEND_VARIANTS):
         num_vector_core = num_cube_core * 2
 
-    if '910_95' in target.arch:
+    if target.arch.startswith("Ascend910_95") or target.arch.startswith("Ascend950"):
         ub_size_in_kbytes = 256
         rf_size_in_kbytes = 128
 

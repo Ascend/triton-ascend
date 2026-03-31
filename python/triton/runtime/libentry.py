@@ -1,4 +1,3 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 # Copyright 2018-2020 Philippe Tillet
 # Copyright 2020-2022 OpenAI
 # Copyright © 2024 BAAI. All rights reserved.

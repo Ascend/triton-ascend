@@ -54,6 +54,8 @@ public:
 
 class LoadConverter : public OpConversionPattern<triton::LoadOp> {
 private:
+  void propagateWasBoolToInt8Attr(Operation *srcLoadOp, Operation *dstOp, PatternRewriter &rewriter) const;
+
   LogicalResult toTensorAndReplace(triton::LoadOp &op,
                                    RankedTensorType &tensorType,
                                    Value localMem,
@@ -243,36 +245,20 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
-class AtomicRMWNewConverter : public OpConversionPattern<triton::AtomicRMWOp> {
-private:
-  // used when handling scalar
-  // to verify whether we need to handle this scalar
-  bool isConstantMaskTrue(Value mask) const {
-    if (auto denseAttr =
-            mask.getDefiningOp()->getAttrOfType<DenseElementsAttr>("value")) {
-      auto eleType = denseAttr.getType().getElementType();
-      if (isa<IntegerType>(eleType) &&
-          cast<IntegerType>(eleType).getWidth() == 1) {
-        auto values = denseAttr.getValues<bool>();
-        return values[0];
-      }
-    }
-    return false;
-  }
-
-public:
-  explicit AtomicRMWNewConverter(MLIRContext *context);
-  using OpConversionPattern<triton::AtomicRMWOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
-
 class AtomicMaxMinCanonicalizer : public OpRewritePattern<triton::AtomicRMWOp> {
   using OpRewritePattern<triton::AtomicRMWOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(triton::AtomicRMWOp op,
                                 PatternRewriter &rewriter) const override;
+};
+
+class ReinterpretCastStrideCanonicalizer
+    : public OpRewritePattern<memref::ReinterpretCastOp> {
+public:
+  using OpRewritePattern<memref::ReinterpretCastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::ReinterpretCastOp op,
+                                PatternRewriter &rewriter) const override;
+  static bool hasFixableZeroStride(memref::ReinterpretCastOp op);
 };
 
 } // namespace LoadStoreConverter
