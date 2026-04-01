@@ -506,11 +506,12 @@ scf::ForOp transformLoop(scf::ForOp forOp, OpBuilder &builder) {
 }
 
 // Find the first occurrence of convert_layout or fixpipe operation after the specified operation
-Value findFirstTargetOpAfterWait(SyncBlockWaitOp waitOp)
+Value findFirstTargetOpAfterWait(SyncBlockWaitOp waitOp, SmallVector<Value>& excludedValues)
 {
     bool startSearching = false;
     
     for (Operation &op : waitOp->getBlock()->getOperations()) {
+        Value res = nullptr;
         if (&op == waitOp) {
             startSearching = true;
             continue;
@@ -518,17 +519,24 @@ Value findFirstTargetOpAfterWait(SyncBlockWaitOp waitOp)
         
         if (startSearching) {
             if (isa<hivm::ConvertLayoutOp>(op)) {
-                return op.getOperands()[0];
+                res = op.getOperands()[0];
             }
             if (isa<hivm::FixpipeOp>(op)) {
-                return op.getOperands()[1];
+                res = op.getOperands()[1];
             }
             if (isa<hivm::CopyOp>(op)) {
-                return op.getOperands()[1];
+                res = op.getOperands()[1];
             }
             if (isa<memref::MemorySpaceCastOp>(op)) {
-                return op.getOperands()[0];
+                res = op.getOperands()[0];
             }
+        }
+        if (res) {
+          if (llvm::is_contained(excludedValues, res)) {
+              continue;
+          }
+          excludedValues.push_back(res);
+          return res;
         }
     }
     
@@ -540,6 +548,7 @@ void getWaitType(std::string CoreType, scf::ForOp forOp, SmallVector<bool>& wait
     auto scalarWaitPipe = PipeAttr::get(forOp.getContext(), hivm::PIPE::PIPE_S);
     auto cubeWaitPipe = PipeAttr::get(forOp.getContext(), hivm::PIPE::PIPE_FIX);
     auto vectorWaitPipe = PipeAttr::get(forOp.getContext(), hivm::PIPE::PIPE_MTE3);
+    SmallVector<Value> excludedValues;
     forOp.walk([&](Operation* op) {
         if (auto waitOp = dyn_cast<SyncBlockWaitOp>(op)) {
             auto parentOp = op->getParentOp();
@@ -548,12 +557,12 @@ void getWaitType(std::string CoreType, scf::ForOp forOp, SmallVector<bool>& wait
                 if (forOp == ifOp->getParentOp()) {
                   auto waitPipe = waitOp.getPipe();
                   if ((waitPipe == cubeWaitPipe && CoreType == "cube") || (waitPipe == vectorWaitPipe && CoreType == "vector")) {
-                      auto allocOp = findFirstTargetOpAfterWait(waitOp);
+                      auto allocOp = findFirstTargetOpAfterWait(waitOp, excludedValues);
                       waitTypes.push_back(0);
                       allocTypes.push_back(allocOp);
                   }
                   else if (waitPipe != scalarWaitPipe) {
-                      auto allocOp = findFirstTargetOpAfterWait(waitOp);
+                      auto allocOp = findFirstTargetOpAfterWait(waitOp, excludedValues);
                       waitTypes.push_back(1);
                       allocTypes.push_back(allocOp);
                   }
@@ -1174,6 +1183,7 @@ void getAllocBit(ModuleOp module, DenseMap<Value, int>& VecBitMap, DenseMap<Valu
       scopeOpToEdit.push_back(scopeOp);
     });
     for (auto scopeOp : scopeOpToEdit) {
+      SmallVector<Value> excludedValues;
       if (scopeOp->hasAttr("hivm.tcore_type")) {
           auto attr = scopeOp->getAttr("hivm.tcore_type");
           if (attr == aiCAttr) {
@@ -1182,7 +1192,7 @@ void getAllocBit(ModuleOp module, DenseMap<Value, int>& VecBitMap, DenseMap<Valu
                     if (isa<scf::IfOp>(parentOp) && parentOp->hasAttr("ssbuffer")) {
                         auto waitPipe = waitOp.getPipe();
                         if (waitPipe != scalarWaitPipe) {
-                          auto allocOp = findFirstTargetOpAfterWait(waitOp);
+                          auto allocOp = findFirstTargetOpAfterWait(waitOp, excludedValues);
                           if (VecBitMap.find(allocOp) != VecBitMap.end()) {
                               CubeBitMap[allocOp] = VecBitMap[allocOp];
                           } else {
@@ -1198,7 +1208,7 @@ void getAllocBit(ModuleOp module, DenseMap<Value, int>& VecBitMap, DenseMap<Valu
                     if (isa<scf::IfOp>(parentOp) && parentOp->hasAttr("ssbuffer")) {
                         auto waitPipe = waitOp.getPipe();
                         if (waitPipe != scalarWaitPipe) {
-                          auto allocOp = findFirstTargetOpAfterWait(waitOp);
+                          auto allocOp = findFirstTargetOpAfterWait(waitOp, excludedValues);
                           if (VecBitMap.find(allocOp) == VecBitMap.end()) {
                               VecBitMap[allocOp] = vecAcc;
                               vecAcc++;
