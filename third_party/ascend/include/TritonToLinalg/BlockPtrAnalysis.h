@@ -246,7 +246,12 @@ public:
                           const Location &loc,
                           ConversionPatternRewriter &rewriter,
                           const llvm::SmallDenseMap<Value, BlockData> &known);
-
+  
+  static void parseAtomicRmw(triton::AtomicRMWOp op, BlockData &data,
+                            const Location &loc,
+                            ConversionPatternRewriter &rewriter,
+                            const llvm::SmallDenseMap<Value, BlockData> &known);
+  
   static void parseFill(linalg::FillOp op, BlockData &data,
                         const Location &loc,
                         ConversionPatternRewriter &rewriter,
