@@ -158,13 +158,39 @@ def _add_optional_attr(op, name, builder, attrs):
 
 
 def _add_bitcode_attr(op, builder, attrs):
-    if not hasattr(op, 'bitcode'):
+    name = 'bitcode'
+    if not hasattr(op, name):
         return
 
     from pathlib import Path
-    bitcode = Path(getattr(op, 'bitcode'))
-    assert bitcode.exists(), f"Provided bitcode ({bitcode}) not exist"
-    attrs['bitcode'] = builder.get_str_attr(str(bitcode.absolute()))
+    bitcode = Path(getattr(op, name))
+    assert bitcode.exists(), f"Provided bitcode ({name}) not exist"
+    attrs[name] = builder.get_str_attr(str(bitcode.absolute()))
+
+
+def _add_optional_extra_buffer_attr(op, builder, attrs):
+    name = 'extra_buffers'
+    if not hasattr(op, name):
+        return
+
+    extra_buffers = getattr(op, name)
+    if isinstance(extra_buffers, tuple):
+        extra_buffers = [ extra_buffers ]
+
+    extra_buffer_types, extra_buffer_sizes = zip(*extra_buffers)
+    attrs[name + "_types"] = builder.get_type_array_attr([ty.to_ir(builder) for ty in extra_buffer_types])
+    attrs[name + "_sizes"] = builder.get_i64_array_attr(list(extra_buffer_sizes))
+
+
+def _add_optional_indexing_map_attr(op, builder, attrs):
+    # Optional indexing map attribute:
+    # `indexing_map` should be an iterable of al.affine_map (MLIR AffineMap) objects.
+    name = 'indexing_map'
+    if not hasattr(op, name):
+        return
+
+    indexing_map = getattr(op, name)
+    attrs[name] = builder.get_affine_map_array_attr(indexing_map)
 
 
 def _make_attrs(op, builder):
@@ -181,11 +207,16 @@ def _make_attrs(op, builder):
     # Add bit code path attribute, formalize to abosulte path.
     _add_bitcode_attr(op, builder, attrs)
 
+    _add_optional_extra_buffer_attr(op, builder, attrs)
+
+    _add_optional_indexing_map_attr(op, builder, attrs)
+
     _add_optional_attr(op, 'symbol', builder, attrs)
     _add_optional_attr(op, 'source', builder, attrs)
     _add_optional_attr(op, 'compile', builder, attrs)
     # Extra attributes can be added here, such as op.extra_attr="attr_a=xx"
     _add_optional_attr(op, 'extra_attr', builder, attrs)
+
     return attrs
 
 

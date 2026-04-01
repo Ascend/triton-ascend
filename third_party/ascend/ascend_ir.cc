@@ -24,6 +24,7 @@
 
 #include "ir.h"
 #include "pybind11/pybind11.h"
+#include <pybind11/operators.h>
 #include <pybind11/stl.h>
 
 #include "bishengir/Dialect/Annotation/IR/Annotation.h"
@@ -33,6 +34,8 @@
 #include "mlir/AsmParser/AsmParser.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
@@ -66,6 +69,21 @@ struct AscendNPUIROpBuilder : public TritonOpBuilder {
 };
 
 namespace {
+MLIRContext *gDefaultAscendContext = nullptr;
+
+MLIRContext *resolveContext(const py::object &contextObj)
+{
+  if (!contextObj.is_none()) {
+    return &py::cast<MLIRContext &>(contextObj);
+  }
+  if (gDefaultAscendContext) {
+    return gDefaultAscendContext;
+  }
+  throw std::invalid_argument(
+      "No default MLIR context. Pass context explicitly or call "
+      "ascend_ir.load_dialects(context) first.");
+}
+
 struct ModeAndPipes {
   hivm::SyncBlockModeAttr modeAttr = {};
   hivm::PipeAttr cubePipe = {};
@@ -150,6 +168,247 @@ ModeAndPipes GetSyncBlockModeAndPipes(MLIRContext *ctx,
 } // namespace
 
 void init_ascend_ir(py::module &&m) {
+  auto affineExprClass =
+      py::class_<AffineExpr>(m, "affine_expr", py::module_local());
+  affineExprClass
+      .def("__str__", [](AffineExpr self) {
+        std::string str;
+        llvm::raw_string_ostream os(str);
+        self.print(os);
+        return os.str();
+      })
+      .def("__repr__", [](AffineExpr self) {
+        std::string str;
+        llvm::raw_string_ostream os(str);
+        self.print(os);
+        return "<affine_expr " + os.str() + ">";
+      })
+      .def("is_symbolic_or_constant", &AffineExpr::isSymbolicOrConstant)
+      .def("is_pure_affine", &AffineExpr::isPureAffine)
+      .def("is_function_of_dim", &AffineExpr::isFunctionOfDim)
+      .def("compose",
+           [](AffineExpr self, AffineMap map) { return self.compose(map); })
+      .def("get_largest_known_divisor", &AffineExpr::getLargestKnownDivisor)
+      .def("floordiv",
+           [](AffineExpr self, AffineExpr other) { return self.floorDiv(other); })
+      .def("ceildiv",
+           [](AffineExpr self, AffineExpr other) { return self.ceilDiv(other); })
+      .def("mod",
+           [](AffineExpr self, AffineExpr other) { return self % other; })
+      .def("__hash__", [](AffineExpr self) {
+        return py::int_(static_cast<uint64_t>(mlir::hash_value(self)));
+      })
+      .def("__eq__",
+           [](AffineExpr lhs, AffineExpr rhs) { return lhs == rhs; })
+      .def(py::self + py::self)
+      .def(py::self - py::self)
+      .def(py::self * py::self)
+      .def(py::self % py::self);
+  affineExprClass
+      .def_static("get_constant",
+                  [](int64_t val, py::object contextObj) {
+                    auto *context = resolveContext(contextObj);
+                    return getAffineConstantExpr(val, context);
+                  },
+                  py::arg("value"), py::arg("context") = py::none())
+      .def_static("get_dim",
+                  [](uint32_t pos, py::object contextObj) {
+                    auto *context = resolveContext(contextObj);
+                    return getAffineDimExpr(pos, context);
+                  },
+                  py::arg("pos"), py::arg("context") = py::none())
+      .def_static("get_symbol",
+                  [](uint32_t pos, py::object contextObj) {
+                    auto *context = resolveContext(contextObj);
+                    return getAffineSymbolExpr(pos, context);
+                  },
+                  py::arg("pos"), py::arg("context") = py::none());
+
+  py::class_<AffineConstantExpr, AffineExpr>(m, "affine_constant_expr",
+                                             py::module_local())
+      .def("get_value", &AffineConstantExpr::getValue);
+  py::class_<AffineDimExpr, AffineExpr>(m, "affine_dim_expr",
+                                        py::module_local())
+      .def("get_position", &AffineDimExpr::getPosition);
+  py::class_<AffineSymbolExpr, AffineExpr>(m, "affine_symbol_expr",
+                                           py::module_local())
+      .def("get_position", &AffineSymbolExpr::getPosition);
+  py::class_<AffineBinaryOpExpr, AffineExpr>(m, "affine_binary_op_expr",
+                                             py::module_local())
+      .def("get_lhs", &AffineBinaryOpExpr::getLHS)
+      .def("get_rhs", &AffineBinaryOpExpr::getRHS);
+
+  auto affineMapClass = py::class_<AffineMap>(m, "affine_map", py::module_local());
+  affineMapClass
+      .def("__str__", [](AffineMap &self) {
+        std::string str;
+        llvm::raw_string_ostream os(str);
+        self.print(os);
+        return os.str();
+      })
+      .def("__repr__", [](AffineMap &self) {
+        std::string str;
+        llvm::raw_string_ostream os(str);
+        self.print(os);
+        return "<affine_map " + os.str() + ">";
+      })
+      .def("is_identity", &AffineMap::isIdentity)
+      .def("is_permutation", &AffineMap::isPermutation)
+      .def("get_num_dims", &AffineMap::getNumDims)
+      .def("get_num_symbols", &AffineMap::getNumSymbols)
+      .def("get_num_results", &AffineMap::getNumResults)
+      .def("is_empty", &AffineMap::isEmpty)
+      .def("is_single_constant", &AffineMap::isSingleConstant)
+      .def("is_constant", &AffineMap::isConstant)
+      .def("get_constant_result", [](AffineMap &self) -> int64_t {
+        if (!self.isSingleConstant()) {
+          throw std::runtime_error("affine map is not a single constant map");
+        }
+        return self.getSingleConstantResult();
+      })
+      .def("get_result",
+           [](AffineMap &self, uint32_t pos) {
+             if (pos >= self.getNumResults()) {
+               throw py::index_error("result index out of range");
+             }
+             return self.getResult(pos);
+           })
+      .def("get_sub_map",
+           [](AffineMap &self, const std::vector<unsigned> &resultPos) {
+             return self.getSubMap(resultPos);
+           })
+      .def("replace",
+           [](AffineMap &self, AffineExpr expr, AffineExpr replacement,
+              uint32_t numResultDims, uint32_t numResultSymbols) {
+             return self.replace(expr, replacement, numResultDims,
+                                 numResultSymbols);
+           })
+      .def("compose", [](AffineMap &self, AffineMap map) {
+        return self.compose(map);
+      })
+      .def("get_results", [](AffineMap &self) -> std::vector<AffineExpr> {
+        auto results = self.getResults();
+        return std::vector<AffineExpr>(results.begin(), results.end());
+      })
+      .def("__hash__", [](AffineMap &self) {
+        return py::int_(static_cast<uint64_t>(mlir::hash_value(self)));
+      })
+      .def("__eq__", [](AffineMap &lhs, AffineMap &rhs) { return lhs == rhs; })
+      .def("inverse_permutation", [](AffineMap &self) -> py::object {
+        // Validate it's a permutation first
+        if (!self.isPermutation()) {
+          throw py::value_error("AffineMap must be a valid permutation to compute inverse");
+        }
+
+        // Returns AffineMap directly, not a pointer
+        AffineMap inverse = mlir::inversePermutation(self);
+
+        // Check if result is valid (null AffineMap)
+        if (!inverse) {
+          throw py::value_error("Failed to compute inverse permutation");
+        }
+
+        return py::cast(inverse);
+      })
+      .def("to_dict", [](AffineMap &self) -> py::dict {
+        py::list results;
+        for (AffineExpr result : self.getResults()) {
+          if (auto dimExpr = dyn_cast<AffineDimExpr>(result)) {
+            results.append(dimExpr.getPosition());
+          } else {
+            std::string exprStr;
+            llvm::raw_string_ostream os(exprStr);
+            result.print(os);
+            results.append(py::str(exprStr));
+          }
+        }
+
+        py::dict ret;
+        ret["num_dims"] = self.getNumDims();
+        ret["num_symbols"] = self.getNumSymbols();
+        ret["results"] = std::move(results);
+        return ret;
+      });
+  affineMapClass
+      .def_static("get",
+          [](int64_t numDims, int64_t numSymbols, const py::iterable &resultsIn,
+             py::object contextObj) -> AffineMap {
+            MLIRContext *context = nullptr;
+            if (numDims < 0 || numSymbols < 0) {
+              throw std::invalid_argument(
+                  "num_dims and num_symbols must be non-negative");
+            }
+            llvm::SmallVector<AffineExpr> results;
+            for (const auto &item : resultsIn) {
+              if (py::isinstance<AffineExpr>(item)) {
+                auto expr = py::cast<AffineExpr>(item);
+                if (!context) {
+                  context = expr.getContext();
+                }
+                results.push_back(expr);
+                continue;
+              }
+              if (py::isinstance<py::int_>(item)) {
+                if (!context) {
+                  context = resolveContext(contextObj);
+                }
+                int64_t pos = py::cast<int64_t>(item);
+                if (pos < 0 || pos >= numDims) {
+                  throw std::invalid_argument(
+                      "result dim index is out of range for num_dims");
+                }
+                results.push_back(getAffineDimExpr(pos, context));
+                continue;
+              }
+              throw std::invalid_argument(
+                  "results must contain affine_expr or int dim indices");
+            }
+            if (!context) {
+              context = resolveContext(contextObj);
+            }
+            return AffineMap::get(numDims, numSymbols, results, context);
+          },
+          py::arg("num_dims"), py::arg("num_symbols"), py::arg("result_dims"),
+          py::arg("context") = py::none())
+      .def_static("get_identity",
+                  [](int64_t numDims, py::object contextObj) -> AffineMap {
+                    auto *context = resolveContext(contextObj);
+                    if (numDims < 0) {
+                      throw std::invalid_argument(
+                          "num_dims must be non-negative");
+                    }
+                    return AffineMap::getMultiDimIdentityMap(numDims, context);
+                  },
+                  py::arg("num_dims"), py::arg("context") = py::none())
+      .def_static("get_minor_identity",
+                  [](int64_t dims, int64_t results, py::object contextObj) {
+                    auto *context = resolveContext(contextObj);
+                    if (dims < 0 || results < 0) {
+                      throw std::invalid_argument(
+                          "dims/results must be non-negative");
+                    }
+                    return AffineMap::getMinorIdentityMap(dims, results, context);
+                  },
+                  py::arg("dims"), py::arg("results"),
+                  py::arg("context") = py::none())
+      .def_static("get_empty", [](py::object contextObj) {
+        auto *context = resolveContext(contextObj);
+        return AffineMap::get(0, 0, {}, context);
+      }, py::arg("context") = py::none())
+      .def_static("get_permutation",
+                  [](const std::vector<unsigned> &permutation,
+                     py::object contextObj) {
+                    auto *context = resolveContext(contextObj);
+                    return AffineMap::getPermutationMap(permutation, context);
+                  },
+                  py::arg("permutation"), py::arg("context") = py::none())
+      .def_static("get_constant",
+                  [](int64_t value, py::object contextObj) {
+                    auto *context = resolveContext(contextObj);
+                    return AffineMap::getConstantMap(value, context);
+                  },
+                  py::arg("value"), py::arg("context") = py::none());
+
   py::enum_<hivm::AddressSpace>(m, "AddressSpace", py::module_local())
       .value("L1", hivm::AddressSpace::L1)
       .value("UB", hivm::AddressSpace::UB)
@@ -216,6 +475,7 @@ void init_ascend_ir(py::module &&m) {
         .export_values();
 
   m.def("load_dialects", [](MLIRContext &context) {
+    gDefaultAscendContext = &context;
     DialectRegistry registry;
     registry.insert<annotation::AnnotationDialect, mlir::hivm::HIVMDialect,
                     scope::ScopeDialect>();
@@ -259,6 +519,28 @@ void init_ascend_ir(py::module &&m) {
              // Enable parsing of HACC attributes by allowing unregistered dialects.
              ctx->allowUnregisteredDialects();
              return mlir::parseAttribute(value, ctx);
+           })
+      .def("get_affine_map_attr",
+           [](AscendNPUIROpBuilder &self, AffineMap affineMap) -> Attribute {
+             return AffineMapAttr::get(affineMap);
+           })
+      .def("get_affine_map_array_attr",
+           [](AscendNPUIROpBuilder &self,
+              const std::vector<AffineMap> &affineMaps) -> Attribute {
+             auto *ctx = self.getBuilder().getContext();
+             llvm::SmallVector<Attribute> attrs;
+             attrs.reserve(affineMaps.size());
+             for (const auto &map : affineMaps) {
+               attrs.push_back(AffineMapAttr::get(map));
+             }
+             return ArrayAttr::get(ctx, attrs);
+           })
+      .def("get_buffer_ty_with_affine_map",
+           [](AscendNPUIROpBuilder &self, std::vector<int64_t> &shape,
+              Type &elementType, AffineMap affineMap,
+              const Attribute &memorySpace) -> Type {
+             auto layout = AffineMapAttr::get(affineMap);
+             return MemRefType::get(shape, elementType, layout, memorySpace);
            })
       .def("create_fixpipe",
            [](AscendNPUIROpBuilder &self, Value src, Value dst,

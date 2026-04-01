@@ -1,4 +1,21 @@
 from triton.tools.get_ascend_devices import is_compile_on_910_95
+from triton._C.libtriton.ascend import ir as _ascend_ir
+
+# MLIR affine bindings (same objects as triton._C.libtriton.ascend.ir).
+affine_expr = _ascend_ir.affine_expr
+affine_constant_expr = _ascend_ir.affine_constant_expr
+affine_dim_expr = _ascend_ir.affine_dim_expr
+affine_symbol_expr = _ascend_ir.affine_symbol_expr
+affine_binary_op_expr = _ascend_ir.affine_binary_op_expr
+affine_map = _ascend_ir.affine_map
+
+AffineExpr = affine_expr
+AffineConstantExpr = affine_constant_expr
+AffineDimExpr = affine_dim_expr
+AffineSymbolExpr = affine_symbol_expr
+AffineBinaryOpExpr = affine_binary_op_expr
+AffineMap = affine_map
+
 from .core import (
     ascend_address_space,
     builtin,
@@ -84,6 +101,20 @@ __all__ = [
 
     # address space
     "ascend_address_space",
+
+    # ascend IR affine (MLIR)
+    "affine_expr",
+    "affine_constant_expr",
+    "affine_dim_expr",
+    "affine_symbol_expr",
+    "affine_binary_op_expr",
+    "affine_map",
+    "AffineExpr",
+    "AffineConstantExpr",
+    "AffineDimExpr",
+    "AffineSymbolExpr",
+    "AffineBinaryOpExpr",
+    "AffineMap",
 
     # scope
     "scope",
