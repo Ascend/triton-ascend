@@ -152,6 +152,47 @@ def _args_to_operands(op, builder, args, kwargs):
     return operands
 
 
+def _bind_op_arguments(op, args, kwargs):
+    if not op.signature.parameters:
+        return None
+    return op.signature.bind(*args, **kwargs)
+
+
+def _make_align_dim_attrs(op, builder, arg_attrs):
+    # Find op argument by name using op.align_dim's key
+    # We want to return a dict mapping for each align_dim key -> int attribute for the actual bound argument value.
+    name = 'align_dim'
+    if not hasattr(op, name):
+        return
+
+    # To find argument indices matching each align_dim key, check the op.signature parameters
+    # and map align_dim key (argument name) to its index position.
+    align_arg_indices = {}
+    if hasattr(op, "signature"):
+        param_names = list(op.signature.parameters.keys())
+        for arg_name in op.align_dim.keys():
+            if arg_name in param_names:
+                align_arg_indices[arg_name] = param_names.index(arg_name)
+
+    for arg, align_val in op.align_dim.items():
+        if isinstance(arg, str) and arg in align_arg_indices:
+            arg_attrs[align_arg_indices[arg]] = { name : builder.get_int_attr(align_val) }
+            print(arg_attrs[align_arg_indices[arg]])
+        elif isinstance(arg, int):
+            arg_attrs[arg] = { name : builder.get_int_attr(align_val) }
+            print(arg_attrs[arg])
+        else:
+            assert False, f"{name}'s keys should be string or int"
+
+
+def _make_arg_attrs(op, builder):
+    num_args = len(op.signature.parameters) if hasattr(op, "signature") else 0
+    arg_attrs = [{} for _ in range(num_args)]
+
+    _make_align_dim_attrs(op, builder, arg_attrs)
+    return arg_attrs
+
+
 def _add_optional_attr(op, name, builder, attrs):
     if hasattr(op, name):
         attrs[name] = builder.get_str_attr(getattr(op, name))
@@ -256,8 +297,9 @@ def custom_semantic(name: str, *args, _builder=None, **kwargs):
     inputs = _args_to_operands(op, _builder, args, kwargs)
     # Setup attributes.
     attrs = _make_attrs(op, _builder)
+    arg_attrs = _make_arg_attrs(op, _builder)
     # Build IR for the custom op.
-    res = _builder.create_custom_op(name, attrs, inputs, outputs)
+    res = _builder.create_custom_op(name, attrs, inputs, outputs, arg_attrs)
     # Results with same types as outputs.
     res_types = [out.type for out in outs]
     return _to_result(res, res_types)

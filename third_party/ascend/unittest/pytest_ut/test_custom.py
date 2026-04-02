@@ -47,6 +47,10 @@ class my_custom_op:
         # Add optional custom-op attribute: ArrayAttr<AffineMapAttr>.
         self.indexing_map = [al.affine_map.get_identity(1)]
 
+        # Tag ptr2 as an argument that should be aligned at dimension 1.
+        # Tag 2nd argument that should be aligned at dimension 0.
+        self.align_dim = {"ptr2": 1, 1 : 0}
+
 
 @triton.jit
 def my_kernel(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
@@ -164,6 +168,9 @@ def test_custom_op():
             assert "hivm.vf_mode = #hivm.vf_mode" in line
             # Optional indexing map attribute should be attached.
             assert "indexing_map = [" in line
+            # Tagged argument alignment info is attached as integer operand attr.
+            assert "align_dim = 1" in line
+            assert "align_dim = 0" in line
             # All offset converted to int64.
             assert 'i64, ' in line
             assert 'i32, ' not in line

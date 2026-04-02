@@ -487,6 +487,10 @@ void init_ascend_ir(py::module &&m) {
       m, "ascendnpu_ir_builder", py::module_local(), py::dynamic_attr())
       .def(py::init<MLIRContext *, std::string>(), py::arg("context"),
            py::arg("target") = "")
+      .def("get_int_attr",
+           [](AscendNPUIROpBuilder &self, int64_t value) -> Attribute {
+             return IntegerAttr::get(self.getBuilder().getI64Type(), value);
+           })
       .def("get_core_type_attr",
            [](AscendNPUIROpBuilder &self, hivm::TCoreType core_type) -> Attribute {
              return self.getBuilder().getAttr<hivm::TCoreTypeAttr>(core_type);
@@ -594,7 +598,8 @@ void init_ascend_ir(py::module &&m) {
                const std::string &name,
                const py::dict &attrs,
                const std::vector<Value> &ins,
-               const std::vector<Value> &outs) -> std::vector<Value> {
+               const std::vector<Value> &outs,
+               const std::vector<py::dict> &arg_attrs) -> std::vector<Value> {
              ValueRange inputs{ins};
              ValueRange outputs{outs};
              TypeRange res_types{outputs};
@@ -604,6 +609,32 @@ void init_ascend_ir(py::module &&m) {
                Attribute attr_value = py::cast<Attribute>(attr.second);
                op->setAttr(attr_name, attr_value);
              }
+
+             SmallVector<Attribute> dictAttrs(arg_attrs.size());
+             Attribute emptyDict = self.getBuilder().getDictionaryAttr({});
+             for (const auto &[idx, attrs] : llvm::enumerate(arg_attrs)) {
+               if (idx >= op.getNumOperands())
+                 continue;
+
+               if (attrs.is_none()) {
+                 dictAttrs[idx] = emptyDict;
+                 continue;
+               }
+
+               llvm::SmallVector<NamedAttribute> namedAttrs;
+               for (const auto &attr : attrs) {
+                 std::string attr_name = py::cast<std::string>(attr.first);
+                 Attribute attr_value = py::cast<Attribute>(attr.second);
+                 namedAttrs.push_back(
+                    NamedAttribute(self.getBuilder().getStringAttr(attr_name), attr_value));
+               }
+
+               dictAttrs[idx] = self.getBuilder().getDictionaryAttr(namedAttrs);
+             }
+
+             ArrayAttr arg_attrs_array = self.getBuilder().getArrayAttr(dictAttrs);
+             op->setAttr("arg_attrs", arg_attrs_array);
+
              auto results = op->getResults();
              return std::vector<Value>(results.begin(), results.end());
            })
