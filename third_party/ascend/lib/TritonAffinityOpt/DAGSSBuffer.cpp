@@ -390,52 +390,41 @@ scf::ForOp transformLoop(scf::ForOp forOp, OpBuilder &builder) {
     Type ubType = originalStep.getType();
     builder.setInsertionPoint(forOp);
     
-    // 创建类型匹配的常数2
+    int count = 0;
+    for (auto &op : forOp.getBody()->getOperations()) {
+      if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+        auto parentOp = ifOp->getParentOp();
+        if (parentOp == forOp && ifOp->hasAttr("ssbuffer")) {
+          count++;
+        }
+      }
+    }
+
     Value two;
     if (ubType.isIndex()) {
-        two = builder.create<arith::ConstantIndexOp>(loc, 2);
+        two = builder.create<arith::ConstantIndexOp>(loc, count - 1);
     } else if (auto intType = dyn_cast<IntegerType>(ubType)) {
         // 对于整数类型，创建相应类型的常数2
-        two = builder.create<arith::ConstantIntOp>(loc, 2, intType);
+        two = builder.create<arith::ConstantIntOp>(loc, count - 1, intType);
     } else {
         // 其他类型可能需要特殊处理
         llvm::errs() << "Warning: Unexpected type for upper bound: " << ubType << "\n";
         // 尝试创建索引类型的2然后转换
-        auto indexTwo = builder.create<arith::ConstantIndexOp>(loc, 2);
+        auto indexTwo = builder.create<arith::ConstantIndexOp>(loc, count - 1);
         two = builder.create<arith::IndexCastOp>(loc, ubType, indexTwo);
     }
     
-    // 创建乘法：originalUpperBound * 2
-    auto first = builder.create<arith::MulIOp>(
-        forOp.getLoc(),
-        originalUpperBound,
-        two);
-      
-    // 创建乘法：originalUpperBound * 2
-    auto second = builder.create<arith::SubIOp>(
-        forOp.getLoc(),
-        first,
-        originalLowerBound
-        );
-    
-    auto third = builder.create<arith::MulIOp>(
+    auto steps = builder.create<arith::MulIOp>(
         forOp.getLoc(),
         originalStep,
         two
-        );
+      );
 
-    // Create multiplication: originalUpperBound * 2
-    auto fourth = builder.create<arith::AddIOp>(
+    auto nowUpperBound = builder.create<arith::AddIOp>(
         forOp.getLoc(),
-        third,
-        second
-        );
-
-    auto nowUpperBound = builder.create<arith::SubIOp>(
-        forOp.getLoc(),
-        fourth,
-        two
-        );
+        originalUpperBound,
+        steps
+      );
 
     // 3. Create a new for loop
     auto newForOp = builder.create<scf::ForOp>(
@@ -632,44 +621,44 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, DenseMap<Value, int> VecBitMa
     // 2. 提取并处理step值
     Value stepValue = forOp.getStep();
     builder.setInsertionPoint(forOp);
-    auto twoAttr = mlir::IntegerAttr::get(endValue.getType(), 2);
-    auto two = builder.create<mlir::LLVM::ConstantOp>(
-        scopeOp->getLoc(),
-        endValue.getType(),
-        twoAttr);
-    auto first = builder.create<arith::AddIOp>(
-        forOp.getLoc(),
-        endValue.getType(),
-        endValue,
-        two
-    );
+    Location loc = forOp.getLoc();
+    int count = 0;
+    for (auto &op : forOp.getBody()->getOperations()) {
+      if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+        auto parentOp = ifOp->getParentOp();
+        if (parentOp == forOp && ifOp->hasAttr("ssbuffer")) {
+          count++;
+        }
+      }
+    }
 
-    auto second = builder.create<arith::MulIOp>(
+    Value two;
+    Type ubType = stepValue.getType();
+    if (ubType.isIndex()) {
+        two = builder.create<arith::ConstantIndexOp>(loc, count - 1);
+    } else if (auto intType = dyn_cast<IntegerType>(ubType)) {
+        // 对于整数类型，创建相应类型的常数2
+        two = builder.create<arith::ConstantIntOp>(loc, count - 1, intType);
+    } else {
+        // 其他类型可能需要特殊处理
+        llvm::errs() << "Warning: Unexpected type for upper bound: " << ubType << "\n";
+        // 尝试创建索引类型的2然后转换
+        auto indexTwo = builder.create<arith::ConstantIndexOp>(loc, count - 1);
+        two = builder.create<arith::IndexCastOp>(loc, ubType, indexTwo);
+    }
+
+    auto steps = builder.create<arith::MulIOp>(
         forOp.getLoc(),
         endValue.getType(),
         stepValue,
         two
     );
 
-    auto third = builder.create<arith::SubIOp>(
+    auto subLoopValue = builder.create<arith::SubIOp>(
         forOp.getLoc(),
         endValue.getType(),
-        first,
-        second
-    );
-
-    auto fourth = builder.create<arith::AddIOp>(
-        forOp.getLoc(),
-        endValue.getType(),
-        third,
-        startValue
-    );
-        
-    Value subLoopValue = builder.create<arith::DivSIOp>(
-        forOp.getLoc(),
-        endValue.getType(),
-        fourth,
-        two
+        endValue,
+        steps
     );
 
     SmallVector<bool> WaitType;
