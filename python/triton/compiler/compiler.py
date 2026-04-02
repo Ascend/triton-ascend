@@ -334,7 +334,10 @@ def compile(src, target=None, options=None, _env_vars=None):
                 stage_name = "LinalgIRToBytecodeByTritonMLIROpt"
             else:
                 stage_name = "MLIRCompile"
-            error_detail = e.stderr.decode('utf-8') if hasattr(e, 'stderr') and e.stderr else str(e)
+            if hasattr(e, 'stderr') and e.stderr:
+                error_detail = e.stderr.decode('utf-8') if isinstance(e.stderr, bytes) else e.stderr
+            else:
+                error_detail = str(e)
             from ..runtime.cache import FileCacheManager
             if isinstance(fn_cache_manager, FileCacheManager):
                 error_detail += f"\n\n[INFO]: The compiled kernel cache is in {fn_cache_manager.cache_dir}\n\n"
