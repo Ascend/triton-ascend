@@ -52,7 +52,7 @@ struct AscendNPUIROpBuilder : public TritonOpBuilder {
   explicit AscendNPUIROpBuilder(MLIRContext *context, std::string target = "")
       : TritonOpBuilder(context), target(target) {}
 
-  bool is_910_95()
+  const bool is_910_95()
   {
     // TODO: Use enum instead of strings after enabling HACC in satandalone
     // build
