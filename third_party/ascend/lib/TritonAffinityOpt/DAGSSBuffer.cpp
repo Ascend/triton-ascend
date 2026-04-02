@@ -292,54 +292,54 @@ void ControlSsbufV2(ModuleOp module) {
             scopeOps.push_back(scopeOp);
         }
     });
-    for (auto scopeOp : scopeOps) {
-        builder.setInsertionPoint(scopeOp);
-        auto c0i64ConstAttr = mlir::IntegerAttr::get(i64Type, 0);
-        auto c0i64ConstOp = builder.create<mlir::LLVM::ConstantOp>(
-            scopeOp->getLoc(), i64Type, c0i64ConstAttr);
-        auto c32i64ConstAttr = mlir::IntegerAttr::get(i64Type, 32);
-        auto c32i64ConstOp = builder.create<mlir::LLVM::ConstantOp>(
-            scopeOp->getLoc(), i64Type, c32i64ConstAttr);
-        auto c64i64ConstAttr = mlir::IntegerAttr::get(i64Type, 64);
-        auto c64i64ConstOp = builder.create<mlir::LLVM::ConstantOp>(
-            scopeOp->getLoc(), i64Type, c64i64ConstAttr);
-        auto c96i64ConstAttr = mlir::IntegerAttr::get(i64Type, 96);
-        auto c96i64ConstOp = builder.create<mlir::LLVM::ConstantOp>(
-            scopeOp->getLoc(), i64Type, c96i64ConstAttr);
-        auto c0i32ConstAttr = mlir::IntegerAttr::get(i32Type, 0);
-        auto c0i32ConstOp = builder.create<mlir::LLVM::ConstantOp>(
-            scopeOp->getLoc(), i32Type, c0i32ConstAttr);
-        
-        auto c0initInttoptrOp = builder.create<mlir::LLVM::IntToPtrOp>(
-            scopeOp->getLoc(), initPtrType, c0i64ConstOp.getResult());
-        auto c32initInttoptrOp = builder.create<mlir::LLVM::IntToPtrOp>(
-            scopeOp->getLoc(), initPtrType, c32i64ConstOp.getResult());
-        auto c64initInttoptrOp = builder.create<mlir::LLVM::IntToPtrOp>(
-            scopeOp->getLoc(), initPtrType, c64i64ConstOp.getResult());
-        auto c96initInttoptrOp = builder.create<mlir::LLVM::IntToPtrOp>(
-            scopeOp->getLoc(), initPtrType, c96i64ConstOp.getResult());
-        
-        builder.create<LLVM::StoreOp>(
-                scopeOp->getLoc(),
-                c0i32ConstOp,
-                c0initInttoptrOp
-            );
-        builder.create<LLVM::StoreOp>(
-                scopeOp->getLoc(),
-                c0i32ConstOp,
-                c32initInttoptrOp
-            );
-        builder.create<LLVM::StoreOp>(
-                scopeOp->getLoc(),
-                c0i32ConstOp,
-                c64initInttoptrOp
-            );
-        builder.create<LLVM::StoreOp>(
-                scopeOp->getLoc(),
-                c0i32ConstOp,
-                c96initInttoptrOp
-            );
-        break;
+    if (!scopeOps.empty()) {
+      auto scopeOp = scopeOps[0];
+      builder.setInsertionPoint(scopeOp);
+      auto c0i64ConstAttr = mlir::IntegerAttr::get(i64Type, 0);
+      auto c0i64ConstOp = builder.create<mlir::LLVM::ConstantOp>(
+          scopeOp->getLoc(), i64Type, c0i64ConstAttr);
+      auto c32i64ConstAttr = mlir::IntegerAttr::get(i64Type, 32);
+      auto c32i64ConstOp = builder.create<mlir::LLVM::ConstantOp>(
+          scopeOp->getLoc(), i64Type, c32i64ConstAttr);
+      auto c64i64ConstAttr = mlir::IntegerAttr::get(i64Type, 64);
+      auto c64i64ConstOp = builder.create<mlir::LLVM::ConstantOp>(
+          scopeOp->getLoc(), i64Type, c64i64ConstAttr);
+      auto c96i64ConstAttr = mlir::IntegerAttr::get(i64Type, 96);
+      auto c96i64ConstOp = builder.create<mlir::LLVM::ConstantOp>(
+          scopeOp->getLoc(), i64Type, c96i64ConstAttr);
+      auto c0i32ConstAttr = mlir::IntegerAttr::get(i32Type, 0);
+      auto c0i32ConstOp = builder.create<mlir::LLVM::ConstantOp>(
+          scopeOp->getLoc(), i32Type, c0i32ConstAttr);
+      
+      auto c0initInttoptrOp = builder.create<mlir::LLVM::IntToPtrOp>(
+          scopeOp->getLoc(), initPtrType, c0i64ConstOp.getResult());
+      auto c32initInttoptrOp = builder.create<mlir::LLVM::IntToPtrOp>(
+          scopeOp->getLoc(), initPtrType, c32i64ConstOp.getResult());
+      auto c64initInttoptrOp = builder.create<mlir::LLVM::IntToPtrOp>(
+          scopeOp->getLoc(), initPtrType, c64i64ConstOp.getResult());
+      auto c96initInttoptrOp = builder.create<mlir::LLVM::IntToPtrOp>(
+          scopeOp->getLoc(), initPtrType, c96i64ConstOp.getResult());
+      
+      builder.create<LLVM::StoreOp>(
+              scopeOp->getLoc(),
+              c0i32ConstOp,
+              c0initInttoptrOp
+          );
+      builder.create<LLVM::StoreOp>(
+              scopeOp->getLoc(),
+              c0i32ConstOp,
+              c32initInttoptrOp
+          );
+      builder.create<LLVM::StoreOp>(
+              scopeOp->getLoc(),
+              c0i32ConstOp,
+              c64initInttoptrOp
+          );
+      builder.create<LLVM::StoreOp>(
+              scopeOp->getLoc(),
+              c0i32ConstOp,
+              c96initInttoptrOp
+          );
     }
 }
 
@@ -476,7 +476,7 @@ scf::ForOp transformLoop(scf::ForOp forOp, OpBuilder &builder) {
         for (auto operand : yieldOp.getOperands()) {
             newYieldOperands.push_back(mapper.lookupOrDefault(operand));
         }
-        if (hasTargetOps) {
+        if (hasTargetOps != 0) {
             for (auto currentCounter : newCounterArgs) {                
                 // 将更新后的计数器添加到yield操作数中
                 newYieldOperands.push_back(currentCounter);
@@ -486,7 +486,7 @@ scf::ForOp transformLoop(scf::ForOp forOp, OpBuilder &builder) {
     }
     
     // 7. 替换原循环的结果
-    if (hasTargetOps) {
+    if (hasTargetOps != 0) {
         // 新循环有额外的计数器结果，但原循环没有对应结果
         // 我们可以选择只替换原循环对应的结果，或者忽略计数器结果
         unsigned numOriginalResults = forOp.getNumResults();
@@ -598,7 +598,7 @@ DenseMap<int, int> getCounterOffset(scf::ForOp forOp) {
     return bufferMap;
 }
 
-SmallVector<Value> addBufValLoop(scf::ForOp forOp, int numBuffer, int subLoop, DenseMap<Value, int> VecBitMap, DenseMap<Value, int>CubeBitMap, OpBuilder &builder)
+SmallVector<Value> addBufValLoop(scf::ForOp forOp, DenseMap<Value, int> VecBitMap, DenseMap<Value, int>CubeBitMap, OpBuilder &builder)
 {
     auto aiCAttr = hivm::TCoreTypeAttr::get(
             builder.getContext(),
@@ -1246,8 +1246,6 @@ void FlowSssbuf(ModuleOp module) {
     mlir::OpBuilder builder(module.getContext());
     // 收集所有需要转换的循环
     SmallVector<scf::ForOp> targetLoops;
-    int numBuffer = 0;
-    int subLoop = 0;
     llvm::outs()<<"enter flowsssbuf\n\n";
     module.walk([&](Operation* op) {
         if (auto forOp = dyn_cast<scf::ForOp>(op)) {
@@ -1313,7 +1311,7 @@ void FlowSssbuf(ModuleOp module) {
     for (scf::ForOp forOp : transformLoops) {
         DenseMap<scf::IfOp, Value> ifArgMap;
         llvm::outs()<<"before replaceif\n";
-        auto bufvals = addBufValLoop(forOp, numBuffer, subLoop, VecBitMap, CubeBitMap, builder);
+        auto bufvals = addBufValLoop(forOp, VecBitMap, CubeBitMap, builder);
         ReplaceIf(forOp, bufvals, opsToErase, ifArgMap, builder, module);
         llvm::outs()<<"after replaceif\n";
         for (const auto& pair : ifArgMap) {
@@ -1341,14 +1339,8 @@ bool isTransOp(mlir::Operation *op) {
   if (!copyOp)
     return false;
   else {
-      
-      // if (auto allocOp = dyn_cast<memref::AllocOp>(&op)) {
-      //   MemRefType MemRefTy = dyn_cast<MemRefType>(allocOp.getResult().getType());
-      //   auto AddrSpace = dyn_cast_or_null<hivm::AddressSpaceAttr>(MemRefTy.getMemorySpace());
 
-      llvm::outs() << "Copy Op: " << *op << "\n";
       Value copySrc = copyOp.getODSOperands(0).front();
-      llvm::outs() << "copySrc: " << copySrc << "\n";
       MemRefType copySrcTy = dyn_cast<MemRefType>(copySrc.getType());
       auto SrcAddrSpace = dyn_cast_or_null<hivm::AddressSpaceAttr>(copySrcTy.getMemorySpace());
       bool isSrcUbSpace = SrcAddrSpace.getAddressSpace() == hivm::AddressSpace::UB;
@@ -1358,7 +1350,7 @@ bool isTransOp(mlir::Operation *op) {
       auto DstAddrSpace = dyn_cast_or_null<hivm::AddressSpaceAttr>(copyDstTy.getMemorySpace());
       bool isDstCbufSpace = DstAddrSpace.getAddressSpace() == hivm::AddressSpace::L1;
 
-      return isSrcUbSpace && isSrcUbSpace;
+      return isSrcUbSpace && isDstCbufSpace;
   }
 }
 

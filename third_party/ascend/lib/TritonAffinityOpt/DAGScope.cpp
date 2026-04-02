@@ -451,8 +451,13 @@ void processOperationToMove(const OpMoveInfo& info,
       }
 
       mlir::Block* targetBlock = getBlockByIndex(region, originalBlockIndex);
-      aivForOp->moveBefore(targetBlock, targetBlock->end());
-      parentMap[forOp] = aivForOp;
+      if (targetBlock) {
+        aivForOp->moveBefore(targetBlock, targetBlock->end());
+        parentMap[forOp] = aivForOp;
+      } else {
+        llvm::outs()<<"Can't find block by index\n";
+      }
+      
     }
   }
 
@@ -512,7 +517,11 @@ void processOperationToMove(const OpMoveInfo& info,
       auto& region = newIfOp->getRegion(originalRegionIndex);
       auto newYieldOp = builder.create<mlir::scf::YieldOp>(yieldOp.getLoc(), newYieldOperands);
       mlir::Block* targetBlock = getBlockByIndex(region, originalBlockIndex);
-      newYieldOp->moveBefore(targetBlock, targetBlock->end());
+      if (targetBlock) {
+        newYieldOp->moveBefore(targetBlock, targetBlock->end());
+      } else {
+        llvm::outs()<<"Can't find block by index\n";
+      }
     }
   }
 
@@ -579,8 +588,12 @@ void processOperationToMove(const OpMoveInfo& info,
       }
 
       mlir::Block* targetBlock = getBlockByIndex(region, originalBlockIndex);
-      aivIfOp->moveBefore(targetBlock, targetBlock->end());
-      parentMap[ifOp] = aivIfOp;
+      if (targetBlock) {
+        aivIfOp->moveBefore(targetBlock, targetBlock->end());
+        parentMap[ifOp] = aivIfOp;
+      } else {
+        llvm::outs()<<"Can't find block by index\n";
+      }
     }
   }
 
@@ -601,15 +614,17 @@ void processOperationToMove(const OpMoveInfo& info,
       auto mappedParentOp = parentIt->second;
       auto& region = mappedParentOp->getRegion(originalRegionIndex);
 
-      if (isa<scf::IfOp>(mappedParentOp)) {
-        llvm::outs()<<"parentis :"<<*mappedParentOp<<"  sss\n\n\n\n";
-      }
       if (region.empty()) {
         region.push_back(new mlir::Block());
       }
 
       mlir::Block* targetBlock = getBlockByIndex(region, originalBlockIndex);
-      clonedOp->moveBefore(targetBlock, targetBlock->end());
+      if (targetBlock) {
+        clonedOp->moveBefore(targetBlock, targetBlock->end());
+      } else {
+        llvm::outs()<<"Can't find block by index\n";
+      }
+      
     }
   }
 }
@@ -1097,7 +1112,11 @@ void DAGScopePass::runOnOperation() {
     }
 
     auto funcName = funcOp.getName();
-    auto& main_graph = *(AffinityDAG::GraphManager::getInstance().getGraph(funcName));
+    auto* graph_ptr = AffinityDAG::GraphManager::getInstance().getGraph(funcName);
+    if (!graph_ptr) {
+      continue;
+    }
+    auto& main_graph = *graph_ptr;
 
 
     auto ScopeList = encapsulateWithScope(funcOp);
