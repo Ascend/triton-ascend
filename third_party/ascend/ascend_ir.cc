@@ -441,6 +441,21 @@ void init_ascend_ir(py::module &&m) {
     .value("MIX", hivm::VFMode::MIX)
     .export_values();
 
+  py::enum_<hivm::IteratorType>(m, "IteratorType", py::module_local())
+    .value("Parallel", hivm::IteratorType::kParallel)
+    .value("Broadcast", hivm::IteratorType::kBroadcast)
+    .value("Transpose", hivm::IteratorType::kTranspose)
+    .value("Reduction", hivm::IteratorType::kReduction)
+    .value("Interleave", hivm::IteratorType::kInterleave)
+    .value("Deinterleave", hivm::IteratorType::kDeinterleave)
+    .value("Inverse", hivm::IteratorType::kInverse)
+    .value("Pad", hivm::IteratorType::kPad)
+    .value("Concat", hivm::IteratorType::kConcat)
+    .value("Gather", hivm::IteratorType::kGather)
+    .value("Cumulative", hivm::IteratorType::kCumulative)
+    .value("Opaque", hivm::IteratorType::kOpaque)
+    .export_values();
+
   py::enum_<hivm::FixpipeDMAMode>(m, "FixpipeDMAMode", py::module_local())
       .value("NZ2DN", hivm::FixpipeDMAMode::NZ2DN)
       .value("NZ2ND", hivm::FixpipeDMAMode::NZ2ND)
@@ -503,6 +518,13 @@ void init_ascend_ir(py::module &&m) {
            [](AscendNPUIROpBuilder &self, hivm::VFMode mode) -> Attribute {
              return self.getBuilder().getAttr<hivm::VFModeAttr>(mode);
            })
+      .def("get_iterator_types_attr",
+          [](AscendNPUIROpBuilder &self, const std::vector<hivm::IteratorType>& array) {
+          auto attrs = llvm::to_vector(llvm::map_range(array, [&self](hivm::IteratorType type) {
+                return cast<Attribute>(self.getBuilder().getAttr<hivm::IteratorTypeAttr>(type));
+          }));
+          return self.getBuilder().getArrayAttr(attrs);
+          })
       .def("get_t_core_type_attr_name",
            [](AscendNPUIROpBuilder &self) -> std::string {
              return hivm::TCoreTypeAttr::name.str();
@@ -602,8 +624,9 @@ void init_ascend_ir(py::module &&m) {
                const std::vector<py::dict> &arg_attrs) -> std::vector<Value> {
              ValueRange inputs{ins};
              ValueRange outputs{outs};
+             ValueRange temp_buffers{};
              TypeRange res_types{outputs};
-             auto op = self.create<hivm::CustomOp>(res_types, name, inputs, outputs);
+             auto op = self.create<hivm::CustomOp>(res_types, name, inputs, outputs, temp_buffers);
              for (auto &attr : attrs) {
                std::string attr_name = py::cast<std::string>(attr.first);
                Attribute attr_value = py::cast<Attribute>(attr.second);

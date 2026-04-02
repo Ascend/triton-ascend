@@ -234,6 +234,14 @@ def _add_optional_indexing_map_attr(op, builder, attrs):
     attrs[name] = builder.get_affine_map_array_attr(indexing_map)
 
 
+def _add_optional_iterator_types_attr(op, builder, attrs):
+    name = 'iterator_types'
+    if not hasattr(op, name):
+        return
+
+    attrs[name] = builder.get_iterator_types_attr([iterator_type.value for iterator_type in getattr(op, name)])
+
+
 def _make_attrs(op, builder):
     attrs = {
         'hivm.tcore_type': builder.get_core_type_attr(op.core.value),
@@ -248,9 +256,11 @@ def _make_attrs(op, builder):
     # Add bit code path attribute, formalize to abosulte path.
     _add_bitcode_attr(op, builder, attrs)
 
-    _add_optional_extra_buffer_attr(op, builder, attrs)
 
     _add_optional_indexing_map_attr(op, builder, attrs)
+    _add_optional_iterator_types_attr(op, builder, attrs)
+
+    _add_optional_extra_buffer_attr(op, builder, attrs)
 
     _add_optional_attr(op, 'symbol', builder, attrs)
     _add_optional_attr(op, 'source', builder, attrs)

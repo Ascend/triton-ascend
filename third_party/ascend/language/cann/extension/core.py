@@ -36,6 +36,7 @@ __all__ = [
     "is_builtin",
     "MODE",
     "PIPE",
+    "IteratorType",
     "sub_vec_id",
     "sub_vec_num",
     "sync_block_all",
@@ -122,6 +123,21 @@ class MODE(enum.Enum):
     SIMD = ascend_ir.MODE.SIMD
     SIMT = ascend_ir.MODE.SIMT
     MIX = ascend_ir.MODE.MIX
+
+
+class IteratorType(enum.Enum):
+    Parallel = ascend_ir.IteratorType.Parallel
+    Broadcast = ascend_ir.IteratorType.Broadcast
+    Transpose = ascend_ir.IteratorType.Transpose
+    Reduction = ascend_ir.IteratorType.Reduction
+    Interleave = ascend_ir.IteratorType.Interleave
+    Deinterleave = ascend_ir.IteratorType.Deinterleave
+    Inverse = ascend_ir.IteratorType.Inverse
+    Pad = ascend_ir.IteratorType.Pad
+    Concat = ascend_ir.IteratorType.Concat
+    Gather = ascend_ir.IteratorType.Gather
+    Cumulative = ascend_ir.IteratorType.Cumulative
+    Opaque = ascend_ir.IteratorType.Opaque
 
 
 class ascend_address_space_base(bl.address_space):

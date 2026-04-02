@@ -42,6 +42,20 @@ class my_custom_op:
     symbol = "my_custom_func"
     # fake path, this test only check Triton successfully lowered to MLIR
     bitcode = os.path.abspath(__file__)
+    iterator_types = [
+        al.IteratorType.Parallel,
+        al.IteratorType.Broadcast,
+        al.IteratorType.Transpose,
+        al.IteratorType.Reduction,
+        al.IteratorType.Interleave,
+        al.IteratorType.Deinterleave,
+        al.IteratorType.Inverse,
+        al.IteratorType.Pad,
+        al.IteratorType.Concat,
+        al.IteratorType.Gather,
+        al.IteratorType.Cumulative,
+        al.IteratorType.Opaque,
+    ]
 
     def __init__(self, x, ptr1, ptr2, offset: tl.int64, other, out=None):
         # Add optional custom-op attribute: ArrayAttr<AffineMapAttr>.
@@ -174,6 +188,22 @@ def test_custom_op():
             # All offset converted to int64.
             assert 'i64, ' in line
             assert 'i32, ' not in line
+            assert "iterator_types" in line
+            for iterator_name in (
+                "parallel",
+                "broadcast",
+                "transpose",
+                "reduction",
+                "interleave",
+                "deinterleave",
+                "inverse",
+                "pad",
+                "concat",
+                "gather",
+                "cumulative",
+                "opaque",
+            ):
+                assert iterator_name in line
 
 
 def _custom_lines(mlir: str, op_name: str):
