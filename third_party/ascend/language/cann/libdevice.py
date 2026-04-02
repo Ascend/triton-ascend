@@ -79,18 +79,25 @@ def atan(arg0, _builder=None):
 
 @core.extern
 def tanh(arg0, _builder=None):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
-        return core.extern_elementwise(
-            "", "", [arg0], {
-                (core.dtype("fp32"), ): ("__hmf_tanh_fp32", core.dtype("fp32")),
-            }, is_pure=True, _builder=_builder)
+    arg0 = semantic.to_tensor(arg0, _builder)
+    original_dtype = arg0.dtype
+    if original_dtype == core.dtype("bf16"):
+        arg0 = semantic.cast(arg0, core.float32, _builder)
+
+    if triton_enable_libdevice():
+        dispatch = {
+            (core.dtype("fp32"), ): ("__hmf_tanh_fp32", core.dtype("fp32")),
+        }
     else:
-        return core.extern_elementwise(
-            "", "", [arg0], {
-                (core.dtype("fp32"), ): ("__hmf_tanhf", core.dtype("fp32")),
-                (core.dtype("fp16"), ): ("__hmf_tanhDh", core.dtype("fp16")),
-            }, is_pure=True, _builder=_builder)
+        dispatch = {
+            (core.dtype("fp32"), ): ("__hmf_tanhf", core.dtype("fp32")),
+            (core.dtype("fp16"), ): ("__hmf_tanhDh", core.dtype("fp16")),
+        }
+
+    res = core.extern_elementwise("", "", [arg0], dispatch, is_pure=True, _builder=_builder)
+    if original_dtype == core.dtype("bf16"):
+        return semantic.cast(res, core.dtype("bf16"), _builder)
+    return res
 
 @core.extern
 def ilogb(arg0, _builder=None):

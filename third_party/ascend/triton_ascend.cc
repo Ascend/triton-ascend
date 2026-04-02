@@ -282,10 +282,6 @@ void init_triton_ascend_ir(py::module &&m) {
 
         return op->getResult(0);
       })
-    .def("create_tanh",
-      [](TritonOpBuilder &self, Value &val) -> Value {
-        return self.create<math::TanhOp>(val);
-      })
     // Add an annotation
     .def("create_annotation",
       [](TritonOpBuilder &self, Value &ptr, const std::string &attrKey,
