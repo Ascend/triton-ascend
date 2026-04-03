@@ -2015,7 +2015,7 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
                                                                      (allow_tf32 or allow_tf32 is None)) else "ieee")
         # when setting allow_tf32, use input_precision='hf32' on Ascend instead.
         if allow_tf32:
-            default_precision = "hf32"
+            input_precision = "hf32"
     else:
         if input_precision == "tf32":
             input_precision = "hf32"
