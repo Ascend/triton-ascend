@@ -19,7 +19,8 @@ if(NOT WIN32)
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 endif()
 
-
+# Security compilation options settings
+include(${CMAKE_CURRENT_SOURCE_DIR}/safe_compile.cmake)
 
 # Options
 option(TRITON_BUILD_TUTORIALS "Build C++ Triton tutorials" ON)
