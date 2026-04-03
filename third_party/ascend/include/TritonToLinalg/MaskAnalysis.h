@@ -108,7 +108,7 @@ public:
 
   tensor::ExtractSliceOp getExtractSlice(Value source, const Location &loc,
                                          OpBuilder &builder) const;
-  
+
   tensor::ExtractSliceOp getExtractSlice(Value source, const Location &loc,
                                         OpBuilder &builder,
                                         SmallVector<OpFoldResult> offsets,
@@ -147,6 +147,10 @@ private:
   // Helper function to handle operator `and` both mask state
   LogicalResult minStates(const MaskState &lhsState, const MaskState &rhsState,
                           const Location &loc, OpBuilder &builder);
+
+  OpFoldResult clampToNonNegativeIndex(const OpFoldResult value,
+                                       const Location &loc,
+                                       OpBuilder &builder) const;
 
   // Helper functions to parse values to populate MaskState
 
