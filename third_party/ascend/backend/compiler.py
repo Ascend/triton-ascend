@@ -555,6 +555,10 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         if vf_merge_level is not None:
             cmd_list += [f"--enable-vf-merge-level={vf_merge_level}"]
 
+        hfusion_enable_multiple_consumer_fusion = metadata["hfusion_enable_multiple_consumer_fusion"]
+        if hfusion_enable_multiple_consumer_fusion:
+            cmd_list += [f"--hfusion-enable-multiple-consumer-fusion={hfusion_enable_multiple_consumer_fusion}"]
+        
         if opt.debug:
             print(f"[DEBUG] cmd_list: {' '.join(cmd_list)}")
 
@@ -859,6 +863,7 @@ class NPUOptions:
     enable_mixed_cv: bool = None
     enable_vf_fusion: bool = False
     add_auto_scheduling: bool = False
+    hfusion_enable_multiple_consumer_fusion: bool = False
 
     stream: int = None
     parallel_mode: str = "simd"
