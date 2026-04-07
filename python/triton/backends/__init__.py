@@ -35,7 +35,12 @@ class Backend:
 def _discover_backends():
     backends = dict()
     root = os.path.dirname(__file__)
+    # The package does not ship the files required to load the
+    # upstream nvidia and amd backends, so skip discovering them here.
+    ignored_dirs = {"nvidia", "amd"}
     for name in os.listdir(root):
+        if name in ignored_dirs:
+            continue
         if not os.path.isdir(os.path.join(root, name)):
             continue
         if name.startswith('__'):
