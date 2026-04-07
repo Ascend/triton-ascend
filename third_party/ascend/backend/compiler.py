@@ -420,6 +420,10 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
                 f"--enable-auto-multi-buffer={multibuffer}",
             ]
 
+        disable_tightly_coupled_buffer_reuse = metadata["disable_tightly_coupled_buffer_reuse"]
+        if disable_tightly_coupled_buffer_reuse:
+            _compile_option_list += ["--disable-tightly-coupled-buffer-reuse"]
+
         _compile_option_list += [
             f"--enable-auto-bind-sub-block={get_auto_bind_sub_block_option(metadata)}",
         ]
@@ -558,7 +562,7 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         hfusion_enable_multiple_consumer_fusion = metadata["hfusion_enable_multiple_consumer_fusion"]
         if hfusion_enable_multiple_consumer_fusion:
             cmd_list += [f"--hfusion-enable-multiple-consumer-fusion={hfusion_enable_multiple_consumer_fusion}"]
-        
+
         if opt.debug:
             print(f"[DEBUG] cmd_list: {' '.join(cmd_list)}")
 
@@ -730,7 +734,7 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += [
                 f"--link-aicore-bitcode={get_libdevice()}"
             ]
-        
+
         disable_size_align_for_cast = metadata["disable_size_align_for_cast"]
         if disable_size_align_for_cast is not None:
             _compile_option_list += \
@@ -840,6 +844,7 @@ class NPUOptions:
     multibuffer: bool = not is_compile_on_910_95
     enable_ubuf_saving: bool = None
     enable_auto_bind_sub_block: bool = None
+    disable_tightly_coupled_buffer_reuse: bool = False
     enable_select_analysis: bool = True
     enable_hivm_auto_cv_balance: bool = None
     sync_solver: bool = None
