@@ -23,8 +23,11 @@
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h"
 #include "Utils/Utils.h"
 
+#include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
+#include "ascend/include/TritonToUnstructure/OffsetAnalysis.h"
 #include "ascend/include/TritonToLinalg/MaskAnalysis.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
+#include "ascend/include/TritonToStructured/MemOpConverter.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
@@ -46,6 +49,12 @@ namespace triton {
 
 using namespace mlir;
 using namespace hivm;
+
+// File-scope flags set by DiscreteMaskAccessConversionPass::runOnOperation()
+// before pattern application, so that OpRewritePattern subclasses can read them.
+static bool compileOn91095Flag = false;
+static bool forceSimtTemplateFlag = false;
+static bool enableSyncBlockLockFlag = true;
 
 LogicalResult isDiscreteMask(Operation *op, Value mask,
                              PatternRewriter &rewriter) {
@@ -153,11 +162,33 @@ struct DiscreteMaskStoreConversion : OpRewritePattern<triton::StoreOp> {
     if (failed(isDiscreteMask(op, mask, rewriter)))
       return failure();
 
+    if (compileOn91095Flag && forceSimtTemplateFlag) {
+      llvm::DenseMap<Value, PtrOffsetInfo> offsetMap;
+      mlir::triton::parse(dst, loc, rewriter, offsetMap);
+
+      if (!offsetMap.contains(dst)) {
+        return failure();
+      }
+
+      auto &info = offsetMap[dst];
+      Value basePtr  = info.getPtr();
+      Value totalOffset = info.getOffset();
+
+      rewriter.create<triton::ascend::IndirectStoreOp>(loc, basePtr, totalOffset, src, mask);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     // When mask = contMask & discMask, use contMask to bound GM accesses and
     // discMask to select the final per-element value. This prevents the
     // unguarded full-load from reading past the tail-block boundary.
     auto [contMask, discMask] = decomposeAndMask(op, mask, loc, rewriter);
     if (contMask && discMask) {
+      // insert sync_block_lock
+      auto lockVar = MemOpConverter::createSyncBlockLockVar(rewriter, loc);
+      if (enableSyncBlockLockFlag) {
+        rewriter.create<hivm::SyncBlockLockOp>(loc, lockVar);
+      }
       auto safeLoad = rewriter.create<triton::LoadOp>(
           loc, dst, contMask, op.getCache(), op.getEvict(), false);
       auto selOp = rewriter.create<arith::SelectOp>(
@@ -166,11 +197,19 @@ struct DiscreteMaskStoreConversion : OpRewritePattern<triton::StoreOp> {
           loc, dst, selOp, contMask, op.getCache(), op.getEvict());
       newStore->setAttr(ConverterUtils::discreteMaskAttrName,
                         UnitAttr::get(rewriter.getContext()));
+      if (enableSyncBlockLockFlag) {
+        rewriter.create<hivm::SyncBlockUnlockOp>(loc, lockVar);
+      }
       rewriter.replaceOp(op, newStore);
       return success();
     }
 
     // Fallback: original full load + select (contMask absent, pure discrete).
+    // insert sync_block_lock
+    auto lockVar = MemOpConverter::createSyncBlockLockVar(rewriter, loc);
+    if (enableSyncBlockLockFlag) {
+      rewriter.create<hivm::SyncBlockLockOp>(loc, lockVar);
+    }
     auto loadFromDstOp = rewriter.create<triton::LoadOp>(
         loc, dst, op.getCache(), op.getEvict(), false);
     auto selOp = rewriter.create<arith::SelectOp>(loc, mask, src,
@@ -179,6 +218,9 @@ struct DiscreteMaskStoreConversion : OpRewritePattern<triton::StoreOp> {
         loc, dst, selOp, op.getCache(), op.getEvict());
     newStore->setAttr(ConverterUtils::discreteMaskAttrName,
                       UnitAttr::get(rewriter.getContext()));
+    if (enableSyncBlockLockFlag) {
+      rewriter.create<hivm::SyncBlockUnlockOp>(loc, lockVar);
+    }
     rewriter.replaceOp(op, newStore);
     return success();
   }
@@ -295,7 +337,7 @@ DiscreteMaskAccessConversionPass::DiscreteMaskAccessConversionPass(
 void DiscreteMaskAccessConversionPass::runOnOperation() {
   compileOn91095Flag = this->compileOn91095;
   forceSimtTemplateFlag = this->forceSimtTemplate;
-
+  enableSyncBlockLockFlag = this->enableSyncBlockLock;
   auto moduleOp = getOperation();
 
   RewritePatternSet patterns(&getContext());
