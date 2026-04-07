@@ -2,7 +2,6 @@
 #define TRITON_AFFINITY_UTILS_HPP
 
 #include <functional>
-#include <type_traits>
 
 namespace mlir::AffinityDAG {
 

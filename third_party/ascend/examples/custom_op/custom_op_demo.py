@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import subprocess
+import os
 import triton
 import triton.language as tl
 import triton.language.extra.cann.extension as al
@@ -16,6 +17,9 @@ class min_custom_op:
     pipe = al.PIPE.PIPE_MTE2
     mode = al.MODE.SIMD
 
+    symbol = 'min_custom_op_impl'
+    bitcode = os.path.abspath(__file__)
+
 
 @al.register_custom_op
 class simple_custom_op:
@@ -26,6 +30,9 @@ class simple_custom_op:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMT
+
+    symbol = 'simple_custom_op_impl'
+    bitcode = os.path.abspath(__file__)
 
     # __init__ method is optional, but it can be used for better user experience
     # when provided. for example, you can validate arguments here.
@@ -41,6 +48,9 @@ class _example_custom_op:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMT
+
+    symbol = 'example_custom_op_impl'
+    bitcode = os.path.abspath(__file__)
 
     def __init__(self, src, index, offset: tl.int64, axis, out=None):
         # support validate arguments in __init__ method.

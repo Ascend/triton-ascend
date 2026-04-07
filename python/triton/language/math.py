@@ -257,13 +257,6 @@ def fma(x, y, z, _semantic=None):
     return core.tensor(_semantic.builder.create_fma(x.handle, y.handle, z.handle), x.type)
 
 
-@core.builtin
-@_check_dtype(dtypes=["bf16", "fp16", "fp32"])
-@_add_math_1arg_docstr("error function")
-@core._tensor_member_fn
-def tanh(x, _semantic=None):
-    x = _semantic.to_tensor(x)
-    return core.tensor(_semantic.builder.create_tanh(x.handle), x.type)
 
 @core.builtin
 @_add_math_2arg_docstr("cdiv")

@@ -6,6 +6,8 @@
 #include "ascend/include/TritonToHIVM/Passes.h"
 #include "ascend/include/TritonToLinalg/Passes.h"
 #include "ascend/include/TritonToLLVM/Passes.h"
+
+#include "ascend/include/TritonToGraph/Passes.h"
 #include "ascend/include/TritonToStructured/Passes.h"
 #include "ascend/include/TritonToUnstructure/Passes.h"
 
@@ -105,6 +107,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerTritonToHFusionPasses();
   mlir::triton::registerTritonToLLVMPasses();
   mlir::triton::registerAutoBlockifyPasses();
+  mlir::triton::cfg::registerTritonToGraphPasses();
   mlir::triton::registerBubbleUpOperationPass();
 
   mlir::registerLLVMDIScope();

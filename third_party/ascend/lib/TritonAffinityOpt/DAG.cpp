@@ -225,61 +225,38 @@ OpNode::OpNode(Operation* op, Graph* graph) : Node(Node::NK_Op), op(op) {
       SmallVector<RegionSuccessor, 2> succRegions;
 
       branchOp.getSuccessorRegions(region, succRegions);
-      auto currTerminator = llvm::cast<RegionBranchTerminatorOpInterface>(subgraph.terminator->op);
-
-      for(auto& succ : succRegions) {
-        auto forwardedVal = currTerminator.getSuccessorOperands(succ);
-        if (succ.isParent()) {
-          // Step1: first yield to parent -> results: double direction
-          if (!terminator && subgraph.terminator) {
-            terminator = subgraph.terminator;
-            for(auto [forwardedVal, resultNode] : llvm::zip_equal(
-              forwardedVal,
-              outputs
-            )) {
-              auto resultValueNode = llvm::dyn_cast<ValueNode>(resultNode);
-              assert(resultValueNode && "Output of a OpNode should be ValueNode!");
-              auto forwardedNode = valueMap[forwardedVal].get();
-              resultValueNode->source = forwardedNode;
-              forwardedNode->outputs.push_back(resultNode);
+      if (auto currTerminator = dyn_cast<RegionBranchTerminatorOpInterface>(subgraph.terminator->op)) {
+        for(auto& succ : succRegions) {
+          auto forwardedVal = currTerminator.getSuccessorOperands(succ);
+          if (succ.isParent()) {
+            // Step1: first yield to parent -> results: double direction
+            if (!terminator && subgraph.terminator) {
+              terminator = subgraph.terminator;
+              for(auto [forwardedVal, resultNode] : llvm::zip_equal(
+                forwardedVal,
+                outputs
+              )) {
+                auto resultValueNode = llvm::dyn_cast<ValueNode>(resultNode);
+                assert(resultValueNode && "Output of a OpNode should be ValueNode!");
+                auto forwardedNode = valueMap[forwardedVal].get();
+                resultValueNode->source = forwardedNode;
+                forwardedNode->outputs.push_back(resultNode);
+              }
             }
-          }
 
-        } else {
-          // Step2: Region terminator -> Succ Operands
-          auto succRegion = succ.getSuccessor();
+          } else {
+            // Step2: Region terminator -> Succ Operands
+            auto succRegion = succ.getSuccessor();
 
-          // // [FIXME] what if a region can be a successor of multiple regions? Do we need to restrict to If For and While here?
-          // auto toString = [](auto& whatever) {
-          //   std::string result;
-          //   llvm::raw_string_ostream rss(result);
-          //   whatever.print(rss);
-          //   return result;
-          // };
-          // auto regionStr = [&](Region& region) {
-          //   return toString(region.getBlocks().front());
-          // };
-          // llvm::dbgs() << llvm::formatv(
-          //   "==========\n"
-          //   "currRegion: \n"
-          //   "{0}\n"
-          //   "==========\n"
-          //   "succRegion:\n"
-          //   "{1}"
-          //   "\n",
-          //   regionStr(region),
-          //   regionStr(*succRegion)
-          // );
-          // llvm::dbgs().flush();
-
-          for(auto [operand, succInput] : llvm::zip_equal(
-            forwardedVal,
-            succ.getSuccessorInputs()
-          )) {
-            auto forwardedNode = valueMap[operand].get();
-            auto succNode = valueMap[succInput].get();
-            forwardedNode->outputs.push_back(succNode);
-            succNode->source = forwardedNode;
+            for(auto [operand, succInput] : llvm::zip_equal(
+              forwardedVal,
+              succ.getSuccessorInputs()
+            )) {
+              auto forwardedNode = valueMap[operand].get();
+              auto succNode = valueMap[succInput].get();
+              forwardedNode->outputs.push_back(succNode);
+              succNode->source = forwardedNode;
+            }
           }
         }
       }

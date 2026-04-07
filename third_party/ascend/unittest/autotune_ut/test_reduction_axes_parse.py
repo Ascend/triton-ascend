@@ -64,7 +64,8 @@ def test_triton_max_last_dim_case1(mock_autotuner):
         "low_dim_axes": ["ry"],
         "reduction_axes": ["ry"],
     }
-    act_res = triton_max_last_dim1[(1,)]()
+    grid = lambda meta: (meta["X0BLOCK"],)
+    act_res = triton_max_last_dim1[grid]()
 
     check_axes_parse_res(act_res, ref_res)
 
@@ -111,7 +112,8 @@ def test_triton_max_last_dim_case2(mock_autotuner):
         "low_dim_axes": ["ry"],
         "reduction_axes": ["ry"],
     }
-    act_res = triton_max_last_dim2[(1,)]()
+    grid = lambda meta: (meta["X0BLOCK"],)
+    act_res = triton_max_last_dim2[grid]()
 
     check_axes_parse_res(act_res, ref_res)
 
@@ -158,6 +160,7 @@ def test_triton_max_last_dim_case3(mock_autotuner):
         "low_dim_axes": ["ry"],
         "reduction_axes": ["ry"],
     }
-    act_res = triton_max_last_dim3[(1,)]()
+    grid = lambda meta: (meta["X0BLOCK"],)
+    act_res = triton_max_last_dim3[grid]()
 
     check_axes_parse_res(act_res, ref_res)

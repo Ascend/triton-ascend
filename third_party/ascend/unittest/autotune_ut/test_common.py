@@ -40,6 +40,7 @@ def MockAutoTilingTunerRun(self, *args, **kwargs):
         "tiling_params": self.tiling_params,
         "low_dim_axes": self.low_dim_axes,
         "reduction_axes": self.reduction_axes,
+        "persistent_reduction": self.persistent_reduction,
     }
 
 

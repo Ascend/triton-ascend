@@ -55,7 +55,8 @@ def test_tiling_axis_parse_base_case1(mock_autotuner):
         "low_dim_axes": ["x"],
         "reduction_axes": [],
     }
-    act_res = triton_tiling_axis_parse_base_case1[(1,)]()
+    grid = lambda meta: (meta["BLOCK_SIZE"],)
+    act_res = triton_tiling_axis_parse_base_case1[grid]()
 
     check_axes_parse_res(act_res, ref_res)
 
@@ -91,7 +92,8 @@ def test_tiling_axis_parse_base_case2(mock_autotuner):
         "low_dim_axes": ["x"],
         "reduction_axes": [],
     }
-    act_res = triton_tiling_axis_parse_base_case2[(1,)]()
+    grid = lambda meta: (meta["BLOCK_SIZE"],)
+    act_res = triton_tiling_axis_parse_base_case2[grid]()
 
     check_axes_parse_res(act_res, ref_res)
 
@@ -127,6 +129,7 @@ def test_tiling_axis_parse_base_case3(mock_autotuner):
         "low_dim_axes": ["x"],
         "reduction_axes": [],
     }
-    act_res = triton_tiling_axis_parse_base_case3[(1,)]()
+    grid = lambda meta: (meta["BLOCK_SIZE"],)
+    act_res = triton_tiling_axis_parse_base_case3[grid]()
 
     check_axes_parse_res(act_res, ref_res)

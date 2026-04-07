@@ -744,11 +744,10 @@ void DAGSyncPass::insertSyncAndMovementForCrossBlock(mlir::Operation *srcOp, mli
 
         // wait 在内层 block 入口前
         mlir::Operation *parentOp = dstBlock->getParentOp();
-        while (srcOp->getBlock() != parentOp->getBlock()) {
-            // llvm::outs() << "******** get parentOp\n";
-            parentOp = parentOp->getBlock()->getParentOp();
-        }
         if (parentOp) {
+            while (srcOp->getBlock() != parentOp->getBlock()) {
+                parentOp = parentOp->getBlock()->getParentOp();
+            }
             builder.setInsertionPoint(parentOp);
             coreAttr = hivm::TCoreTypeAttr::get(builder.getContext(), hivm::TCoreType::VECTOR);
             builder.create<SyncBlockWaitOp>(loc, coreAttr, setPipe, waitPipe, flagId);
@@ -758,7 +757,6 @@ void DAGSyncPass::insertSyncAndMovementForCrossBlock(mlir::Operation *srcOp, mli
             builder.create<SyncBlockWaitOp>(loc, coreAttr, setPipe, waitPipe, flagId);
         }
 
-        // llvm::outs() << "Inserted cross-block CUBE->VECTOR sync and data movement (flag=" << flag << ")\n";
     }
     // VECTOR -> CUBE
     else if (srcType == CoreType::VECTOR_ONLY && dstType == CoreType::CUBE_ONLY) {
@@ -1215,21 +1213,8 @@ void DAGSyncPass::runOnOperation()
         auto opMapRaw = main_graph.getOpMapLegacy();
         valueTypes = &main_graph.getValueTypes();
         auto *opMap = &opMapRaw;
-        for (const auto& pair : *opMap) {
-            Operation* op = pair.first;  // 键：Operation 指针
-            Node* node = pair.second;    // 值：Node 指针
 
-            // 打印指针地址（最直接的方式）
-            // llvm::outs() << "Operation*: " << *op
-            //              << "\n";
-            for (auto res : op->getResults()) {
-                 llvm::outs() << "Value: " << (*valueTypes)[res]
-                         << "\n";
-            }
-
-        }
-
-        if (!opMap) {
+        if (!opMap || !valueTypes) {
             llvm::errs() << "Warning: Failed to create DAG graph for function " << funcOp.getName() << "\n";
             continue;
         }
@@ -1273,7 +1258,7 @@ void DAGSyncPass::runOnOperation()
             // 4. 遍历当前节点的所有输入节点
             for (ValueNode *inputValNode : currentNode->getInputs()) {
                 auto inputOp = inputValNode->value.getDefiningOp();
-                if (!inputOp && opMap->contains(inputOp)) {
+                if (!inputOp || !opMap->contains(inputOp)) {
                     continue;
                 }
 

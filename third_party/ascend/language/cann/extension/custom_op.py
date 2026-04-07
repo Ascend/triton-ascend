@@ -152,19 +152,94 @@ def _args_to_operands(op, _semantic, args, kwargs):
     return operands
 
 
+def _bind_op_arguments(op, args, kwargs):
+    if not op.signature.parameters:
+        return None
+    return op.signature.bind(*args, **kwargs)
+
+
+def _make_align_dim_attrs(op, builder, arg_attrs):
+    # Find op argument by name using op.align_dim's key
+    # We want to return a dict mapping for each align_dim key -> int attribute for the actual bound argument value.
+    name = 'align_dim'
+    if not hasattr(op, name):
+        return
+
+    # To find argument indices matching each align_dim key, check the op.signature parameters
+    # and map align_dim key (argument name) to its index position.
+    align_arg_indices = {}
+    if hasattr(op, "signature"):
+        param_names = list(op.signature.parameters.keys())
+        for arg_name in op.align_dim.keys():
+            if arg_name in param_names:
+                align_arg_indices[arg_name] = param_names.index(arg_name)
+
+    for arg, align_val in op.align_dim.items():
+        if isinstance(arg, str) and arg in align_arg_indices:
+            arg_attrs[align_arg_indices[arg]] = { name : builder.get_int_attr(align_val) }
+            print(arg_attrs[align_arg_indices[arg]])
+        elif isinstance(arg, int):
+            arg_attrs[arg] = { name : builder.get_int_attr(align_val) }
+            print(arg_attrs[arg])
+        else:
+            assert False, f"{name}'s keys should be string or int"
+
+
+def _make_arg_attrs(op, builder):
+    num_args = len(op.signature.parameters) if hasattr(op, "signature") else 0
+    arg_attrs = [{} for _ in range(num_args)]
+
+    _make_align_dim_attrs(op, builder, arg_attrs)
+    return arg_attrs
+
+
 def _add_optional_attr(op, name, builder, attrs):
     if hasattr(op, name):
         attrs[name] = builder.get_string_attr(getattr(op, name))
 
 
 def _add_bitcode_attr(op, builder, attrs):
-    if not hasattr(op, 'bitcode'):
+    name = 'bitcode'
+    if not hasattr(op, name):
         return
 
     from pathlib import Path
-    bitcode = Path(getattr(op, 'bitcode'))
-    assert bitcode.exists(), f"Provided bitcode ({bitcode}) not exist"
-    attrs['bitcode'] = builder.get_string_attr(str(bitcode.absolute()))
+    bitcode = Path(getattr(op, name))
+    assert bitcode.exists(), f"Provided bitcode ({name}) not exist"
+    attrs[name] = builder.get_str_attr(str(bitcode.absolute()))
+
+
+def _add_optional_extra_buffer_attr(op, builder, attrs):
+    name = 'extra_buffers'
+    if not hasattr(op, name):
+        return
+
+    extra_buffers = getattr(op, name)
+    if isinstance(extra_buffers, tuple):
+        extra_buffers = [ extra_buffers ]
+
+    extra_buffer_types, extra_buffer_sizes = zip(*extra_buffers)
+    attrs[name + "_types"] = builder.get_type_array_attr([ty.to_ir(builder) for ty in extra_buffer_types])
+    attrs[name + "_sizes"] = builder.get_i64_array_attr(list(extra_buffer_sizes))
+
+
+def _add_optional_indexing_map_attr(op, builder, attrs):
+    # Optional indexing map attribute:
+    # `indexing_map` should be an iterable of al.affine_map (MLIR AffineMap) objects.
+    name = 'indexing_map'
+    if not hasattr(op, name):
+        return
+
+    indexing_map = getattr(op, name)
+    attrs[name] = builder.get_affine_map_array_attr(indexing_map)
+
+
+def _add_optional_iterator_types_attr(op, builder, attrs):
+    name = 'iterator_types'
+    if not hasattr(op, name):
+        return
+
+    attrs[name] = builder.get_iterator_types_attr([iterator_type.value for iterator_type in getattr(op, name)])
 
 
 def _make_attrs(op, builder):
@@ -181,11 +256,19 @@ def _make_attrs(op, builder):
     # Add bit code path attribute, formalize to abosulte path.
     _add_bitcode_attr(op, builder, attrs)
 
+
+    _add_optional_indexing_map_attr(op, builder, attrs)
+    # FIXME: comment out IteratorType and fix with npuir commit id 47a0229060e37f92a49cfb82d81c756628e6c7ae.
+    # _add_optional_iterator_types_attr(op, builder, attrs)
+
+    _add_optional_extra_buffer_attr(op, builder, attrs)
+
     _add_optional_attr(op, 'symbol', builder, attrs)
     _add_optional_attr(op, 'source', builder, attrs)
     _add_optional_attr(op, 'compile', builder, attrs)
     # Extra attributes can be added here, such as op.extra_attr="attr_a=xx"
     _add_optional_attr(op, 'extra_attr', builder, attrs)
+
     return attrs
 
 
@@ -225,9 +308,10 @@ def custom_semantic(name: str, *args, _semantic=None, **kwargs):
     inputs = _args_to_operands(op, _semantic, args, kwargs)
     builder = getattr(_semantic.builder, '_ascend_builder')
     # Setup attributes.
-    attrs = _make_attrs(op, builder)
+    attrs = _make_attrs(op, _semantic.builder)
+    arg_attrs = _make_arg_attrs(op, _semantic.builder)
     # Build IR for the custom op.
-    res = builder.create_custom_op(name, attrs, inputs, outputs)
+    res = builder.create_custom_op(name, attrs, inputs, outputs, arg_attrs)
     # Results with same types as outputs.
     res_types = [out.type for out in outs]
     return _to_result(res, res_types)
