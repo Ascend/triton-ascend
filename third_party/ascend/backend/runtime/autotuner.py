@@ -35,6 +35,7 @@ from torch import Tensor
 
 import triton
 from triton.runtime.autotuner import Autotuner, Config
+from triton.tools.get_ascend_devices import is_compile_on_910_95
 
 from .autoparser import (LowDimsAxesParser, PtrNumsParser, ReductionAxesParser,
                          SplitAxesParser, TilingAxesParser)
@@ -112,6 +113,8 @@ class AutoTilingTuner(Autotuner):
         self.is_simt_mode = False
         self.simt_stack_limit = 8192
         self.user_specified_warps = None
+        self.user_specified_multibuffer = None
+        self.default_multibuffer = not is_compile_on_910_95
         self.print_autotuning = os.getenv("TRITON_PRINT_AUTOTUNING", None) == "1"
         # Compile kernels in parallel by default for triton.runtime.JITFunction,
         # but not for others, e.g., LibEntry, since it's not compatible with AsyncCompileMode
@@ -119,6 +122,49 @@ class AutoTilingTuner(Autotuner):
             isinstance(self.fn, triton.runtime.JITFunction)
             and os.getenv("TRITON_AUTOTUNE_PARALLEL_COMPILE", "1") == "1"
         )
+
+    def _expand_simt_num_warps_configs(self, base_configs: List[Config]) -> List[Config]:
+        _default_cand_num_warps = [8, 16, 32, 64]
+        cand_num_warps = (
+            _default_cand_num_warps
+            if self.user_specified_warps is None
+            else [self.user_specified_warps]
+        )
+
+        simt_configs = []
+        for base_cfg in base_configs:
+            for num_warps in cand_num_warps:
+                new_cfg = copy.deepcopy(base_cfg)
+                new_cfg.num_warps = num_warps
+                simt_configs.append(new_cfg)
+
+        if self.print_autotuning:
+            print(f"Triton autotuning: Expanded to {len(simt_configs)} SIMT configs (with warps: {cand_num_warps})")
+        return simt_configs
+
+    def _expand_simd_multibuffer_configs(self, base_configs: List[Config]) -> List[Config]:
+        if self.user_specified_multibuffer is not None:
+            if self.print_autotuning:
+                print(
+                    "Triton autotuning: Skip SIMD multibuffer expansion because user "
+                    f"specified multibuffer={self.user_specified_multibuffer}"
+                )
+            return base_configs
+
+        opposite_default_multibuffer = not self.default_multibuffer
+        simd_configs = []
+        for base_cfg in base_configs:
+            simd_configs.append(base_cfg)
+            new_cfg = copy.deepcopy(base_cfg)
+            new_cfg.kwargs["multibuffer"] = opposite_default_multibuffer
+            simd_configs.append(new_cfg)
+
+        if self.print_autotuning:
+            print(
+                "Triton autotuning: Expanded to "
+                f"{len(simd_configs)} SIMD configs (toggle multibuffer={opposite_default_multibuffer})"
+            )
+        return simd_configs
 
     def _init_axis_params(self, key, split_params, tiling_params, low_dim_axes, reduction_axes):
         if isinstance(key, list):
@@ -193,10 +239,13 @@ class AutoTilingTuner(Autotuner):
         if not self.low_dim_axes:
             self.low_dim_axes = self._autoparse_low_dim_axes()
 
-        if len(self.reduction_axes) == 1 and \
-            self.reduction_axes[0] == self.low_dim_axes[0] and \
-            all_args.get(self.keys[self.reduction_axes[0]], float("inf")) < 1024:
-            self.persistent_reduction = True
+        if len(self.reduction_axes) == 1:
+            reduction_axis = self.reduction_axes[0]
+            reduction_param = self.keys.get(reduction_axis, None)
+            reduction_numel = all_args.get(reduction_param, float("inf"))
+            persistent_threshold = self._get_persistent_reduction_threshold(reduction_axis)
+            if reduction_numel <= persistent_threshold:
+                self.persistent_reduction = True
 
         if not self.split_params:
             all_split_params = self._autoparse_split_params(
@@ -288,23 +337,9 @@ class AutoTilingTuner(Autotuner):
         self.gen_configs = tile_gen.configs
 
         if self.is_simt_mode:
-            _default_cand_num_warps = [8, 16, 32, 64]
-            cand_num_warps = (
-                _default_cand_num_warps
-                if self.user_specified_warps is None
-                else [self.user_specified_warps]
-            )
-            simt_configs = []
-            for base_cfg in self.gen_configs:
-                for num_warps in cand_num_warps:
-                    new_cfg = copy.deepcopy(base_cfg)
-                    new_cfg.num_warps = num_warps
-                    simt_configs.append(new_cfg)
-            
-            if self.print_autotuning:
-                print(f"Triton autotuning: Expanded to {len(simt_configs)} SIMT configs (with warps: {cand_num_warps})")
-            
-            self.gen_configs = simt_configs
+            self.gen_configs = self._expand_simt_num_warps_configs(self.gen_configs)
+        else:
+            self.gen_configs = self._expand_simd_multibuffer_configs(self.gen_configs)
 
         if len(self.gen_configs) == 0:
             print(
@@ -319,6 +354,12 @@ class AutoTilingTuner(Autotuner):
         self.is_simt_mode = kwargs.get('force_simt_only', False)
         if 'num_warps' in kwargs and kwargs['num_warps'] is not None:
             self.user_specified_warps = kwargs['num_warps']
+        else:
+            self.user_specified_warps = None
+        if 'multibuffer' in kwargs and kwargs['multibuffer'] is not None:
+            self.user_specified_multibuffer = kwargs['multibuffer']
+        else:
+            self.user_specified_multibuffer = None
 
         # generate key
         all_args = {**self.nargs, **kwargs}
@@ -723,9 +764,9 @@ class AutoTilingTuner(Autotuner):
         parser = LowDimsAxesParser(func_ast, self.keys)
         low_dim_axes = parser.parse()
         if len(low_dim_axes) < 1:
-            raise ValueError(
-                f"Failed to parse low-dimensional axes."
-            )
+            if self.print_autotuning:
+                print("[WARNING] Failed to parse low-dimensional axes, fallback to empty low_dim_axes.")
+            return []
         if self.print_autotuning:
             print(
                 f"Ascend autotuning parse low dimensional axes: {low_dim_axes}"
@@ -748,6 +789,13 @@ class AutoTilingTuner(Autotuner):
                 f"Ascend autotuning parse pointer params: {ptr_params}, pointer nums: {ptr_nums}"
             )
         return ptr_nums
+
+    def _get_persistent_reduction_threshold(self, reduction_axis: str) -> int:
+        # Keep this heuristic aligned with inductor-style policy:
+        # inner reduction axis uses a larger threshold than other axes.
+        if self.low_dim_axes and reduction_axis == self.low_dim_axes[0]:
+            return 1024
+        return 64
 
 
 def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None,
