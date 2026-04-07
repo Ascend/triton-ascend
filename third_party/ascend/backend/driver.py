@@ -100,19 +100,6 @@ class NPUUtils(object):
     def get_aivector_core_num(self):
         return self.get_device_properties("npu")["num_vectorcore"]
 
-    @functools.lru_cache()
-    def set_device_limit(self, device, ty, val):
-        """
-        Set npu device limit
-
-        Args:
-            device: Device id
-            ty: The type of the limit, valid types include:
-                "LOW_POWER_TIMEOUT", "WARP_STACK_SIZE", "DVG_WARP_STACK_SIZE", "STACK_SIZE"
-            val: The specific meaning of the value depends on the type of limit.
-        """
-        self.npu_utils_mod.set_device_limit(device, ty, val)
-
 
 class NPULauncher(object):
     def __init__(self, src, metadata):

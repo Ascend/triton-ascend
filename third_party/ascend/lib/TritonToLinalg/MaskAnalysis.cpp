@@ -65,6 +65,19 @@ std::optional<MaskState> runMaskAnalysisImpl(MemAccOpTy op, OpBuilder &builder)
 
 } // namespace
 
+OpFoldResult MaskState::clampToNonNegativeIndex(const OpFoldResult value,
+                                                const Location &loc,
+                                                OpBuilder &builder) const
+{
+  if (auto cst = getConstantIntValue(value)) {
+    return builder.getIndexAttr(std::max<int64_t>(0, *cst));
+  }
+
+  // For non-constant value, we could generate max(value, 0) to ensure the value is non-negative.
+  // But this caused error in atomic max/min ut test. We need to investigate more on this.
+  return value;
+}
+
 LogicalResult MaskState::parse(Value operand, const Location &loc,
                                OpBuilder &builder) {
   if (isa<IntegerType>(operand.getType())) {
@@ -78,7 +91,7 @@ LogicalResult MaskState::parse(Value operand, const Location &loc,
       if (initArgOperand) {
         Value initArg = initArgOperand->get();
         return parse(initArg, loc, builder);
-      }    
+      }
     }
   }
 
@@ -284,9 +297,10 @@ LogicalResult MaskState::minStates(const MaskState &lhsState,
     auto rhsEnd = addOpFoldResult(rhsOffset, rhsDim, loc, builder);
     auto newEnd = minOpFoldResult(lhsEnd, rhsEnd, loc, builder);
     auto newDim = subOpFoldResult(newEnd, newOffset, loc, builder);
+    auto clampedNewDim = clampToNonNegativeIndex(newDim, loc, builder);
 
     offsets.push_back(newOffset);
-    dims.push_back(newDim);
+    dims.push_back(clampedNewDim);
   }
   return success();
 }
@@ -302,7 +316,7 @@ LogicalResult MaskState::parseConstant(arith::ConstantOp constOp,
     auto elementType = attr.getElementType();
     assert(attr.isSplat() && isa<IntegerType>(elementType) &&
            "All elements must share a single integer constant value");
-    
+
     if (elementType.isInteger(1) && isa<ShapedType>(constOp.getValue().getType())) {
       auto shapedType = cast<ShapedType>(constOp.getValue().getType());
       auto shape = shapedType.getShape();
@@ -453,7 +467,7 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location &loc,
   if (failed(lhsState.parse(lhs, loc, builder))) {
     return failure();
   }
-  
+
   if (failed(rhsState.parse(rhs, loc, builder))) {
     return failure();
   }
@@ -489,8 +503,9 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location &loc,
         maxOpFoldResult(lhsState.start, rhsState.scalar, loc, builder);
     auto newEnd = minOpFoldResult(lhsState.end, realBound, loc, builder);
     auto newDim = subOpFoldResult(newEnd, lhsState.start, loc, builder);
+    auto clampedNewDim = clampToNonNegativeIndex(newDim, loc, builder);
 
-    this->dims[cmpDim] = newDim;
+    this->dims[cmpDim] = clampedNewDim;
     break;
   }
   case arith::CmpIPredicate::sle: {
@@ -499,8 +514,9 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location &loc,
     auto realBound = maxOpFoldResult(lhsState.start, rhsPlusOne, loc, builder);
     auto newEnd = minOpFoldResult(lhsState.end, realBound, loc, builder);
     auto newDim = subOpFoldResult(newEnd, lhsState.start, loc, builder);
+    auto clampedNewDim = clampToNonNegativeIndex(newDim, loc, builder);
 
-    this->dims[cmpDim] = newDim;
+    this->dims[cmpDim] = clampedNewDim;
     break;
   }
   case arith::CmpIPredicate::sge: {
@@ -509,9 +525,10 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location &loc,
     auto newStart = minOpFoldResult(lhsState.end, realBound, loc, builder);
     auto newOffset = subOpFoldResult(newStart, lhsState.start, loc, builder);
     auto newDim = subOpFoldResult(lhsState.end, newStart, loc, builder);
+    auto clampedNewDim = clampToNonNegativeIndex(newDim, loc, builder);
 
     this->offsets[cmpDim] = newOffset;
-    this->dims[cmpDim] = newDim;
+    this->dims[cmpDim] = clampedNewDim;
     break;
   }
   case arith::CmpIPredicate::eq: {
@@ -691,7 +708,7 @@ void MaskState::eraseInsertedOps(Operation *rawOp, PatternRewriter &rewriter) {
       llvm::dbgs() << "[MaskState]==> inserted op: \n"
                    << *op << "\n[MaskState]<== is removed\n";
     });
-    
+
     rewriter.eraseOp(op);
     for (auto defOp : operandDefOps) {
       worklist.push_back(defOp);

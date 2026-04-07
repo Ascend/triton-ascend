@@ -360,7 +360,6 @@ LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
       LLVM_DEBUG({ op->setAttr("MixUse", UnitAttr::get(context)); });
       return;
     }
-
     llvm::SetVector<Operation *> metaUsers;
     for (auto result : op->getResults()) {
       for (auto user : result.getUsers()) {
@@ -438,7 +437,10 @@ LogicalResult triton::runUseAnalysis(triton::FuncOp &funcOp) {
 
     if (isa<LoopLikeOpInterface, scf::IfOp>(op))
       return;
-
+    
+    if (isa<triton::LoadOp>(op))
+      return;
+    
     // Clone the operation; switch all meta users to use the clone
     OpBuilder builder(op);
     auto clone = builder.clone(*op);

@@ -47,6 +47,8 @@ def triton_tanh(in_ptr0, out_ptr0, XBLOCK: tl.constexpr, XBLOCK_SUB: tl.constexp
 
 @pytest.mark.parametrize('param_list',
                             [
+                                ['float16', (2, 4096, 8), 2, 32768, 1024],
+                                ['bfloat16', (2, 4096, 8), 2, 32768, 1024],
                                 ['float32', (2, 4096, 8), 2, 32768, 1024],
                             ])
 def test_tanh(param_list):

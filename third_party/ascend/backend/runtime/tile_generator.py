@@ -52,7 +52,9 @@ class AxisInfo:
     split_name: str = ""
     tiling_name: str = ""
     is_split_axis: bool = False
+    is_tunable_split_axis: bool = False
     is_tiling_axis: bool = False
+    fixed_split_size: int = 0
 
     @property
     def is_reduction(self):
@@ -64,6 +66,7 @@ class KernelMeta:
         self,
         axis_sizes: Dict[str, int],
         split_params: Dict[str, str],
+        fixed_split_params: Dict[str, int],
         tiling_params: Dict[str, str],
         low_dims: List[str],
         dtype: torch.dtype,
@@ -89,7 +92,9 @@ class KernelMeta:
         :param dual_reduction: performing reduction on more than one axis.
         :param persistent_reduction: there is no splitting in reduction axis.
         """
-        self._validate_axis(axis_sizes, split_params, tiling_params, low_dims)
+        self._validate_axis(
+            axis_sizes, split_params, fixed_split_params, tiling_params, low_dims
+        )
 
         axis_dict = {}
         idx = 0
@@ -98,9 +103,11 @@ class KernelMeta:
             if name.startswith("r"):
                 prefix = "r"
 
-            is_split_axis = name in split_params
+            is_tunable_split_axis = name in split_params
+            fixed_split_size = fixed_split_params.get(name, 0)
+            is_split_axis = is_tunable_split_axis or fixed_split_size > 0
             is_tiling_axis = name in tiling_params
-            split_name = "" if name not in split_params else split_params[name]
+            split_name = "" if not is_tunable_split_axis else split_params[name]
             tiling_name = "" if name not in tiling_params else tiling_params[name]
 
             axis_dict[name] = AxisInfo(
@@ -111,12 +118,17 @@ class KernelMeta:
                 split_name=split_name,
                 tiling_name=tiling_name,
                 is_split_axis=is_split_axis,
+                is_tunable_split_axis=is_tunable_split_axis,
                 is_tiling_axis=is_tiling_axis,
+                fixed_split_size=fixed_split_size,
             )
             idx += 1
 
         self.axis_info = list(axis_dict.values())
         self.split_axis = [x for x in axis_dict.values() if x.is_split_axis]
+        self.tunable_split_axis = [
+            x for x in axis_dict.values() if x.is_tunable_split_axis
+        ]
         self.tiling_axis = [x for x in axis_dict.values() if x.is_tiling_axis]
         self.low_dims_axis = [x for x in axis_dict.values() if x.name in low_dims]
         self.dtype = dtype
@@ -130,6 +142,7 @@ class KernelMeta:
         cls,
         axis_sizes: Dict[str, int],
         split_params: Dict[str, str],
+        fixed_split_params: Dict[str, int],
         tiling_params: Dict[str, str],
         low_dims: List[str],
     ) -> None:
@@ -145,6 +158,7 @@ class KernelMeta:
                     )
 
         check_keys(split_params.keys(), "split axis")
+        check_keys(fixed_split_params.keys(), "fixed split axis")
         check_keys(tiling_params.keys(), "tiling axis")
         check_keys(low_dims, "low dim axis")
 
@@ -184,9 +198,17 @@ class TileGenerator:
         )
         self.max_numel_threshold = local_mem_size * 1024 // self.dtype_bytes // self.num_buffers
         self.max_total_numel = functools.reduce(lambda x, y: x * y, [x.block_size for x in self.blocks]) if self.blocks else 1
-        self.tiny_kernel = self.max_total_numel < 128 * 1024
-        self.stop_numel = min(1024 // self.dtype_bytes, self.max_total_numel // (num_vector_core * 2)) if self.tiny_kernel else 1024 // self.dtype_bytes
+        self.small_kernel = self.max_total_numel < 128 * 1024
+        self.tiny_kernel = self.max_total_numel <= 32 * 1024
+        self.stop_numel = min(1024 // self.dtype_bytes, self.max_total_numel // (num_vector_core * 2)) if self.small_kernel else 1024 // self.dtype_bytes
         self.max_programs_num = 65535
+        self.tiny_program_threshold = num_vector_core // 8
+        self.tiny_per_program_cap = 1
+        self.tiny_low_program_hist = {
+            p: 0 for p in range(1, self.tiny_program_threshold + 1)
+        }
+        self.tiny_low_program_active = False
+        self.tiny_low_program_tile_floor = 0
 
     @classmethod
     def init_blocks_info(cls, kernel_meta: KernelMeta) -> List[BlockInfo]:
@@ -194,7 +216,7 @@ class TileGenerator:
         for axis in kernel_meta.axis_info:
             block_name = axis.split_name
             sub_block_name = axis.tiling_name
-            block_size = axis.length
+            block_size = axis.fixed_split_size if axis.fixed_split_size > 0 else axis.length
             sub_block_size = block_size
             blocks.append(
                 BlockInfo(block_name, sub_block_name, block_size, sub_block_size)
@@ -247,10 +269,15 @@ class TileGenerator:
                 curr_numel = candi_block[axis.index]
                 if not axis.is_tiling_axis:
                     curr_numel = self.aligned_numel(curr_numel)
-                cfg[block_info.block_name] = curr_numel
+                if block_info.block_name:
+                    cfg[block_info.block_name] = curr_numel
             if axis.is_tiling_axis:
                 tiling_numel = self.aligned_numel(block_info.sub_block_size)
-                cfg[block_info.sub_block_name] = min(tiling_numel, candi_block[axis.index])
+                cfg[block_info.sub_block_name] = (
+                    tiling_numel
+                    if self.is_simt_mode
+                    else min(tiling_numel, candi_block[axis.index])
+                )
 
     def find_config(self, cfg):
         for config_var in self.configs:
@@ -258,11 +285,57 @@ class TileGenerator:
                 return True
         return False
 
+    def _try_add_tiny_low_program_config(self, total_programs):
+        if (
+            not self.tiny_kernel
+            or total_programs < 1
+            or total_programs > self.tiny_program_threshold
+        ):
+            return
+
+        if self.tiny_low_program_hist.get(total_programs, 0) >= self.tiny_per_program_cap:
+            return
+
+
+        candi_block = tuple([x.block_size for x in self.blocks])
+        if self.add_to_configs(list(candi_block)):
+            if candi_block not in self.candidate_blocks:
+                self.candidate_blocks.append(candi_block)
+            if not self.tiny_low_program_active:
+                self.tiny_low_program_active = True
+                self.tiny_low_program_tile_floor = self.calculate_tile_numel()
+            self.tiny_low_program_hist[total_programs] = (
+                self.tiny_low_program_hist.get(total_programs, 0) + 1
+            )
+
+    def _calc_total_programs(self, candi_block=None):
+        grids = []
+        for axis in self.kernel_meta.split_axis:
+            numel = self.numels[axis.index]
+            block_size = (
+                self.blocks[axis.index].block_size
+                if candi_block is None
+                else candi_block[axis.index]
+            )
+            programs = (numel + block_size - 1) // block_size
+            grids.append(programs)
+
+        total_programs = functools.reduce(lambda x, y: x * y, grids) if grids else 1
+        return total_programs
+
     def add_to_configs(self, candi_block):
         newcfg = {}
         self.fill_config(newcfg, candi_block)
         tile_numel = self.calculate_tile_numel()
-        stop_numel_threshold = 0 if len(self.configs) < 10 or self.tiny_kernel else self.stop_numel + 100
+        stop_numel_threshold = 0 if len(self.configs) < 10 or self.small_kernel else self.stop_numel + 100
+        if self.tiny_low_program_active and self.tiny_low_program_tile_floor > 0:
+            total_programs = self._calc_total_programs(candi_block)
+            program_threshold = self.tiny_program_threshold if self.small_kernel else num_vector_core // 2
+            if total_programs <= program_threshold:
+                tiny_low_program_threshold = max(
+                    self.stop_numel, self.tiny_low_program_tile_floor // 2
+                )
+                stop_numel_threshold = max(stop_numel_threshold, tiny_low_program_threshold)
         if (
             tile_numel <= self.max_numel_threshold
             and tile_numel >= stop_numel_threshold
@@ -341,19 +414,21 @@ class TileGenerator:
                             self.candidate_blocks.append(tuple([x.block_size for x in self.blocks]))
                         break
 
-                program_threshold = num_vector_core // 8 if self.tiny_kernel else num_vector_core // 2
+                program_threshold = self.tiny_program_threshold if self.small_kernel else num_vector_core // 2
+                if self.tiny_kernel and total_programs <= program_threshold:
+                    self._try_add_tiny_low_program_config(total_programs)
                 if total_programs > program_threshold or self.dual_reduction:
                     if len(self.candidate_blocks) > 2:
                         self.candidate_blocks.pop(0)
                     self.candidate_blocks.append(tuple([x.block_size for x in self.blocks]))
-                    if self.tiny_kernel:
+                    if self.small_kernel:
                         self.add_to_configs(list(tuple([x.block_size for x in self.blocks])))
                     slow_decend_split = (total_programs > num_vector_core_tile // 2)
 
                 if not slow_decend_split:
-                    self.blocks[axis_idx].block_size = numel // 2
+                    self.blocks[axis_idx].block_size = (numel + 1) // 2
                 else:
-                    step = numel // 4 if numel // 4 > 1 else 1
+                    step = (numel + 3) // 4 if (numel + 3) // 4 > 1 else 1
                     self.blocks[axis_idx].block_size = numel - step
                 self.blocks[axis_idx].sub_block_size = self.blocks[axis_idx].block_size
                 total_programs = calc_total_programs()
@@ -420,7 +495,7 @@ class TileGenerator:
         ]
 
         def descend_split_axis():
-            for axis in self.kernel_meta.split_axis:
+            for axis in self.kernel_meta.tunable_split_axis:
                 if self.descend_one_axis(axis.index, is_split=True):
                     return True
 

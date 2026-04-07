@@ -80,18 +80,25 @@ def atan(arg0, _semantic=None):
 
 @core.extern
 def tanh(arg0, _semantic=None):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
-        return core.extern_elementwise(
-            "", "", [arg0], {
-                (core.dtype("fp32"), ): ("__hmf_tanh_fp32", core.dtype("fp32")),
-            }, is_pure=True, _semantic=_semantic)
+    arg0 = _semantic.to_tensor(arg0)
+    original_dtype = arg0.dtype
+    if original_dtype == core.dtype("bf16"):
+        arg0 = _semantic.cast(arg0, core.float32)
+
+    if triton_enable_libdevice():
+        dispatch = {
+            (core.dtype("fp32"), ): ("__hmf_tanh_fp32", core.dtype("fp32")),
+        }
     else:
-        return core.extern_elementwise(
-            "", "", [arg0], {
-                (core.dtype("fp32"), ): ("__hmf_tanhf", core.dtype("fp32")),
-                (core.dtype("fp16"), ): ("__hmf_tanhDh", core.dtype("fp16")),
-            }, is_pure=True, _semantic=_semantic)
+        dispatch = {
+            (core.dtype("fp32"), ): ("__hmf_tanhf", core.dtype("fp32")),
+            (core.dtype("fp16"), ): ("__hmf_tanhDh", core.dtype("fp16")),
+        }
+
+    res = core.extern_elementwise("", "", [arg0], dispatch, is_pure=True, _semantic=_semantic)
+    if original_dtype == core.dtype("bf16"):
+        return _semantic.cast(res, core.dtype("bf16"))
+    return res
 
 @core.extern
 def ilogb(arg0, _semantic=None):
@@ -141,6 +148,21 @@ def div_rz(arg0, arg1, _semantic=None):
         "", "", [arg0, arg1], {
             (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_div_rz_fp32", core.dtype("fp32")),
         }, is_pure=True, _semantic=_semantic)
+
+
+@core.builtin
+def fast_dividef(arg0, arg1, _semantic=None):
+    arg0 = _semantic.to_tensor(arg0)
+    arg1 = _semantic.to_tensor(arg1)
+    ret = _semantic.fdiv(arg0, arg1, False)
+    return ret
+
+
+@core.builtin
+def fast_expf(arg0, _semantic=None):
+    arg0 = _semantic.to_tensor(arg0)
+    ret = core.tensor(_semantic.builder.create_exp(arg0.handle), arg0.type)
+    return ret
 
 
 @core.extern

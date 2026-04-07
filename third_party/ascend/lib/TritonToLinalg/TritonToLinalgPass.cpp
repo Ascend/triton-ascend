@@ -563,7 +563,7 @@ void TritonToLinalgPass::populateTritonToLinalgCanonicalizationPatterns(RewriteP
         // TTOpConverters::ScalarMathCanonicalizer<math::SinhOp>,
         TTOpConverters::ScalarMathCanonicalizer<math::SqrtOp>,
         // TTOpConverters::ScalarMathCanonicalizer<math::TanOp>,
-        TTOpConverters::ScalarMathCanonicalizer<math::TanhOp>,
+        // TTOpConverters::ScalarMathCanonicalizer<math::TanhOp>,
         // TTOpConverters::ScalarMathCanonicalizer<math::TruncOp>,
         TTOpConverters::ScalarMathCanonicalizer<arith::AddFOp>, TTOpConverters::ScalarMathCanonicalizer<arith::SubFOp>,
         TTOpConverters::ScalarMathCanonicalizer<arith::MulFOp>, // TTOpConverters::ScalarMathCanonicalizer<arith::DivFOp>,

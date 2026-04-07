@@ -507,11 +507,9 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
                 f"--enable-auto-multi-buffer={multibuffer}",
             ]
 
-        enable_ubuf_saving = metadata["enable_ubuf_saving"]
-        if enable_ubuf_saving is not None:
-            _compile_option_list += [
-                f"--enable-ubuf-saving={enable_ubuf_saving}",
-            ]
+        disable_tightly_coupled_buffer_reuse = metadata["disable_tightly_coupled_buffer_reuse"]
+        if disable_tightly_coupled_buffer_reuse:
+            _compile_option_list += ["--disable-tightly-coupled-buffer-reuse"]
 
         _compile_option_list += [
             f"--enable-auto-bind-sub-block={get_auto_bind_sub_block_option(metadata)}",
@@ -561,16 +559,6 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         if set_workspace_multibuffer is not None:
             _compile_option_list += \
                 [f"--set-workspace-multibuffer={set_workspace_multibuffer}"]
-
-        tile_mix_vector_loop = metadata["tile_mix_vector_loop"]
-        if tile_mix_vector_loop is not None:
-            _compile_option_list += \
-                [f"--tile-mix-vector-loop={tile_mix_vector_loop}"]
-
-        tile_mix_cube_loop = metadata["tile_mix_cube_loop"]
-        if tile_mix_cube_loop is not None:
-            _compile_option_list += \
-                [f"--tile-mix-cube-loop={tile_mix_cube_loop}"]
 
         auto_multi_buffer = metadata["limit_auto_multi_buffer_of_local_buffer"]
         if auto_multi_buffer is not None:
@@ -657,6 +645,10 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         vf_merge_level = metadata["vf_merge_level"]
         if vf_merge_level:
             cmd_list += [f"--enable-vf-merge-level={vf_merge_level}"]
+
+        hfusion_enable_multiple_consumer_fusion = metadata["hfusion_enable_multiple_consumer_fusion"]
+        if hfusion_enable_multiple_consumer_fusion:
+            cmd_list += [f"--hfusion-enable-multiple-consumer-fusion={hfusion_enable_multiple_consumer_fusion}"]
 
         if opt.debug:
             print(f"[DEBUG] cmd_list: {' '.join(cmd_list)}")
@@ -830,7 +822,7 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += [
                 f"--link-aicore-bitcode={get_libdevice()}"
             ]
-        
+
         disable_size_align_for_cast = metadata["disable_size_align_for_cast"]
         if disable_size_align_for_cast is not None:
             _compile_option_list += \
@@ -940,6 +932,7 @@ class NPUOptions:
     multibuffer: bool = not is_compile_on_910_95
     enable_ubuf_saving: bool = None
     enable_auto_bind_sub_block: bool = None
+    disable_tightly_coupled_buffer_reuse: bool = False
     enable_select_analysis: bool = True
     enable_hivm_auto_cv_balance: bool = None
     sync_solver: bool = None
@@ -963,6 +956,7 @@ class NPUOptions:
     enable_mixed_cv: bool = None
     enable_vf_fusion: bool = False
     add_auto_scheduling: bool = False
+    hfusion_enable_multiple_consumer_fusion: bool = False
 
     stream: int = None
     parallel_mode: str = "simd"

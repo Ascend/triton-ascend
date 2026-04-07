@@ -489,10 +489,48 @@ void BlockDataParser::parse(
       operand.dump();
       llvm_unreachable("encountered AddPtrOp produced by unsupported operation");
     }
+  } else if (auto atomicRMWOp = operand.getDefiningOp<triton::AtomicRMWOp>()) {
+    parseAtomicRmw(atomicRMWOp, data, loc, rewriter, known);
   } else {
     operand.dump();
     llvm_unreachable("encountered AddPtrOp produced by unsupported operation");
   }
+}
+
+void BlockDataParser::parseAtomicRmw(
+    triton::AtomicRMWOp op, BlockData &data, const Location &loc,
+    ConversionPatternRewriter &rewriter,
+    const llvm::SmallDenseMap<Value, BlockData> &known)
+    {
+  auto opRes = op->getResult(0);
+  auto opResTy = opRes.getType();
+  std::vector<int64_t> resShape;
+  if (auto shapedResTy = dyn_cast<ShapedType>(opResTy)) {
+    resShape = shapedResTy.getShape().vec();
+    if (resShape.size() == 1 && resShape[0] == 1) {
+        Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+        Value extracted = rewriter.create<tensor::ExtractOp>(loc, opRes, ValueRange{zeroIdx});
+        Value scalarIdx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), extracted);
+        data.setMemAccVal(MemAccVal::StrucMemAcc);
+        data.setScalar(scalarIdx);
+        data.getSizesRef().push_back(rewriter.getIndexAttr(1));
+        data.getStridesRef().push_back(rewriter.getIndexAttr(0));
+        data.getOffsetsRef().push_back(scalarIdx);
+        return;
+    }
+    // For now, we consider this is UnstrucMemAcc because we have no other info.
+    // Visiting other ops may change the type due to more info.
+    data.setMemAccVal(MemAccVal::UnstrucMemAcc);
+  } else {
+    data.setMemAccVal(MemAccVal::StrucMemAcc);
+    resShape.push_back(1);
+  }
+  for (auto &s : resShape) {
+    data.getOffsetsRef().push_back(rewriter.getIndexAttr(0));
+    data.getSizesRef().push_back(rewriter.getIndexAttr(s));
+    data.getStridesRef().push_back(rewriter.getIndexAttr(1));
+  }
+  data.setSource(opRes);
 }
 
 void BlockDataParser::parseAdd(
@@ -937,8 +975,20 @@ void parseIndirectLoad(OpTy op, BlockData &data, const Location &loc,
   if (auto shapedResTy = dyn_cast<ShapedType>(opResTy)) {
     // For now, we consider this is UnstrucMemAcc because we have no other info.
     // Visiting other ops may change the type due to more info.
-    data.setMemAccVal(MemAccVal::UnstrucMemAcc);
     resShape = shapedResTy.getShape().vec();
+    auto numOperands = 3;
+    if (resShape.size() == 1 && resShape[0] == 1 && op->getNumOperands() == numOperands) {
+        Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+        Value extracted = rewriter.create<tensor::ExtractOp>(loc, opRes, ValueRange{zeroIdx});
+        Value scalarIdx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), extracted);
+        data.setMemAccVal(MemAccVal::StrucMemAcc);
+        data.setScalar(scalarIdx);
+        data.getSizesRef().push_back(rewriter.getIndexAttr(1));
+        data.getStridesRef().push_back(rewriter.getIndexAttr(0));
+        data.getOffsetsRef().push_back(scalarIdx);
+        return;
+    }
+    data.setMemAccVal(MemAccVal::UnstrucMemAcc);
   } else {
     // scalar load means this is used as offset. It is StrucMemAcc.
     data.setMemAccVal(MemAccVal::StrucMemAcc);
@@ -2161,9 +2211,17 @@ void BlockDataParser::rewriteAddPtrToUnstrucMemAcc(
             bB.create<tensor::ExtractOp>(bLoc, ptrOffset, allIVs);
         Value scalarOffset = bB.create<arith::IndexCastOp>(
             bLoc, bB.getIndexType(), scalarOffsetRaw);
+        OpFoldResult baseOffset = bB.getIndexAttr(0);
+        for (auto ofr : data.getOffsetsRef()) {
+          baseOffset = addOpFoldResult(baseOffset, ofr, bLoc, bB);
+        }
+        Value baseVal =
+            getValueOrCreateConstantIndexOp(bB, bLoc, baseOffset);
+        Value combinedOffset =
+            bB.create<arith::AddIOp>(bLoc, baseVal, scalarOffset);
         // Replace offset & size. Only single element.
         data.getOffsetsRef().clear();
-        data.getOffsetsRef().push_back(scalarOffset);
+        data.getOffsetsRef().push_back(combinedOffset);
         data.getSizesRef().clear();
         data.getSizesRef().push_back(bB.getIndexAttr(1));
         data.getStridesRef().clear();

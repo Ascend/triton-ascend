@@ -48,5 +48,6 @@ libdevice.ceil = math.ceil
 libdevice.fdiv = math.fdiv
 libdevice.fma = math.fma
 libdevice.abs = math.abs
+math.tanh = libdevice.tanh
 
 __all__ = ["libdevice", "extension"]

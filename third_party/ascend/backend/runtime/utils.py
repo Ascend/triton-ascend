@@ -84,6 +84,17 @@ byte_per_numel = {
     torch.complex128: 16,  # torch.complex128
 }
 
+# Some PyTorch versions expose extra fp8 dtypes. Register them when available.
+for fp8_dtype_name in (
+    "float8_e4m3fn",
+    "float8_e4m3fnuz",
+    "float8_e5m2",
+    "float8_e5m2fnuz",
+):
+    fp8_dtype = getattr(torch, fp8_dtype_name, None)
+    if fp8_dtype is not None:
+        byte_per_numel[fp8_dtype] = 1
+
 valid_axis_names = [
     "x",
     "y",
