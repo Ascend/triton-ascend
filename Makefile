@@ -15,6 +15,7 @@ LLVM_COMMIT                 := $(shell cat cmake/llvm-hash.txt)
 LLVM_COMMIT_SHORT           := $(shell cut -c1-8 cmake/llvm-hash.txt)
 LLVM_INSTALL_DIR            := llvm-$(LLVM_COMMIT_SHORT)-$(OS_ID)-$(ARCH_NAME)
 LLVM_TARBALL                := $(LLVM_INSTALL_DIR).tar.gz
+LLVM_PATCH_DIR 				:= third_party/ascend/llvm_patch
 SUDO                        := $(shell command -v sudo >/dev/null 2>&1 && echo sudo || echo)
 TOOLKIT_URL                 := https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20$(CANN_VERSION)/Ascend-cann-toolkit_$(CANN_VERSION)_linux-$(ARCH).run
 # KERNEL_URL                  := https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20$(CANN_VERSION)/Ascend-cann-$(CHIP_TYPE)-ops_$(CANN_VERSION)_linux-$(ARCH).run
@@ -173,7 +174,23 @@ $(LLVM_DIR): $(DEPS_STAMP)
 .PHONY: clone-llvm
 clone-llvm: $(LLVM_DIR) ## Clone LLVM repo at specified commit
 
-$(LLVM_TARBALL): clone-llvm ## Build LLVM and package tarball
+.PHONY: apply-patch-llvm
+apply-patch-llvm: $(LLVM_DIR)
+	@set -e; \
+	if [ -d "$(CURDIR)/$(LLVM_PATCH_DIR)" ]; then \
+		echo "Applying LLVM patches from $(LLVM_PATCH_DIR)..."; \
+		cd $(LLVM_DIR); \
+		for patchfile in $(CURDIR)/$(LLVM_PATCH_DIR)/*.patch; do \
+			if [ -f "$$patchfile" ]; then \
+				echo "Applying $$patchfile..."; \
+				patch -p1 -N < "$$patchfile"; \
+			fi \
+		done; \
+	else \
+		echo "No patch directory found at $(LLVM_PATCH_DIR), skipping."; \
+	fi
+
+$(LLVM_TARBALL): apply-patch-llvm ## Build LLVM and package tarball
 	@set -e; \
 	echo "Building LLVM to $(LLVM_INSTALL_DIR)..."; \
 	\
