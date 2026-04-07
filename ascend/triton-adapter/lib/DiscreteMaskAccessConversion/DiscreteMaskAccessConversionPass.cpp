@@ -47,6 +47,15 @@ namespace triton {
 using namespace mlir;
 using namespace hivm;
 
+// File-scope flags set by DiscreteMaskAccessConversionPass::runOnOperation()
+// before pattern application, so that OpRewritePattern subclasses can read them.
+static bool compileOn91095Flag = false;
+static bool forceSimtTemplateFlag = false;
+static bool enableSyncBlockLockFlag = true;
+
+static hivm::CreateSyncBlockLockOp createSyncBlockLockVar(OpBuilder &builder,
+                                                          Location loc);
+
 LogicalResult isDiscreteMask(Operation *op, Value mask,
                              PatternRewriter &rewriter)
 {
@@ -162,6 +171,11 @@ LogicalResult matchAndRewrite(triton::StoreOp op,
   // unguarded full-load from reading past the tail-block boundary.
   auto [contMask, discMask] = decomposeAndMask(op, mask, loc, rewriter);
   if (contMask && discMask) {
+    // insert sync_block_lock
+    auto lockVar = createSyncBlockLockVar(rewriter, loc);
+    if (enableSyncBlockLockFlag) {
+      rewriter.create<hivm::SyncBlockLockOp>(loc, lockVar);
+    }
     auto safeLoad = rewriter.create<triton::LoadOp>(
         loc, dst, contMask, op.getCache(), op.getEvict(), false);
     auto selOp = rewriter.create<arith::SelectOp>(
@@ -169,11 +183,19 @@ LogicalResult matchAndRewrite(triton::StoreOp op,
     auto newStore = rewriter.create<triton::StoreOp>(
         loc, dst, selOp, contMask, op.getCache(), op.getEvict());
     newStore->setAttr(ConverterUtils::discreteMaskAttrName, UnitAttr::get(rewriter.getContext()));
+    if (enableSyncBlockLockFlag) {
+      rewriter.create<hivm::SyncBlockUnlockOp>(loc, lockVar);
+    }
     rewriter.replaceOp(op, newStore);
     return success();
   }
 
   // Fallback: original full load + select (contMask absent, pure discrete).
+  // insert sync_block_lock
+  auto lockVar = createSyncBlockLockVar(rewriter, loc);
+  if (enableSyncBlockLockFlag) {
+    rewriter.create<hivm::SyncBlockLockOp>(loc, lockVar);
+  }
   auto loadFromDstOp = rewriter.create<triton::LoadOp>(
       loc, dst, op.getCache(), op.getEvict(), false);
 
@@ -181,6 +203,9 @@ LogicalResult matchAndRewrite(triton::StoreOp op,
   auto newStore = rewriter.create<triton::StoreOp>(
               loc, dst, selOp, op.getCache(), op.getEvict());
   newStore->setAttr(ConverterUtils::discreteMaskAttrName, UnitAttr::get(rewriter.getContext()));
+  if (enableSyncBlockLockFlag) {
+    rewriter.create<hivm::SyncBlockUnlockOp>(loc, lockVar);
+  }
   rewriter.replaceOp(op, newStore);
   return success();
 }
@@ -298,6 +323,7 @@ DiscreteMaskAccessConversionPass::DiscreteMaskAccessConversionPass(
 void DiscreteMaskAccessConversionPass::runOnOperation() {
   compileOn91095Flag = this->compileOn91095;
   forceSimtTemplateFlag = this->forceSimtTemplate;
+  enableSyncBlockLockFlag = this->enableSyncBlockLock;
 
   auto moduleOp = getOperation();
 
@@ -331,4 +357,16 @@ std::unique_ptr<OperationPass<ModuleOp>> mlir::triton::createDiscreteMaskAccessC
   const DiscreteMaskAccessConversionOptions &options
 ) {
   return std::make_unique<DiscreteMaskAccessConversionPass>(options);
+}
+
+static hivm::CreateSyncBlockLockOp createSyncBlockLockVar(OpBuilder &builder,
+                                                          Location loc) {
+  SmallVector<int64_t> shape = {1};
+  auto elementType = builder.getI64Type();
+  Type memrefType = MemRefType::get(shape, elementType);
+
+  auto createSyncBlockLockOp =
+      builder.create<hivm::CreateSyncBlockLockOp>(loc, memrefType,
+                                                  Value());
+  return createSyncBlockLockOp;
 }

@@ -104,6 +104,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         enable_select_analysis = metadata["enable_select_analysis"]
         compile_on_910_95 = metadata["compile_on_910_95"]
         force_simt_template = metadata["force_simt_template"]
+        enable_sync_block_lock = metadata["enable_sync_block_lock"]
         enable_linearize = metadata.get("enable_linearize")
 
         cmd_list = [
@@ -114,7 +115,8 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             cmd_list.append("--triton-linearize")
         cmd_list += [
             f"--discrete-mask-access-conversion=compile-on-910-95={compile_on_910_95} "\
-            f"force-simt-template={force_simt_template}",
+            f"force-simt-template={force_simt_template} "\
+            f"enable-sync-block-lock={enable_sync_block_lock}",
             "--triton-to-annotation",
             f"--triton-to-unstructure=compile-on-910-95={compile_on_910_95} "\
             f"force-simt-template={force_simt_template}",
@@ -626,6 +628,7 @@ class NPUOptions:
     parallel_mode: str = "simd"
     force_simt_only: bool = False
     force_simt_template: bool = False
+    enable_sync_block_lock: bool = False
     # compile_mode: "simd" (default), "unstructured_in_simt", "simt_only"
     # When compile_mode is provided, it automatically sets other fields
     compile_mode: str = "simd"
