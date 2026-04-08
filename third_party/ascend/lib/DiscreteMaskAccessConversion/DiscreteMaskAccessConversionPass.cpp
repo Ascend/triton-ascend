@@ -196,6 +196,10 @@ struct DiscreteMaskLoadConversion : OpRewritePattern<triton::LoadOp> {
 
     if (failed(isDiscreteMask(op, mask, rewriter)))
       return failure();
+
+    const std::string isDiscreteMaskTag = "is_discrete_mask";
+    op->setAttr(isDiscreteMaskTag, rewriter.getUnitAttr());
+
     if (compileOn91095Flag && forceSimtTemplateFlag)
       return failure();
 
