@@ -126,7 +126,9 @@ Triton uses LLVM 20 to generate code for GPUs and CPUs. Similarly, the BiSheng C
    ```bash
    git clone --no-checkout https://github.com/llvm/llvm-project.git
    cd llvm-project
-   git checkout b5cc222d7429fe6f18c787f633d5262fac2e676f
+   git checkout fad3272286528b8a491085183434c5ad4b59ab92
+   wget https://gitcode.com/Ascend/triton-ascend/blob/main/third_party/ascend/llvm_patch/fad3272.patch
+   git apply fad3272.patch
    ```
 
 #### Installing LLVM Using Clang
@@ -167,7 +169,7 @@ Triton uses LLVM 20 to generate code for GPUs and CPUs. Similarly, the BiSheng C
 #### Cloning Triton-Ascend
 
 ```bash
-git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend/python
+git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend
 ```
 
 #### Building Triton-Ascend
