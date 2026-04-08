@@ -513,6 +513,9 @@ void BlockDataParser::parseAtomicRmw(
         Value scalarIdx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), extracted);
         data.setMemAccVal(MemAccVal::StrucMemAcc);
         data.setScalar(scalarIdx);
+        data.getSizesRef().push_back(rewriter.getIndexAttr(1));
+        data.getStridesRef().push_back(rewriter.getIndexAttr(0));
+        data.getOffsetsRef().push_back(scalarIdx);
         return;
     }
     // For now, we consider this is UnstrucMemAcc because we have no other info.
@@ -978,6 +981,9 @@ void parseIndirectLoad(OpTy op, BlockData &data, const Location &loc,
         Value scalarIdx = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), extracted);
         data.setMemAccVal(MemAccVal::StrucMemAcc);
         data.setScalar(scalarIdx);
+        data.getSizesRef().push_back(rewriter.getIndexAttr(1));
+        data.getStridesRef().push_back(rewriter.getIndexAttr(0));
+        data.getOffsetsRef().push_back(scalarIdx);
         return;
     }
     data.setMemAccVal(MemAccVal::UnstrucMemAcc);
