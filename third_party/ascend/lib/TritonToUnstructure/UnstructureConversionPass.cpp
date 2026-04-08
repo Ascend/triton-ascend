@@ -356,8 +356,16 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
       Value mask = op.getMask();
       Value other = op.getOther();
       auto resultType = op.getType();
+      auto newPtr = srcPtr;
+      if (auto *defOp = srcPtr.getDefiningOp()) {
+          if (auto intToPtrOp = dyn_cast<triton::IntToPtrOp>(defOp)) {
+              auto zeroOffset =
+                  rewriter.create<arith::ConstantOp>(loc, rewriter.getZeroAttr(intToPtrOp.getSrc().getType()));
+              newPtr = rewriter.create<triton::AddPtrOp>(loc, srcPtr.getType(), srcPtr, zeroOffset);
+          }
+      }
       auto indirect = rewriter.create<triton::ascend::IndirectLoadOp>(
-          loc, resultType, srcPtr, ptrOffset, mask, other);
+          loc, resultType, newPtr, ptrOffset, mask, other);
       rewriter.replaceOp(op, indirect.getResult());
       LLVM_DEBUG({
         auto &os = llvm::dbgs();

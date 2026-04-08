@@ -49,8 +49,9 @@ using namespace hivm;
 
 LogicalResult isDiscreteMask(Operation *op, Value mask,
                              PatternRewriter &rewriter) {
-  if (!mask)
+  if (!mask || op->hasAttr("is_discrete_mask")) {
     return failure();
+  }
 
   MaskState mstate;
   auto isContMask = mstate.parse(mask, op->getLoc(), rewriter);
