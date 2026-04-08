@@ -875,7 +875,8 @@ def get_install_requirements():
     install_requires = [
         "attrs==24.2.0",
         "numpy==1.26.4",
-        "scipy==1.13.1",
+        "scipy==1.13.1;python_version<'3.13'",
+        "scipy==1.15.1;python_version>='3.13'",
         "decorator==5.1.1",
         "psutil==6.0.0",
         "pytest==8.3.2",
