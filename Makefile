@@ -88,7 +88,6 @@ all: ## Incremental builds
 
 $(TRITON_WHL_PYPI): $(DEPS_STAMP) install-dev-reqs
 	@echo "Building Triton wheel..."
-	cd python; \
 	TRITON_BUILD_WITH_CLANG_LLD=true \
 	TRITON_BUILD_PROTON=OFF \
 	TRITON_WHEEL_NAME="triton-ascend" \
@@ -100,7 +99,6 @@ $(TRITON_WHL_PYPI): $(DEPS_STAMP) install-dev-reqs
 
 $(TRITON_WHL):
 	@echo "Building Triton wheel..."
-	cd python; \
 	TRITON_BUILD_WITH_CLANG_LLD=true \
 	TRITON_BUILD_PROTON=OFF \
 	TRITON_WHEEL_NAME="triton-ascend" \
