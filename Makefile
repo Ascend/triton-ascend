@@ -129,8 +129,6 @@ rename-wheel:
 	else \
 		echo "Wheel name unchanged: $$BASENAME"; \
 	fi
-	mkdir -p dist; \
-	cp dist/*.whl dist/;
 
 .PHONY: package
 package: $(TRITON_WHL) rename-wheel ## Build the Triton wheel package
