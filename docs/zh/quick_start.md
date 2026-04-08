@@ -51,13 +51,13 @@ pip install -r requirements.txt -r requirements_dev.txt
 pip install triton-ascend
 ```
 
-- 注意：社区 Triton 和 Triton-Ascend 不能同时存在。如果在安装其他依赖Triton的软件时自动安装了社区 Triton，可能会覆盖掉已安装的 Triton-Ascend。
-此时请先卸载社区 Triton，然后重新安装 Triton-Ascend。
+- 注意：从 3.5 版本开始，Triton-Ascend 通过将 Triton 声明为安装依赖来缓解安装覆盖问题。安装 Triton-Ascend 时会先安装社区 Triton，再由 Triton-Ascend 覆盖同名目录，从而避免后续安装其他依赖 Triton 的软件包时再次安装 Triton 而覆盖 Triton-Ascend。x86 与 arm 使用不同版本的社区 Triton 安装包的原因是社区从 3.5 版本开始才提供 arm 版本安装包：x86 依赖 `triton==3.2.0`，arm 依赖 `triton==3.5.0`。
+- 注意1：该方案用于缓解安装覆盖问题，并不能彻底消除社区 Triton 与 Triton-Ascend 共享同名 `triton` 包目录带来的冲突；如果后续安装流程显式重新安装或升级社区 Triton，仍可能影响已安装的 Triton-Ascend，此时请先同时卸载社区 Triton 和 Triton-Ascend，然后重新安装 Triton-Ascend。
 
 也可以在 [下载地址](https://test.pypi.org/project/triton-ascend/#history) 中自行选择nightly包进行下载然后本地安装。
 
-- 注意1：如果您选择自行下载nightly包安装，请在选择Triton-Ascend包时选择对应您服务器的python版本以及架构(aarch64/x86_64)。
-- 注意2：nightly是每日构建的包，开发者提交mr频繁，没有经过稳定的测试，可能存在功能上的bug，请知悉。
+- 注意2：如果您选择自行下载nightly包安装，请在选择Triton-Ascend包时选择对应您服务器的python版本以及架构(aarch64/x86_64)。
+- 注意3：nightly是每日构建的包，开发者提交mr频繁，没有经过稳定的测试，可能存在功能上的bug，请知悉。
 
 ## 快速使用Docker 安装环境
 

@@ -53,13 +53,14 @@ You can install the latest stable version package using the CLI.
 pip install triton-ascend
 ```
 
-- Note: Community Triton and Triton-Ascend cannot coexist. When you install other software that depends on Triton, community Triton will be automatically installed, which will overwrite the installed Triton-Ascend directory.
-In this case, you need to uninstall community Triton first and then install Triton-Ascend.
+- Note: Starting from version 3.5, Triton-Ascend mitigates the installation overwrite issue by declaring Triton as an installation dependency. When Triton-Ascend is installed, community Triton is installed first, and then Triton-Ascend overwrites the shared package directory. This helps avoid a later Triton reinstallation overwriting Triton-Ascend when other software packages that depend on Triton are installed. Different community Triton package versions are used for x86 and arm because arm installation packages are only available in the community starting from Triton 3.5: x86 depends on `triton==3.2.0`, and arm depends on `triton==3.5.0`.
+
+- Note 1: This solution mitigates the installation overwrite issue, but it does not completely eliminate the conflict caused by community Triton and Triton-Ascend sharing the same top-level `triton` package directory. If a later installation explicitly reinstalls or upgrades community Triton, the installed Triton-Ascend may still be affected. In this case, uninstall both community Triton and Triton-Ascend first, and then reinstall Triton-Ascend.
 
 You can also download the nightly package from the [download link](https://test.pypi.org/project/triton-ascend/#history) and install it locally.
 
-- Note 1: If you download the nightly package for installation, select the Python version and architecture (AArch64/x86_64) of your server when selecting the Triton-Ascend package.
-- Note 2: The nightly package is built every day. Developers submit MRs frequently. Note that if the package does not pass the stable test, function bugs may exist.
+- Note 2: If you download the nightly package for installation, select the Python version and architecture (AArch64/x86_64) of your server when selecting the Triton-Ascend package.
+- Note 3: The nightly package is built every day. Developers submit MRs frequently. Note that if the package does not pass the stable test, function bugs may exist.
 
 ## Example for Running Triton
 
