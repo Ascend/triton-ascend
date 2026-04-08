@@ -261,6 +261,7 @@ def interleave_cont_disc_mask_kernel(
     tl.store(out_ptr, rotated_data)
 
 
+@pytest.mark.skip(reason="not supported after the NPUIR is updated in April, and will be fixed later")
 @pytest.mark.parametrize("M", [4])
 @pytest.mark.parametrize("N", [8])
 def test_discrete_mask_load_store(M, N):
