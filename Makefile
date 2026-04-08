@@ -113,8 +113,8 @@ $(TRITON_WHL):
 rename-wheel:
 	@set -e; \
 	echo "[rename-wheel] HEAD_COMMIT=$$HEAD_COMMIT"; \
-	WHEEL=$$(ls python/dist/*.whl 2>/dev/null | head -n1); \
-	if [ -z "$$WHEEL" ]; then echo "No wheel found in python/dist/"; exit 1; fi; \
+	WHEEL=$$(ls dist/*.whl 2>/dev/null | head -n1); \
+	if [ -z "$$WHEEL" ]; then echo "No wheel found in dist/"; exit 1; fi; \
 	if [ -n "$$HEAD_COMMIT" ]; then \
 		SHORT_COMMIT=$$(printf "%s" "$$HEAD_COMMIT" | cut -c1-8); \
 	else \
@@ -125,12 +125,12 @@ rename-wheel:
 	NEWBASENAME=$$(echo "$$BASENAME" | sed -E "s/\\+git[0-9a-fA-F]+/+git$${SHORT_COMMIT}/"); \
 	if [ "$$BASENAME" != "$$NEWBASENAME" ]; then \
 		echo "Renaming $$BASENAME -> $$NEWBASENAME"; \
-		mv "python/dist/$$BASENAME" "python/dist/$$NEWBASENAME"; \
+		mv "dist/$$BASENAME" "dist/$$NEWBASENAME"; \
 	else \
 		echo "Wheel name unchanged: $$BASENAME"; \
 	fi
 	mkdir -p dist; \
-	cp python/dist/*.whl dist/;
+	cp dist/*.whl dist/;
 
 .PHONY: package
 package: $(TRITON_WHL) rename-wheel ## Build the Triton wheel package
@@ -157,8 +157,8 @@ upload-pypi: $(PYPI_CONFIG) install-deps ## Build and upload Triton wheel to PyP
 		echo "Building wheel for $$PY..."; \
 		rm -rf build dist; \
 		make package-pypi PYTHON=$$PY IS_MANYLINUX=True; \
-		WHEEL=$$(ls python/dist/*.whl); \
-		cp python/dist/*.whl pkg_cache; \
+		WHEEL=$$(ls dist/*.whl); \
+		cp dist/*.whl pkg_cache; \
 		rm -f .req_dev_installed; \
 	done
 
