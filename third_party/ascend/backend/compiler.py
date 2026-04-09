@@ -803,7 +803,7 @@ class NPUOptions:
     arch: str = ""
 
     cluster_dims: tuple = (1, 1, 1)
-    num_warps: int = 4
+    num_warps: int = 32
     num_ctas: int = 1
     num_stages: int = 1
     warp_size: int = 32
