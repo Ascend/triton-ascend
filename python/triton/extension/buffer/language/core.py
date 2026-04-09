@@ -126,6 +126,14 @@ class buffer_type(tl.dtype):
     def scalar(self):
         return self.element_ty
 
+    def mangle(self) -> str:
+        elt = self.element_ty.mangle()
+        shape = "_".join(map(str, self.shape))
+        return f"B{elt}S{shape}S"
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int):
+        return buffer(handles[cursor], self), cursor + 1
+
 
 # -----------------------
 # buffer
