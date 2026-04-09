@@ -240,6 +240,7 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
 
   auto ptr = op.getPtr();
   auto ptrType = dyn_cast<RankedTensorType>(ptr.getType());
+  auto isDiscreteMask = op->hasAttr("is_discrete_mask");
 
   if (auto ptrPtrType = dyn_cast<triton::PointerType>(ptr.getType())) {
     if (auto ptrTensorType =
@@ -257,10 +258,9 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
   if (checkUnstructureAnnotated(op, rewriter))
     ptrOffsetInfo.setUnstructured(ptrOffsetInfo.getRank());
 
-  if (ptrOffsetInfo.isStructured() &&
-      (!ptrOffsetInfo.isScalarLike() ||
-       llvm::all_of(ptrType.getShape(), [](int64_t dim) { return dim == 1; })))
-    return failure();
+  if (ptrOffsetInfo.isStructured() && !isDiscreteMask &&
+      (!ptrOffsetInfo.isScalarLike() || llvm::all_of(ptrType.getShape(), [](int64_t dim) { return dim == 1; })))
+      return failure();
 
   LLVM_DEBUG({
     auto &os = llvm::dbgs();
@@ -350,14 +350,22 @@ LogicalResult UnstructuredMemAccessConverter<MemAccOpTy>::matchAndRewrite(
   });
 
   // Fast path on A5: rewrite tt.load/store to tt.indirect_load/store directly.
-  if (compileOn91095Flag && forceSimtTemplateFlag && ptrOffsetInfo.isUnstructuredOrScalarlike()) {
+  if (compileOn91095Flag && forceSimtTemplateFlag && (ptrOffsetInfo.isUnstructuredOrScalarlike() || isDiscreteMask)) {
     if constexpr (std::is_same_v<MemAccOpTy, triton::LoadOp>) {
       assert(isa<triton::PointerType>(srcPtr.getType()) && "src must be ptr type");
       Value mask = op.getMask();
       Value other = op.getOther();
       auto resultType = op.getType();
+      auto newPtr = srcPtr;
+      if (auto *defOp = srcPtr.getDefiningOp()) {
+          if (auto intToPtrOp = dyn_cast<triton::IntToPtrOp>(defOp)) {
+              auto zeroOffset =
+                  rewriter.create<arith::ConstantOp>(loc, rewriter.getZeroAttr(intToPtrOp.getSrc().getType()));
+              newPtr = rewriter.create<triton::AddPtrOp>(loc, srcPtr.getType(), srcPtr, zeroOffset);
+          }
+      }
       auto indirect = rewriter.create<triton::ascend::IndirectLoadOp>(
-          loc, resultType, srcPtr, ptrOffset, mask, other);
+          loc, resultType, newPtr, ptrOffset, mask, other);
       rewriter.replaceOp(op, indirect.getResult());
       LLVM_DEBUG({
         auto &os = llvm::dbgs();

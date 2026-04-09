@@ -49,8 +49,9 @@ using namespace hivm;
 
 LogicalResult isDiscreteMask(Operation *op, Value mask,
                              PatternRewriter &rewriter) {
-  if (!mask)
+  if (!mask || op->hasAttr("is_discrete_mask")) {
     return failure();
+  }
 
   MaskState mstate;
   auto isContMask = mstate.parse(mask, op->getLoc(), rewriter);
@@ -196,6 +197,10 @@ struct DiscreteMaskLoadConversion : OpRewritePattern<triton::LoadOp> {
 
     if (failed(isDiscreteMask(op, mask, rewriter)))
       return failure();
+
+    const std::string isDiscreteMaskTag = "is_discrete_mask";
+    op->setAttr(isDiscreteMaskTag, rewriter.getUnitAttr());
+
     if (compileOn91095Flag && forceSimtTemplateFlag)
       return failure();
 
