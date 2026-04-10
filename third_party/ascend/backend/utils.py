@@ -563,6 +563,6 @@ def triton_support_ffts():
     return is_ffts_supported(arch) and (not force_disable_ffts())
 
 
-def triton_enable_libdevice():
-    enable_libdevice = os.getenv("TRITON_ENABLE_LIBDEVICE", False)
-    return enable_libdevice
+def triton_enable_libdevice_simt():
+    enable_libdevice_simt = os.getenv("TRITON_ENABLE_LIBDEVICE_SIMT", False)
+    return enable_libdevice_simt
