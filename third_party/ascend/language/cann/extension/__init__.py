@@ -32,8 +32,7 @@ from .core import (
     is_builtin,
     MODE,
     PIPE,
-    # FIXME: comment out IteratorType and fix with npuir commit id 47a0229060e37f92a49cfb82d81c756628e6c7ae.
-    # IteratorType,
+    IteratorType,
     sub_vec_id,
     sub_vec_num,
     sync_block_all,
@@ -96,8 +95,7 @@ __all__ = [
     "is_builtin",
     "MODE",
     "PIPE",
-    # FIXME: comment out IteratorType and fix with npuir commit id 47a0229060e37f92a49cfb82d81c756628e6c7ae.
-    # "IteratorType",
+    "IteratorType",
     "sub_vec_id",
     "sub_vec_num",
     "sync_block_all",

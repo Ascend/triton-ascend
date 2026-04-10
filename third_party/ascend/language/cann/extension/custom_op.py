@@ -258,8 +258,7 @@ def _make_attrs(op, builder):
 
 
     _add_optional_indexing_map_attr(op, builder, attrs)
-    # FIXME: comment out IteratorType and fix with npuir commit id 47a0229060e37f92a49cfb82d81c756628e6c7ae.
-    # _add_optional_iterator_types_attr(op, builder, attrs)
+    _add_optional_iterator_types_attr(op, builder, attrs)
 
     _add_optional_extra_buffer_attr(op, builder, attrs)
 
