@@ -43,21 +43,20 @@ class my_custom_op:
     symbol = "my_custom_func"
     # fake path, this test only check Triton successfully lowered to MLIR
     bitcode = os.path.abspath(__file__)
-    #FIXME:when update npuir commit id to 47a0229060e37f92a49cfb82d81c756628e6c7ae uncomment below
-    # iterator_types = [
-    #     al.IteratorType.Parallel,
-    #     al.IteratorType.Broadcast,
-    #     al.IteratorType.Transpose,
-    #     al.IteratorType.Reduction,
-    #     al.IteratorType.Interleave,
-    #     al.IteratorType.Deinterleave,
-    #     al.IteratorType.Inverse,
-    #     al.IteratorType.Pad,
-    #     al.IteratorType.Concat,
-    #     al.IteratorType.Gather,
-    #     al.IteratorType.Cumulative,
-    #     al.IteratorType.Opaque,
-    # ]
+    iterator_types = [
+        al.IteratorType.Parallel,
+        al.IteratorType.Broadcast,
+        al.IteratorType.Transpose,
+        al.IteratorType.Reduction,
+        al.IteratorType.Interleave,
+        al.IteratorType.Deinterleave,
+        al.IteratorType.Inverse,
+        al.IteratorType.Pad,
+        al.IteratorType.Concat,
+        al.IteratorType.Gather,
+        al.IteratorType.Cumulative,
+        al.IteratorType.Opaque,
+    ]
 
     def __init__(self, x, ptr1, ptr2, offset: tl.int64, other, out=None):
         # Add optional custom-op attribute: ArrayAttr<AffineMapAttr>.
@@ -165,7 +164,7 @@ def kernel_extra_buf_wide(x_ptr, out_ptr, n, BLOCK: tl.constexpr):
 
 # ============== Pytest tests ==============
 
-@pytest.mark.skip(reason="need to update npuir commit id to 47a0229060e37f92a49cfb82d81c756628e6c7ae, and will be fixed later")
+
 def test_custom_op():
     """Test custom op compile to linalg MLIR."""
     mlir = compile_kernel(my_kernel,
@@ -218,7 +217,7 @@ def _custom_lines(mlir: str, op_name: str):
         if "hivm.hir.custom" in line and quoted in line
     ]
 
-@pytest.mark.skip(reason="need to update npuir commit id to 47a0229060e37f92a49cfb82d81c756628e6c7ae, and will be fixed later")
+
 def test_custom_op_extra_buffers_mixed_scalar_types():
     """extra_buffers_types must preserve bf16/f64/i8/f16/i32 (not all lowered to f32)."""
     mlir = compile_kernel(
@@ -239,7 +238,7 @@ def test_custom_op_extra_buffers_mixed_scalar_types():
     assert "i32" in line
     assert "424242" in line
 
-@pytest.mark.skip(reason="need to update npuir commit id to 47a0229060e37f92a49cfb82d81c756628e6c7ae, and will be fixed later")
+
 def test_custom_op_extra_buffers_single_buffer():
     mlir = compile_kernel(
         kernel_extra_buf_single_buf,
@@ -254,7 +253,7 @@ def test_custom_op_extra_buffers_single_buffer():
     assert "extra_buffers_sizes" in line
     assert "f32" in line
 
-@pytest.mark.skip(reason="need to update npuir commit id to 47a0229060e37f92a49cfb82d81c756628e6c7ae, and will be fixed later")
+
 def test_custom_op_extra_buffers_integer_variants():
     """extra_buffers accept int16/uint16/int64/uint32/uint8 (IR uses i* storage types)."""
     mlir = compile_kernel(
@@ -274,7 +273,7 @@ def test_custom_op_extra_buffers_integer_variants():
     assert "i8" in line
     assert "1001" in line and "1005" in line
 
-@pytest.mark.skip(reason="need to update npuir commit id to 47a0229060e37f92a49cfb82d81c756628e6c7ae, and will be fixed later")
+
 def test_custom_op_without_extra_buffers_has_no_extra_buffer_attrs():
     """Ops that do not set extra_buffers should not emit extra_buffers_* attributes."""
     mlir = compile_kernel(
