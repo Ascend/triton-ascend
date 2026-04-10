@@ -206,7 +206,7 @@ def _add_bitcode_attr(op, builder, attrs):
     from pathlib import Path
     bitcode = Path(getattr(op, name))
     assert bitcode.exists(), f"Provided bitcode ({name}) not exist"
-    attrs[name] = builder.get_str_attr(str(bitcode.absolute()))
+    attrs[name] = builder.get_string_attr(str(bitcode.absolute()))
 
 
 def _add_optional_extra_buffer_attr(op, builder, attrs):
@@ -307,8 +307,8 @@ def custom_semantic(name: str, *args, _semantic=None, **kwargs):
     inputs = _args_to_operands(op, _semantic, args, kwargs)
     builder = getattr(_semantic.builder, '_ascend_builder')
     # Setup attributes.
-    attrs = _make_attrs(op, _semantic.builder)
-    arg_attrs = _make_arg_attrs(op, _semantic.builder)
+    attrs = _make_attrs(op, builder)
+    arg_attrs = _make_arg_attrs(op, builder)
     # Build IR for the custom op.
     res = builder.create_custom_op(name, attrs, inputs, outputs, arg_attrs)
     # Results with same types as outputs.
