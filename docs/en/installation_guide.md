@@ -60,6 +60,7 @@ pip install triton-ascend
 
 - Note: Community Triton and Triton-Ascend cannot coexist. When you install other software that depends on Triton, community Triton will be automatically installed, which will overwrite the installed Triton-Ascend directory.
 In this case, you need to uninstall community Triton and Triton-Ascend first, and then install Triton-Ascend.
+
 ```shell
 pip uninstall triton
 pip uninstall triton-ascend
