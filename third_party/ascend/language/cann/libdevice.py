@@ -22,7 +22,8 @@ from math import pi as math_pi
 from triton.language import core, math, semantic
 from triton._C.libtriton import ir
 from triton.runtime.jit import jit
-from triton.backends.ascend.utils import get_ascend_arch_from_env, triton_enable_libdevice
+from triton.backends.ascend.utils import get_ascend_arch_from_env, triton_enable_libdevice_simt
+from triton.tools.get_ascend_devices import is_compile_on_910_95
 
 @core.extern
 def reciprocal(arg0, _builder=None):
@@ -79,8 +80,7 @@ def atan(arg0, _builder=None):
 
 @core.extern
 def tanh(arg0, _builder=None):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0], {
                 (core.dtype("fp32"), ): ("__hmf_tanh_fp32", core.dtype("fp32")),
@@ -111,8 +111,7 @@ def ldexp(arg0, arg1, _builder=None):
 
 @core.extern
 def pow(arg0, arg1, _builder=None):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0, arg1], {
                 (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_pow_fp32", core.dtype("fp32")),
@@ -174,8 +173,7 @@ def atan2(arg0, arg1, _builder):
 @math._check_dtype(dtypes=["fp32"]) 
 @math._add_math_1arg_docstr("trunc")
 def trunc(arg0, _builder=None):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0], {
                 (core.dtype("fp16"),): ("__hmf_trunc_fp16", core.dtype("fp16")),
@@ -206,8 +204,7 @@ def round(arg0, _builder=None):
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("acos")
 def acos(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         if arg0.dtype == core.dtype("bf16"):
             core.static_print("extern livdevice.acos for dtype bf16 is unspported for now.")
             core.static_assert(False)
@@ -267,8 +264,7 @@ def acos(arg0: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("sinh")
 def sinh(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         if arg0.dtype == core.dtype("bf16"):
             core.static_print("extern livdevice.sinh for dtype bf16 is unspported for now.")
             core.static_assert(False)
@@ -289,8 +285,7 @@ def sinh(arg0: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("cosh")
 def cosh(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         if arg0.dtype == core.dtype("bf16"):
             core.static_print("extern livdevice.cosh for dtype bf16 is unspported for now.")
             core.static_assert(False)
@@ -311,8 +306,7 @@ def cosh(arg0: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("acosh")
 def acosh(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         if arg0.dtype == core.dtype("bf16"):
             core.static_print("extern livdevice.acosh for dtype bf16 is unspported for now.")
             core.static_assert(False)
@@ -332,8 +326,7 @@ def acosh(arg0: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("asinh")
 def asinh(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         if arg0.dtype == core.dtype("bf16"):
             core.static_print("extern livdevice.asinh for dtype bf16 is unspported for now.")
             core.static_assert(False)
@@ -353,8 +346,7 @@ def asinh(arg0: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("atanh")
 def atanh(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         if arg0.dtype == core.dtype("bf16"):
             core.static_print("extern livdevice.atanh for dtype bf16 is unspported for now.")
             core.static_assert(False)
@@ -376,8 +368,7 @@ def atanh(arg0: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_1arg_docstr("expm1")
 def expm1(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         if arg0.dtype == core.dtype("bf16"):
             core.static_print("extern livdevice.expm1 for dtype bf16 is unspported for now.")
             core.static_assert(False)
@@ -395,8 +386,7 @@ def expm1(arg0: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["fp16", "fp32"])
 @math._add_math_2arg_docstr("nextafter")
 def nextafter(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0, arg1], {
                 (core.dtype("fp16"), core.dtype("fp16")): ("__hmf_nextafter_fp16", core.dtype("fp16")),
@@ -451,8 +441,7 @@ def nextafter(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["bf16", "fp16", "fp32"])
 @math._add_math_2arg_docstr("hypot(Euclidean Distance)")
 def hypot(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         if arg0.dtype == core.dtype("bf16"):
             core.static_print("extern livdevice.hypot for dtype bf16 is unspported for now.")
             core.static_assert(False)
@@ -477,8 +466,7 @@ def hypot(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["fp16", "fp32"])
 @math._add_math_2arg_docstr("besseli0 (Modified Bessel function of the first kind, order 0).")
 def cyl_bessel_i0(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         if arg0.dtype == core.dtype("fp16"):
             core.static_print("extern livdevice.cyl_bessel_i0 for dtype bf16 is unspported for now.")
             core.static_assert(False)
@@ -581,8 +569,7 @@ def cyl_bessel_i0(arg0: core.tensor, _builder: ir.builder):
 @core.extern
 @math._check_dtype(dtypes=["fp16", "fp32"])
 def signbit(arg0, _builder=None):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0], {
                 (core.dtype("fp16"),): ("__hmf_signbit_fp16", core.dtype("int32")),
@@ -618,8 +605,7 @@ def signbit(arg0, _builder=None):
 @core.extern
 @math._check_dtype(dtypes=["fp32"])
 def erfinv(arg0, _builder=None):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0], {
                 (core.dtype("fp32"), ): ("__hmf_erfinv_fp32", core.dtype("fp32")),
@@ -837,8 +823,7 @@ def gamma(arg0, _builder=None):
 @core.extern
 @math._check_dtype(dtypes=["fp32"])
 def lgamma(arg0, _builder=None):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0], {
                 (core.dtype("fp32"), ): ("__hmf_lgamma_fp32", core.dtype("fp32")),
@@ -861,8 +846,7 @@ def lgamma(arg0, _builder=None):
 @math._check_dtype(dtypes=["fp32",])
 @math._add_math_1arg_docstr("nearbyint")
 def nearbyint(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0], {
                 (core.dtype("fp32"),): ("__hmf_nearbyint_fp32", core.dtype("fp32")),
@@ -918,8 +902,7 @@ def nearbyint(arg0: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["fp32",])
 @math._add_math_1arg_docstr("arcsine")
 def asin(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0], {
                 (core.dtype("fp16"),): ("__hmf_asin_fp16", core.dtype("fp16")),
@@ -944,8 +927,7 @@ def asin(arg0: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["fp32",])
 @math._add_math_1arg_docstr("base-10 logarithm")
 def log10(arg0: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0], {
                 (core.dtype("fp32"),): ("__hmf_log10_fp32", core.dtype("fp32")),
@@ -968,8 +950,7 @@ def log10(arg0: core.tensor, _builder: ir.builder):
 @math._check_dtype(dtypes=["fp32",])
 @math._add_math_2arg_docstr("copysign")
 def copysign(arg0: core.tensor, arg1: core.tensor, _builder: ir.builder):
-    enable_libdevice = triton_enable_libdevice()
-    if enable_libdevice:
+    if triton_enable_libdevice_simt() and is_compile_on_910_95():
         return core.extern_elementwise(
             "", "", [arg0, arg1], {
                 (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_copysign_fp32", core.dtype("fp32")),
