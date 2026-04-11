@@ -882,6 +882,8 @@ def get_install_requirements():
         "pytest==8.3.2",
         "pytest-xdist==3.6.1",
         "pyyaml",
+        "pybind11",
+        "pandas",
     ]
     arch = get_architecture()
     return [*install_requires, *ARCHITECTURE_DEPENDENCIES[arch]]
