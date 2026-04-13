@@ -23,9 +23,9 @@ import triton.language as tl
 import torch
 import torch_npu
 
-X_SIZE: tl.constexpr = 4
-Y_SIZE: tl.constexpr = 64
-Z_SIZE: tl.constexpr = 32
+X_SIZE = tl.constexpr(4)
+Y_SIZE = tl.constexpr(64)
+Z_SIZE = tl.constexpr(32)
 NUMEL = X_SIZE * Y_SIZE * Z_SIZE
 
 

@@ -37,7 +37,7 @@ def copy_kernel(in_ptr, out_ptr, N: tl.constexpr, NUMEL):
     idx_block = tl.arange(0, N)
     is_valid = N <= NUMEL
     x = tl.load(in_ptr + idx_block, mask=idx_block < N)
-    mask_i1 = is_valid[:, None] & (idx_block < N)[None, :]
+    mask_i1 = is_valid[None, None] & (idx_block < N)[None, :]
     tl.store(out_ptr + idx_block[None, :], x[None, :], mask=mask_i1)
 
 
@@ -48,7 +48,7 @@ def permute_copy_kernel(in_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, NUMEL
     idx_block = idx_block_m[:, None] + idx_block_n[None, :] * M
     is_valid = N <= NUMEL
     x = tl.load(in_ptr + idx_block, mask=(idx_block_m[:, None] < M) & (idx_block_n[None, :] < N))
-    mask_i1 = (is_valid[:, None, None]) & (idx_block_m[None, :, None] < M) & (idx_block_n[None, None, :] < N)
+    mask_i1 = (is_valid[None, None, None]) & (idx_block_m[None, :, None] < M) & (idx_block_n[None, None, :] < N)
     tl.store(out_ptr + idx_block[None, :], x[None, :], mask=mask_i1)
 
 

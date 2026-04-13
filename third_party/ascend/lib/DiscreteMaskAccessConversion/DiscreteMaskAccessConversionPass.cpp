@@ -301,7 +301,7 @@ void DiscreteMaskAccessConversionPass::runOnOperation() {
   RewritePatternSet patterns(&getContext());
   patterns.add<DiscreteMaskLoadConversion, DiscreteMaskStoreConversion,
                DiscreteMaskAtomicConversion>(patterns.getContext());
-  if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns)))) {
+  if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
     moduleOp->emitError("failed to apply discrete mask access patterns");
     signalPassFailure();
   }

@@ -1,34 +1,31 @@
-#ifndef TRITON_DIALECT_TRITONAMDGPU_TRANSFORMS_PASSES_H_
-#define TRITON_DIALECT_TRITONAMDGPU_TRANSFORMS_PASSES_H_
+#ifndef TRITON_THIRD_PARTY_AMD_INCLUDE_TRITONAMDGPUTRANSFORMS_PASSES_H_
+#define TRITON_THIRD_PARTY_AMD_INCLUDE_TRITONAMDGPUTRANSFORMS_PASSES_H_
 
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Pass/Pass.h"
 #include "third_party/amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 namespace mlir {
 
-std::unique_ptr<Pass> createTritonAMDGPUStreamPipelineV2Pass(int numStages = 2);
-
-std::unique_ptr<Pass>
-createTritonAMDGPUAccelerateMatmulPass(std::string archGenName = std::string(),
-                                       int matrixInstructionSize = 0,
-                                       int kpack = 1);
-
-std::unique_ptr<Pass> createTritonAMDGPUCanonicalizeLoopsPass();
-
-std::unique_ptr<Pass> createTritonAMDGPUReorderInstructionsPass();
-
-std::unique_ptr<Pass> createTritonAMDGPUVerifier();
-
-std::unique_ptr<Pass> createTritonAMDGPUOptimizeEpiloguePass();
-
-std::unique_ptr<Pass> createTritonAMDGPUCanonicalizePointersPass();
-
-std::unique_ptr<Pass> createTritonAMDGPUConvertToBufferOpsPass();
-
-/// Generate the code for registering passes.
-#define GEN_PASS_REGISTRATION
+// Generate the pass class declarations.
+#define GEN_PASS_DECL
 #include "TritonAMDGPUTransforms/Passes.h.inc"
 
 } // namespace mlir
-#endif
+
+namespace mlir::triton::amdgpu {
+
+// Generate the pass class declarations.
+#define GEN_PASS_DECL_TRITONAMDGPUOPTIMIZEDOTOPERANDS
+#include "TritonAMDGPUTransforms/Passes.h.inc"
+
+void registerTritonAMDGPUOptimizeDotOperands();
+} // namespace mlir::triton::amdgpu
+
+namespace mlir {
+/// Generate the code for registering passes.
+#define GEN_PASS_REGISTRATION
+#include "TritonAMDGPUTransforms/Passes.h.inc"
+} // namespace mlir
+
+#endif // TRITON_THIRD_PARTY_AMD_INCLUDE_TRITONAMDGPUTRANSFORMS_PASSES_H_

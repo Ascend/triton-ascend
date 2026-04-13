@@ -82,7 +82,7 @@ def test_make_affine_map():
             "results": [1, 0],
         }
         assert str(sum_map.get_sub_map([1])) == "(d0, d1) -> (d1)"
-        assert str(sum_map.compose(transpose_map)) == "(d0, d1) -> (d1 + d0, d0)"
+        assert str(sum_map.compose(transpose_map)) == "(d0, d1) -> (d0 + d1, d0)"
         assert str(transpose_map.inverse_permutation()) == "(d0, d1) -> (d1, d0)"
         assert transpose_map == transpose_map_by_expr
         assert hash(transpose_map) == hash(transpose_map)

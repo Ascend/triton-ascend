@@ -1,4 +1,3 @@
-#include <memory>
 #include <stack>
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -6,13 +5,13 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
-#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 
-using namespace mlir;
+namespace mlir::triton {
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_TRITONREWRITETENSORPOINTER
 #include "triton/Dialect/Triton/Transforms/Passes.h.inc"
 
 namespace {
@@ -34,6 +33,8 @@ public:
   RewritedInfo() = default;
 
   RewritedInfo(const RewritedInfo &other) = default;
+
+  RewritedInfo &operator=(const RewritedInfo &other) = default;
 
   RewritedInfo(Value base, const SmallVector<Value> &shape,
                const SmallVector<Value> &strides,
@@ -80,7 +81,7 @@ public:
     // Expand dimensions
     Value expandedResult =
         builder.create<arith::AddIOp>(loc, splatOffset, i64Range);
-    for (int j = 0; j < tensorShape.size(); ++j) {
+    for (uint j = 0; j < tensorShape.size(); ++j) {
       if (j == i)
         continue;
       expandedResult =
@@ -134,7 +135,7 @@ public:
 
       // Compare with lower bound
       Value lowerBound = builder.create<mlir::arith::ConstantIntOp>(
-          loc, 0, builder.getI64Type());
+          loc, builder.getI64Type(), 0);
       Value splatLowerBound = builder.create<triton::SplatOp>(
           loc, offsetWithRange.getType(), lowerBound);
       Value cmpLower = builder.create<arith::CmpIOp>(
@@ -196,7 +197,7 @@ public:
 // very fragile and to solve we should expose convert Ptr of tensor to a
 // structure containins all values and not only offsets.
 class RewriteTensorPointerPass
-    : public TritonRewriteTensorPointerBase<RewriteTensorPointerPass> {
+    : public impl::TritonRewriteTensorPointerBase<RewriteTensorPointerPass> {
 private:
   DenseMap<Value, RewritedInfo> rewritedInfo;
 
@@ -258,7 +259,7 @@ public:
     // Calculate new offsets
     assert(info.length() == op.getOffsets().size());
     SmallVector<Value> newOffsets;
-    for (int i = 0; i < info.length(); ++i) {
+    for (uint i = 0; i < info.length(); ++i) {
       Value i64Offset = builder.create<arith::ExtSIOp>(
           op.getLoc(), builder.getI64Type(), op.getOffsets()[i]);
       Value newOffset = builder.create<arith::AddIOp>(
@@ -314,14 +315,10 @@ public:
           loadOp.getLoc(), newPtr, newMask, newOther, loadOp.getCache(),
           loadOp.getEvict(), loadOp.getIsVolatile());
       op->getResult(0).replaceAllUsesWith(newResult);
-      if (op->getAttr("async_task_id"))
-        newResult->setAttr("async_task_id", op->getAttr("async_task_id"));
     } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
-      auto newOp = builder.create<triton::StoreOp>(
-          storeOp.getLoc(), newPtr, storeOp.getValue(), newMask,
-          storeOp.getCache(), storeOp.getEvict());
-      if (op->getAttr("async_task_id"))
-        newOp->setAttr("async_task_id", op->getAttr("async_task_id"));
+      builder.create<triton::StoreOp>(storeOp.getLoc(), newPtr,
+                                      storeOp.getValue(), newMask,
+                                      storeOp.getCache(), storeOp.getEvict());
     }
 
     // Erase the original operation
@@ -344,7 +341,7 @@ public:
         continue;
       }
       needRewrite = true;
-      auto makeTensorPtrOp = getMakeTensorPtrOp(results[i]);
+      auto makeTensorPtrOp = triton::getMakeTensorPtrOp(results[i]);
       assert(rewritedInfo.count(makeTensorPtrOp.getResult()));
       const auto &info = rewritedInfo[makeTensorPtrOp.getResult()];
       for (unsigned j = 0; j < info.length(); ++j) {
@@ -382,7 +379,7 @@ public:
         oldResIdx++;
         newResIdx++;
       } else {
-        auto makeTensorPtrOp = getMakeTensorPtrOp(results[oldResIdx]);
+        auto makeTensorPtrOp = triton::getMakeTensorPtrOp(results[oldResIdx]);
         assert(rewritedInfo.count(makeTensorPtrOp.getResult()));
         auto info = rewritedInfo[makeTensorPtrOp.getResult()];
         for (unsigned j = 0; j < info.length(); ++j) {
@@ -399,7 +396,7 @@ public:
 
   Operation *rewriteForOp(OpBuilder &builder, scf::ForOp op,
                           std::stack<Operation *> &eraser) {
-    // Generate new iteration operands and set rewrited information
+    // Generate new iteration operands and set rewritten information
     SmallVector<Value> oldIterOperands = llvm::to_vector(op.getInitArgs());
     SmallVector<Value> newIterOperands = llvm::to_vector(op.getInitArgs());
     for (unsigned i = 0, oldI = 0, size = op.getInitArgs().size(); i < size;
@@ -429,7 +426,7 @@ public:
          ++i, ++oldI) {
       auto oldRegionIterArg = op.getRegionIterArg(oldI);
       if (triton::isTensorPointerType(oldRegionIterArg.getType())) {
-        // Pass rewrited info inside
+        // Pass rewritten info inside
         assert(rewritedInfo.count(oldIterOperands[oldI]));
         auto info = rewritedInfo[oldIterOperands[oldI]];
         mapping.map(oldRegionIterArg, oldRegionIterArg);
@@ -454,7 +451,7 @@ public:
     for (unsigned i = 0, oldI = 0; oldI < op.getNumResults(); ++i, ++oldI) {
       auto oldResult = op.getResult(oldI);
       if (triton::isTensorPointerType(oldResult.getType())) {
-        // Pack new offsets into rewrited info
+        // Pack new offsets into rewritten info
         assert(rewritedInfo.count(oldIterOperands[oldI]));
         auto info = rewritedInfo[oldIterOperands[oldI]];
         for (unsigned j = 0; j < info.length(); ++j)
@@ -564,6 +561,4 @@ public:
   }
 };
 
-std::unique_ptr<Pass> triton::createRewriteTensorPointerPass() {
-  return std::make_unique<RewriteTensorPointerPass>();
-}
+} // namespace mlir::triton

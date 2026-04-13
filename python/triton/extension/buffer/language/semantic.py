@@ -42,10 +42,10 @@ def alloc(
     shape = tl._unwrap_shape(shape)
     if etype == tl.int1:
         raise TypeError("Unsupported alloc int1 type")
-    if not isinstance(shape, (tuple, list)):
+    if not isinstance(shape, (tl.tuple, list)):
         raise TypeError("shape must be list/tuple")
-    etype = tl._constexpr_to_value(etype)
-    address_space = tl._constexpr_to_value(address_space)
+    etype = tl._unwrap_if_constexpr(etype)
+    address_space = tl._unwrap_if_constexpr(address_space)
     element_ty_ir = etype.to_ir(builder)
     addr_space_attr = (
         address_space.to_ir(builder) if address_space else builder.get_null_attr()
@@ -68,14 +68,14 @@ def to_buffer(
     bind_buffer: bl.buffer,
     builder: ir.builder,
 ) -> bl.buffer:
-    if not isinstance(tensor.shape, (tuple, list)) or not tensor.shape:
+    if not isinstance(tensor.shape, (tl.tuple, list)) or not tensor.shape:
         raise TypeError("scalar type cannot be converted to buffer")
     if isinstance(bind_buffer, bl.buffer):
         builder.create_bind_buffer(tensor.handle, bind_buffer.handle)
         return bind_buffer
     if not (bind_buffer is None):
         raise ValueError("bind_buffer must be a buffer or None")
-    address_space = tl._constexpr_to_value(address_space)
+    address_space = tl._unwrap_if_constexpr(address_space)
     addr_space_attr = (
         address_space.to_ir(builder) if address_space else builder.get_null_attr()
     )
@@ -99,7 +99,7 @@ def to_tensor(
         need_convert_layout = True
         shape = tl._unwrap_shape(target_shape)
         assert shape != memref.shape, "target shape is the same as source shape"
-    if not isinstance(shape, (tuple, list)):
+    if not isinstance(shape, (tl.tuple, list)):
         raise TypeError("shape must be list/tuple")
     tensor_type = tl.block_type(memref.dtype, shape)
 

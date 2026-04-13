@@ -405,7 +405,7 @@ scf::ForOp transformLoop(scf::ForOp forOp, OpBuilder &builder) {
         two = builder.create<arith::ConstantIndexOp>(loc, count - 1);
     } else if (auto intType = dyn_cast<IntegerType>(ubType)) {
         // 对于整数类型，创建相应类型的常数2
-        two = builder.create<arith::ConstantIntOp>(loc, count - 1, intType);
+        two = builder.create<arith::ConstantIntOp>(loc, intType, count - 1);
     } else {
         // 其他类型可能需要特殊处理
         llvm::errs() << "Warning: Unexpected type for upper bound: " << ubType << "\n";
@@ -638,7 +638,7 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, DenseMap<Value, int> VecBitMa
         two = builder.create<arith::ConstantIndexOp>(loc, count - 1);
     } else if (auto intType = dyn_cast<IntegerType>(ubType)) {
         // 对于整数类型，创建相应类型的常数2
-        two = builder.create<arith::ConstantIntOp>(loc, count - 1, intType);
+        two = builder.create<arith::ConstantIntOp>(loc, intType, count - 1);
     } else {
         // 其他类型可能需要特殊处理
         llvm::errs() << "Warning: Unexpected type for upper bound: " << ubType << "\n";
@@ -745,21 +745,21 @@ SmallVector<Value> addBufValLoop(scf::ForOp forOp, DenseMap<Value, int> VecBitMa
         auto i64Type = builder.getIntegerType(64);
         // %sub_id = hivm.hir.get_sub_block_idx -> i64
         // 这里假设有一个getSubBlockIdxOp操作
-        auto subIdOp = builder.create<GetSubBlockIdxOp>(
+        Value subId = builder.create<GetSubBlockIdxOp>(
             scopeOp->getLoc(), i64Type);
         auto i64ConstAttr = mlir::IntegerAttr::get(i64Type, 32);
-        auto cst_offset = builder.create<mlir::LLVM::ConstantOp>(
+        Value cstOffset = builder.create<mlir::LLVM::ConstantOp>(
             scopeOp->getLoc(), i64Type, i64ConstAttr);
-        auto ssb_addr_offset = builder.create<arith::MulIOp>(
-            scopeOp->getLoc(), subIdOp, cst_offset);
-        auto ssb_addr = builder.create<arith::AddIOp>(
-            scopeOp->getLoc(), ssb_addr_offset, cst_offset);
+        Value ssbAddrOffset = builder.create<arith::MulIOp>(
+          scopeOp->getLoc(), subId, cstOffset);
+        Value ssbAddr = builder.create<arith::AddIOp>(
+          scopeOp->getLoc(), ssbAddrOffset, cstOffset);
         builder.setInsertionPointToStart(&forOp->getRegion(0).front());
         // 创建inttoptr操作
         Value ssb_cube_ptr = builder.create<LLVM::IntToPtrOp>(
             forOp.getLoc(),
             LLVM::LLVMPointerType::get(builder.getContext(), 11),  // 地址空间11
-            ssb_addr
+          ssbAddr
         );
         bufferPtrs.push_back(ssb_cube_ptr);
         // 创建load操作
@@ -4523,7 +4523,7 @@ scf::ForOp addDoubleBuffForArgs(ModuleOp module, SmallVector<Value> uniqueDeps, 
     builder.setInsertionPoint(scopeOp);
     Location loc = forOp.getLoc();
     auto boundType = originalLowerBound.getType();
-    counterInit = builder.create<arith::ConstantIntOp>(loc, 0, boundType);
+    counterInit = builder.create<arith::ConstantIntOp>(loc, boundType, 0);
 
     // 添加和depValueForIdxs相同的迭代参数和计数器
     for (int64_t idx : depValueForIdxs) {

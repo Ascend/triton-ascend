@@ -22,6 +22,7 @@ public:
   }
 
   OpBuilder &getBuilder() { return *builder; }
+  mlir::MLIRContext *getContext() { return builder->getContext(); }
 
   bool isLineInfoEnabled() { return lineInfoEnabled; }
 

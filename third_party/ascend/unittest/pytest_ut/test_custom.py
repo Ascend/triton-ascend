@@ -9,6 +9,7 @@ from triton.compiler.code_generator import ast_to_ttir
 from triton._C.libtriton import ir
 from triton._C.libtriton.ascend import ir as ascend_ir
 from triton.backends.ascend.compiler import NPUOptions, ttir_to_linalg
+import pytest
 
 
 def compile_kernel(kernel, signature, constants):
@@ -162,6 +163,7 @@ def kernel_extra_buf_wide(x_ptr, out_ptr, n, BLOCK: tl.constexpr):
 
 
 # ============== Pytest tests ==============
+
 
 def test_custom_op():
     """Test custom op compile to linalg MLIR."""

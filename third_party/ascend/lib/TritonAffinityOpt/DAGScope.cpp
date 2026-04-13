@@ -809,7 +809,7 @@ static void SplitScope(triton::FuncOp funcOp, AffinityDAG::Graph& graph, Operati
       auto it = ++waitOp->getIterator();
       
       for (; it != block->end(); ++it) {
-        if (isa<bufferization::ToMemrefOp>(*it) || isa<scf::YieldOp>(*it)) {
+        if (isa<bufferization::ToBufferOp>(*it) || isa<scf::YieldOp>(*it)) {
           break;
         }
       }
@@ -941,7 +941,7 @@ static void SplitScope(triton::FuncOp funcOp, AffinityDAG::Graph& graph, Operati
     }
 
     // 查找 copyOp 下一行的 sync_block_set 操作的 flag 值
-    static int findCopyFlagSafe(bufferization::ToMemrefOp toMemrefOp) {
+    static int findCopyFlagSafe(bufferization::ToBufferOp toMemrefOp) {
       mlir::Operation *toMemrefOperation = toMemrefOp.getOperation();
       if (!toMemrefOperation || !toMemrefOperation->getBlock()) {
           return -1;
@@ -971,8 +971,8 @@ static void SplitScope(triton::FuncOp funcOp, AffinityDAG::Graph& graph, Operati
 
       MLIRContext *ctx = aivRegion->getContext();
       OpBuilder builder(ctx);
-      SmallVector<bufferization::ToMemrefOp> toMemrefs;
-      aivRegion->walk([&](bufferization::ToMemrefOp op) {
+      SmallVector<bufferization::ToBufferOp> toMemrefs;
+      aivRegion->walk([&](bufferization::ToBufferOp op) {
         toMemrefs.push_back(op);
       });
 

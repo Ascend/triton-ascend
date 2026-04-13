@@ -71,6 +71,24 @@ def allocate_local_buffer(XBLOCK: tl.constexpr):
     )
 
 
+@triton.jit
+def allocate_to_smem_buffer(x_ptr, XBLOCK: tl.constexpr):
+    x_l1_keep = bl.alloc(tl.float32, [XBLOCK], al.ascend_address_space.L1)
+    for i in range(XBLOCK):
+        offsets = tl.arange(0, XBLOCK)
+        x = tl.load(x_ptr + offsets, mask=offsets < XBLOCK)
+        bl.to_buffer(tensor=x, bind_buffer=x_l1_keep)
+        tl.store(x_ptr + offsets, x, mask=offsets < XBLOCK)
+
+
+def test_allocate_local_buffer():
+    """Test allocating local buffers in different address spaces."""
+    mlir = compile_kernel(
+        allocate_to_smem_buffer, {"x_ptr": "*fp32"}, {"XBLOCK": 256}
+    )
+    print(f"✅ Generated MLIR ({len(mlir)} chars):\n")
+
+
 # ============== Main for manual testing ==============
 
 if __name__ == "__main__":

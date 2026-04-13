@@ -36,7 +36,6 @@ import triton.language.core as tl
 import triton.language.extra.cann.extension as al
 import triton.extension.buffer.language as bl
 
-from triton.language import semantic as real_semantic
 
 T = TypeVar('T')
 
@@ -59,40 +58,40 @@ class PIPE(enum.Enum):
     PIPE_FIX = ascend_ir.PIPE.PIPE_FIX
 
 
-def create_sync_block_set(sender, receiver, event_id, sender_pipe: PIPE, receiver_pipe: PIPE, _builder=None):
+def create_sync_block_set(sender, receiver, event_id, sender_pipe: PIPE, receiver_pipe: PIPE, _semantic=None):
     if isinstance(event_id, int):
-        _builder.sync_block_set(sender, receiver,
-                                real_semantic.to_tensor(tl.constexpr(event_id), _builder).handle,
+        _semantic.builder.sync_block_set(sender, receiver,
+                                _semantic.to_tensor(tl.constexpr(event_id)).handle,
                                 sender_pipe.value, receiver_pipe.value)
     elif isinstance(event_id, tl.constexpr):
-        _builder.sync_block_set(sender, receiver,
-                                real_semantic.to_tensor(event_id, _builder).handle,
+        _semantic.builder.sync_block_set(sender, receiver,
+                                _semantic.to_tensor(event_id).handle,
                                 sender_pipe.value, receiver_pipe.value)
     else:
-        _builder.sync_block_set(sender, receiver,
+        _semantic.builder.sync_block_set(sender, receiver,
                                 event_id.handle, sender_pipe.value, receiver_pipe.value)
 
 
-def create_sync_block_wait(sender, receiver, event_id, sender_pipe: PIPE, receiver_pipe: PIPE, _builder=None):
+def create_sync_block_wait(sender, receiver, event_id, sender_pipe: PIPE, receiver_pipe: PIPE, _semantic=None):
     if isinstance(event_id, int):
-        _builder.sync_block_wait(sender, receiver,
-                                 real_semantic.to_tensor(tl.constexpr(event_id), _builder).handle,
+        _semantic.builder.sync_block_wait(sender, receiver,
+                                 _semantic.to_tensor(tl.constexpr(event_id)).handle,
                                  sender_pipe.value, receiver_pipe.value)
     elif isinstance(event_id, tl.constexpr):
-        _builder.sync_block_wait(sender, receiver,
-                                 real_semantic.to_tensor(event_id, _builder).handle,
+        _semantic.builder.sync_block_wait(sender, receiver,
+                                 _semantic.to_tensor(event_id).handle,
                                  sender_pipe.value, receiver_pipe.value)
     else:
-        _builder.sync_block_wait(sender, receiver,
+        _semantic.builder.sync_block_wait(sender, receiver,
                                  event_id.handle, sender_pipe.value, receiver_pipe.value)
 
 
-def sub_vec_id(builder: ascend_ir.ascendnpu_ir_builder) -> tl.tensor:
-    return tl.tensor(builder.create_get_sub_vec_id(), tl.int64)
+def sub_vec_id(_semantic=None) -> tl.tensor:
+    return tl.tensor(_semantic.builder._ascend_builder.create_get_sub_vec_id(), tl.int64)
 
 
-def copy_from_ub_to_l1(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], builder):
-    if not builder.is_910_95():
+def copy_from_ub_to_l1(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _semantic=None):
+    if not _semantic.builder.is_910_95():
         raise RuntimeError("this feature is only supported on Ascend910_95")
     if isinstance(src, tl.tensor) or isinstance(dst, tl.tensor):
         raise TypeError("tensor not support yet")
@@ -105,13 +104,13 @@ def copy_from_ub_to_l1(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, b
             raise TypeError("src's AddressSpace must be UB")
         if dst.space != al.ascend_address_space.L1:
             raise TypeError("dst's AddressSpace must be L1")
-        builder.create_copy_buffer(src.handle, dst.handle)
+        _semantic.builder.create_copy_buffer(src.handle, dst.handle)
     else:
         raise TypeError("src and dst must be tl.tensor or bl.buffer")
 
 
-def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], builder):
-    if not builder.is_910_95():
+def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _semantic=None):
+    if not _semantic.builder.is_910_95():
         raise RuntimeError("this feature is only supported on Ascend910_95")
     if isinstance(src, tl.tensor) or isinstance(dst, tl.tensor):
         raise TypeError("tensor not support yet")
@@ -124,7 +123,7 @@ def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], bui
             raise TypeError("src's AddressSpace must be UB")
         if dst.space not in (al.ascend_address_space.L1, al.ascend_address_space.UB):
             raise TypeError("dst's AddressSpace must be UB or L1")
-        builder.create_copy_buffer(src.handle, dst.handle)
+        _semantic.builder.create_copy_buffer(src.handle, dst.handle)
     else:
         raise TypeError("src and dst must be tl.tensor or bl.buffer")
 
@@ -136,9 +135,9 @@ def fixpipe(
     dual_dst_mode,
     pre_quant_mode,
     pre_relu_mode,
-    builder: ascend_ir.ascendnpu_ir_builder,
+    _semantic=None,
 ) -> None:
-    builder.create_fixpipe(
+    _semantic.builder._ascend_builder.create_fixpipe(
         src.handle,
         dst.handle,
         dma_mode.value,
@@ -148,7 +147,7 @@ def fixpipe(
     )
 
 
-def debug_barrier(sync_mode: str, builder) -> None:
-    target = tl.tensor(builder.get_int64(0), tl.int64)
-    attr = builder.get_str_attr(sync_mode)
-    builder.create_debug_barrier(target.handle, "SYNC_IN_VF", attr)
+def debug_barrier(sync_mode: str, _semantic=None) -> None:
+    target = tl.tensor(_semantic.builder.get_int64(0), tl.int64)
+    attr = _semantic.builder.get_string_attr(sync_mode)
+    _semantic.builder.create_debug_barrier(target.handle, "SYNC_IN_VF", attr)

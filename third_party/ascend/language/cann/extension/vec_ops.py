@@ -8,7 +8,7 @@
 import triton.language as tl
 from triton.language import semantic, core, standard
 from triton.language.core import (
-    _constexpr_to_value,
+    _unwrap_if_constexpr,
     _tensor_member_fn,
     _unwrap_iterable,
     builtin,
@@ -19,24 +19,6 @@ from triton.language.core import (
     _unwrap_if_constexpr,
     range
 )
-from triton.language.semantic import (
-    wrap_tensor, 
-    _str_to_rounding_mode, 
-    not_equal, 
-    _str_to_dot_input_precision,
-    binary_op_type_checking_impl, 
-    integer_promote_impl, 
-    broadcast_impl_shape, 
-    _str_to_sem, 
-    _str_to_scope, 
-    bitcast,
-    bitwise_op_type_checking_impl,
-    to_tensor, 
-    _str_to_load_cache_modifier, 
-    _str_to_eviction_policy,
-    _str_to_padding_option, 
-    _canonicalize_boundary_check,
-)
 
 from . import is_compile_on_910_95
 from .aux_ops import compile_hint_impl
@@ -46,7 +28,7 @@ from triton._C.libtriton import ir
 
 @_tensor_member_fn
 @builtin
-def insert_slice(ful, sub, offsets, sizes, strides, _builder=None, _generator=None) -> tensor:
+def insert_slice(ful, sub, offsets, sizes, strides, _semantic=None, _generator=None) -> tensor:
     """
     Insert a tensor to another tensor as specified by the operation’s offsets, sizes and strides arguments.
 
@@ -85,16 +67,16 @@ def insert_slice(ful, sub, offsets, sizes, strides, _builder=None, _generator=No
     assert len(ful.shape) > 0
     assert len(ful.shape) == len(sub.shape)
     new_offsets = [
-        semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
+        _semantic.to_tensor(o) if isinstance(o, constexpr) else o
         for o in offsets
     ]
-    out = insert_slice_impl(ful, sub, new_offsets, sizes, strides, _builder)
+    out = insert_slice_impl(ful, sub, new_offsets, sizes, strides, _semantic.builder)
     return out
 
 
 @_tensor_member_fn
 @builtin
-def extract_slice(ful, offsets, sizes, strides, _builder=None, _generator=None) -> tensor:
+def extract_slice(ful, offsets, sizes, strides, _semantic=None, _generator=None) -> tensor:
     """
     Extract a tensor from another tensor as specified by the operation’s offsets, sizes and strides arguments.
 
@@ -130,15 +112,15 @@ def extract_slice(ful, offsets, sizes, strides, _builder=None, _generator=None) 
 
     assert len(ful.shape) > 0
     new_offsets = [
-        semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
+        _semantic.to_tensor(o) if isinstance(o, constexpr) else o
         for o in offsets
     ]
-    sub = extract_slice_impl(ful, new_offsets, sizes, strides, _builder)
+    sub = extract_slice_impl(ful, new_offsets, sizes, strides, _semantic.builder)
     return sub
 
 @_tensor_member_fn
 @builtin
-def get_element(src, indice, _builder=None, _generator=None):
+def get_element(src, indice, _semantic=None, _generator=None):
     """
     get_element op reads a ranked tensor and returns one element as specified by the given indices.
     The result of the op is a value with the same type as the elements of the tensor.
@@ -167,17 +149,17 @@ def get_element(src, indice, _builder=None, _generator=None):
                 new_indice.append(i.handle if hasattr(i, 'handle') else i)
         
         result = builder.create_extract_scalar(src.handle, new_indice)
-        return wrap_tensor(result, src.type.scalar, None)
+        return _semantic.wrap_tensor(result, src.type.scalar, None)
 
     assert len(src.shape) > 0
     new_indice = [
-        semantic.to_tensor(i, _builder) if isinstance(i, constexpr) else i
+        _semantic.to_tensor(i) if isinstance(i, constexpr) else i
         for i in indice
     ]
-    return get_element_impl(src, new_indice, _builder)
+    return get_element_impl(src, new_indice, _semantic.builder)
 
 @builtin
-def flip(ptr, dim=-1, _builder=None, _generator=None):
+def flip(ptr, dim=-1, _semantic=None, _generator=None):
 
     def flip_impl(ptr: tensor, dim: int, builder: ir.builder, generator=None):
         """
@@ -274,7 +256,7 @@ def flip(ptr, dim=-1, _builder=None, _generator=None):
         raise TypeError(f"dim must be an integer (or tl.constexpr int), got {dim!r}") from e
 
     dim = len(ptr.shape) - 1 if dim == -1 else dim
-    return flip_impl(ptr, dim, _builder, _generator)
+    return flip_impl(ptr, dim, _semantic.builder, _generator)
 
 
 class static_range:
@@ -296,9 +278,9 @@ class static_range:
 
     def __iter__(self):
         # Extract actual values from constexpr objects for iteration
-        start_val = core._constexpr_to_value(self.start)
-        end_val = core._constexpr_to_value(self.end)
-        step_val = core._constexpr_to_value(self.step)
+        start_val = core._unwrap_if_constexpr(self.start)
+        end_val = core._unwrap_if_constexpr(self.end)
+        step_val = core._unwrap_if_constexpr(self.step)
         # Store as regular Python integers for iteration
         self._current = start_val
         self._end = end_val
@@ -314,7 +296,7 @@ class static_range:
 
 
 @builtin
-def sort(ptr, dim=-1, descending=False, _builder=None):
+def sort(ptr, dim=-1, descending=False, _semantic=None):
     """
     sort the input tensor along 'dim'
 
@@ -386,18 +368,18 @@ def sort(ptr, dim=-1, descending=False, _builder=None):
     else:
         descending = bool(descending)
 
-    ret = sort_impl(ptr, dim, descending, _builder)
+    ret = sort_impl(ptr, dim, descending, _semantic.builder)
     # interpreter mode not support compile_hint overflow_mode, direct return
     from triton.runtime.interpreter import InterpreterBuilder
-    if isinstance(_builder, InterpreterBuilder):
+    if isinstance(_semantic.builder, InterpreterBuilder):
         return ret
     base_ty = ptr.type.scalar if hasattr(ptr.type, "scalar") else ptr.type
     if base_ty.is_int8() or base_ty.is_int16():
-        compile_hint_impl(ret, "overflow_mode", constexpr("saturate"), _builder)
+        compile_hint_impl(ret, "overflow_mode", constexpr("saturate"), _semantic.builder)
     return ret
 
 
-def ascend_cast_impl(input: tensor, dst_ty: dtype, builder: ir.builder,
+def ascend_cast_impl(input: tensor, dst_ty: dtype, _semantic=None,
          fp_downcast_rounding: Optional[str] = None, overflow_mode: Optional[str] = None) -> tensor:
     src_ty = input.type
     if isinstance(dst_ty, tl.constexpr):
@@ -416,7 +398,7 @@ def ascend_cast_impl(input: tensor, dst_ty: dtype, builder: ir.builder,
 
     # For fp downcasting default rounding mode should be RTNE, for all other conversions it should
     # not be set
-    fp_downcast_rounding = _str_to_rounding_mode(fp_downcast_rounding)
+    fp_downcast_rounding = _semantic._str_to_rounding_mode(fp_downcast_rounding)
     use_custom_rounding = False
     if dst_sca_ty.is_floating() and src_sca_ty.is_floating(
     ) and dst_sca_ty.primitive_bitwidth < src_sca_ty.primitive_bitwidth:
@@ -431,20 +413,20 @@ def ascend_cast_impl(input: tensor, dst_ty: dtype, builder: ir.builder,
             raise ValueError("[fp8, fp64] is unsupported on Ascend for now."
                            "Source scalar type is " + str(src_sca_ty) + " and destination type is " + str(dst_sca_ty))
     if (src_sca_ty.is_fp8e4b15() or dst_sca_ty.is_fp8e4b15()):
-        assert builder.codegen_fns.get(
+        assert _semantic.builder.codegen_fns.get(
             "convert_custom_types") is not None, "target doesn't provide conversion for this type."
-        return builder.codegen_fns["convert_custom_types"](input, dst_ty, fp_downcast_rounding, _builder=builder)
+        return _semantic.builder.codegen_fns["convert_custom_types"](input, dst_ty, fp_downcast_rounding, _semantic=_semantic)
     # Casting with customized floating types involved: fp8 <=> bf16, fp16, fp32, fp64
     # and non-default rounding modes for downcasting
     if (src_sca_ty.is_fp8() and dst_sca_ty.is_floating()) or \
        (src_sca_ty.is_floating() and dst_sca_ty.is_fp8()) or \
        use_custom_rounding:
-        return tensor(builder.create_fp_to_fp(input.handle, dst_ty.to_ir(builder), fp_downcast_rounding), dst_ty)
+        return tensor(_semantic.builder.create_fp_to_fp(input.handle, dst_ty.to_ir(_semantic.builder), fp_downcast_rounding), dst_ty)
 
     # bf16 <=> (not fp32)
     if (src_sca_ty.is_fp16() and not dst_sca_ty.is_fp32()) or \
        (src_sca_ty.is_bf16() and not dst_sca_ty.is_fp32()):
-        return ascend_cast_impl(ascend_cast_impl(input, tl.float32, builder), dst_sca_ty, builder)
+        return ascend_cast_impl(ascend_cast_impl(input, tl.float32, _semantic), dst_sca_ty, _semantic)
 
     # Standard floating types' casting: truncation
     #   fp64 => fp32, fp16, bf16
@@ -453,7 +435,7 @@ def ascend_cast_impl(input: tensor, dst_ty: dtype, builder: ir.builder,
         dst_sca_ty.is_floating() and \
         src_sca_ty.primitive_bitwidth > dst_sca_ty.primitive_bitwidth
     if truncate_fp:
-        return tensor(builder.create_fp_trunc(input.handle, dst_ty.to_ir(builder)), dst_ty)
+        return tensor(_semantic.builder.create_fp_trunc(input.handle, dst_ty.to_ir(_semantic.builder)), dst_ty)
 
     # Standard floating types' casting: extension
     #   fp32 => fp64
@@ -463,67 +445,67 @@ def ascend_cast_impl(input: tensor, dst_ty: dtype, builder: ir.builder,
         dst_sca_ty.is_floating() and \
         src_sca_ty.primitive_bitwidth < dst_sca_ty.primitive_bitwidth
     if ext_fp:
-        return tensor(builder.create_fp_ext(input.handle, dst_ty.to_ir(builder)), dst_ty)
+        return tensor(_semantic.builder.create_fp_ext(input.handle, dst_ty.to_ir(_semantic.builder)), dst_ty)
 
     # Casting between integer types
     if src_sca_ty.is_int() and dst_sca_ty.is_int() and \
        (src_sca_ty.int_bitwidth != dst_sca_ty.int_bitwidth or src_sca_ty.int_signedness != dst_sca_ty.int_signedness):
         sign_extend = src_sca_ty.is_int_signed() and not src_sca_ty.is_bool()
         if dst_sca_ty.is_bool():
-            ty = input.dtype.to_ir(builder)
-            _0 = tensor(builder.get_null_value(ty), input.dtype)
-            return not_equal(input, _0, builder) 
+            ty = input.dtype.to_ir(_semantic.builder)
+            _0 = tensor(_semantic.builder.get_null_value(ty), input.dtype)
+            return _semantic.not_equal(input, _0) 
         elif overflow_mode == "saturate" and \
              (src_sca_ty.is_int_unsigned() or dst_sca_ty.is_int_unsigned()) and \
              src_sca_ty.int_bitwidth >= dst_sca_ty.int_bitwidth:
             if is_compile_on_910_95:
-                result = tensor(builder.create_int_cast(input.handle, dst_ty.to_ir(builder), sign_extend), dst_ty)
-                compile_hint_impl(result, "saturate_src_unsigned", src_sca_ty.is_int_unsigned(), builder)
-                compile_hint_impl(result, "saturate_dst_unsigned", dst_sca_ty.is_int_unsigned(), builder)
+                result = tensor(_semantic.builder.create_int_cast(input.handle, dst_ty.to_ir(_semantic.builder), sign_extend), dst_ty)
+                compile_hint_impl(result, "saturate_src_unsigned", src_sca_ty.is_int_unsigned(), _semantic.builder)
+                compile_hint_impl(result, "saturate_dst_unsigned", dst_sca_ty.is_int_unsigned(), _semantic.builder)
                 return result
             else:
-                return ascend_cast_impl(ascend_cast_impl(input, tl.float32, builder), dst_sca_ty, builder)
-        return tensor(builder.create_int_cast(input.handle, dst_ty.to_ir(builder), sign_extend), dst_ty)
+                return ascend_cast_impl(ascend_cast_impl(input, tl.float32, _semantic), dst_sca_ty, _semantic)
+        return tensor(_semantic.builder.create_int_cast(input.handle, dst_ty.to_ir(_semantic.builder), sign_extend), dst_ty)
 
     # Casting standard floating types to integer types
     if src_sca_ty.is_standard_floating() and dst_sca_ty.is_int():
         if dst_sca_ty.is_bool():
-            ty = input.dtype.to_ir(builder)
-            _0 = tensor(builder.get_null_value(ty), input.dtype)
-            return not_equal(input, _0, builder)
+            ty = input.dtype.to_ir(_semantic.builder)
+            _0 = tensor(_semantic.builder.get_null_value(ty), input.dtype)
+            return _semantic.not_equal(input, _0)
         elif dst_sca_ty.is_int_signed():
-            return tensor(builder.create_fp_to_si(input.handle, dst_ty.to_ir(builder)), dst_ty)
+            return tensor(_semantic.builder.create_fp_to_si(input.handle, dst_ty.to_ir(_semantic.builder)), dst_ty)
         else:
-            return tensor(builder.create_fp_to_ui(input.handle, dst_ty.to_ir(builder)), dst_ty)
+            return tensor(_semantic.builder.create_fp_to_ui(input.handle, dst_ty.to_ir(_semantic.builder)), dst_ty)
 
     # Casting integer types to standard floating types
     if src_sca_ty.is_int() and dst_sca_ty.is_standard_floating():
         if src_sca_ty.is_bool() or not src_sca_ty.is_int_signed():
-            return tensor(builder.create_ui_to_fp(input.handle, dst_ty.to_ir(builder)), dst_ty)
+            return tensor(_semantic.builder.create_ui_to_fp(input.handle, dst_ty.to_ir(_semantic.builder)), dst_ty)
         else:
-            return tensor(builder.create_si_to_fp(input.handle, dst_ty.to_ir(builder)), dst_ty)
+            return tensor(_semantic.builder.create_si_to_fp(input.handle, dst_ty.to_ir(_semantic.builder)), dst_ty)
 
     # Casting pointer types to integer types
     if src_sca_ty.is_ptr() and dst_sca_ty.is_int():
         bitwidth = dst_sca_ty.int_bitwidth
         if bitwidth == 64:
-            return tensor(builder.create_ptr_to_int(input.handle, dst_ty.to_ir(builder)), dst_ty)
+            return tensor(_semantic.builder.create_ptr_to_int(input.handle, dst_ty.to_ir(_semantic.builder)), dst_ty)
         if bitwidth == 1:
-            return not_equal(ascend_cast_impl(input, tl.int64, builder), tensor(builder.get_int64(0), tl.int64), builder)
+            return _semantic.not_equal(ascend_cast_impl(input, tl.int64, _semantic), tensor(_semantic.builder.get_int64(0), tl.int64))
 
     # Casting integer types to pointer types
     if src_sca_ty.is_int() and dst_sca_ty.is_ptr():
-        return tensor(builder.create_int_to_ptr(input.handle, dst_ty.to_ir(builder)), dst_ty)
+        return tensor(_semantic.builder.create_int_to_ptr(input.handle, dst_ty.to_ir(_semantic.builder)), dst_ty)
 
     # Casting pointer types to pointer types
     if src_sca_ty.is_ptr() and dst_sca_ty.is_ptr():
-        return tensor(builder.create_bitcast(input.handle, dst_ty.to_ir(builder)), dst_ty)
+        return tensor(_semantic.builder.create_bitcast(input.handle, dst_ty.to_ir(_semantic.builder)), dst_ty)
 
     assert False, f'cannot cast {input} to {dst_ty}'
 
 @_tensor_member_fn
 @builtin
-def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcast: bool = False, overflow_mode: Optional[str] = None, _builder=None):
+def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcast: bool = False, overflow_mode: Optional[str] = None, _semantic=None):
     """
     Casts a tensor to the given :code:`dtype`.
 
@@ -545,18 +527,18 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
     :type overflow_mode: string, optional
     """
     overflow_modes = ["trunc", "saturate"]
-    input = semantic.to_tensor(input, _builder)
+    input = _semantic.to_tensor(input)
     if isinstance(bitcast, constexpr):
         bitcast = bitcast.value
     if bitcast:
-        return semantic.bitcast(input, dtype, _builder)
-    ret = ascend_cast_impl(input, dtype, _builder, fp_downcast_rounding, overflow_mode)
+        return _semantic.bitcast(input, dtype)
+    ret = ascend_cast_impl(input, dtype, _semantic, fp_downcast_rounding, overflow_mode)
     if overflow_mode is not None:
         if overflow_mode in overflow_modes:
             from triton.runtime.interpreter import InterpreterBuilder
-            if isinstance(_builder, InterpreterBuilder):
+            if isinstance(_semantic.builder, InterpreterBuilder):
                 overflow_mode = constexpr(overflow_mode)
-            compile_hint_impl(ret, "overflow_mode", overflow_mode, _builder)
+            compile_hint_impl(ret, "overflow_mode", overflow_mode, _semantic.builder)
         else:
             raise ValueError(f"Unknown overflow_mode:{overflow_mode} is found.")
     return ret

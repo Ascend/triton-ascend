@@ -196,9 +196,9 @@ void LoadConverter::fillTensorWithOtherForMaskScenario(
     Value maskDimVal;
     if (isa<Attribute>(maskDim[i]))
       maskDimVal = rewriter.create<arith::ConstantOp>(
-          loc, cast<IntegerAttr>(maskDim[i].get<Attribute>()));
+          loc, cast<IntegerAttr>(cast<Attribute>(maskDim[i])));
     else
-      maskDimVal = maskDim[i].get<Value>();
+      maskDimVal = cast<Value>(maskDim[i]);
 
     auto curCmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
                                                  maskDimVal, shapeVal);
@@ -432,7 +432,7 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
       return failure();
     } else {
       // If last dimension stride equals 2, try deinterleave optimization.
-      auto [ptrStrides, ptrOffsets] = getStridesAndOffset(memRefType);
+      auto [ptrStrides, ptrOffsets] = memRefType.getStridesAndOffset();
       if (ptrStrides.back() == 2 && (memRefShape.back() % 2 == 0) &&
           mlir::triton::DeinterleaveStatusOptimization(op, adaptor, rewriter)
               .succeeded()) {
@@ -479,7 +479,7 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
   if (mstate.getRank() == memRefType.getRank() &&
       isConstantIntValue(mstate.offsets.back(), 0) &&
       isConstantIntValue(mstate.dims.back(), memRefType.getShape().back())) {
-    auto [ptrStrides, ptrOffsets] = getStridesAndOffset(memRefType);
+    auto [ptrStrides, ptrOffsets] = memRefType.getStridesAndOffset();
     if (ptrStrides.back() == 2 && (memRefType.getShape().back() % 2 == 0) &&
         DeinterleaveStatusWithMaskOptimization(op, adaptor, rewriter, mstate,
                                                allocOp)
@@ -498,7 +498,7 @@ LoadConverter::matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
     memref::SubViewOp dstSubView = mstate.getSubview(allocOp, loc, rewriter);
     MemRefType dstSubViewType = mlir::cast<MemRefType>(dstSubView.getType());
 
-    auto [srcStrides, srcOffset] = getStridesAndOffset(dstSubViewType);
+    auto [srcStrides, srcOffset] = dstSubViewType.getStridesAndOffset();
     MemRefType castType = MemRefType::get(
       dstSubViewType.getShape(),
       dstSubViewType.getElementType(),
@@ -603,7 +603,7 @@ AtomicRMWConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor,
   auto getInputMemref = [&]() -> Value {
     if (isa<MemRefType>(inputVal.getType()))
       return inputVal;
-    return rewriter.create<bufferization::ToMemrefOp>(loc, ptrType, inputVal);
+    return rewriter.create<bufferization::ToBufferOp>(loc, ptrType, inputVal);
   };
   auto inputMemref = getInputMemref();
   auto inputMemrefType = cast<MemRefType>(inputMemref.getType());
@@ -658,7 +658,7 @@ AtomicRMWConverter::matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor,
     if (auto maskTypeT = dyn_cast<TensorType>(mask.getType())) {
     MemRefType maskTypeM = MemRefType::get(maskTypeT.getShape(), maskTypeT.getElementType());
     memrefMask =
-        rewriter.create<bufferization::ToMemrefOp>(loc, maskTypeM, mask);
+        rewriter.create<bufferization::ToBufferOp>(loc, maskTypeM, mask);
     }
     rewriter.create<hfusion::AtomicXchgOp>(op.getLoc(), TypeRange(), inputMemref, dstMemref, memrefMask);
   } else {
@@ -726,10 +726,10 @@ AtomicCASConverter::matchAndRewrite(triton::AtomicCASOp op, OpAdaptor adaptor,
   auto dstOriType = cast<MemRefType>(dstMemref.getType());
   MemRefType dstType = MemRefType::get(dstOriType.getShape(), dstOriType.getElementType());
   Value inputMemref =
-      rewriter.create<bufferization::ToMemrefOp>(loc, dstType, val);
+      rewriter.create<bufferization::ToBufferOp>(loc, dstType, val);
 
   Value cmpMemref =
-      rewriter.create<bufferization::ToMemrefOp>(loc, dstType, cmp);
+      rewriter.create<bufferization::ToBufferOp>(loc, dstType, cmp);
 
   // create element-wise map
   int64_t rank = type.getRank();

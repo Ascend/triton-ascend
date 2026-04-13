@@ -99,7 +99,7 @@ bool checkIsCaseOffsetValid(OpFoldResult originOffset)
     int64_t intOffset = getConstantIntValue(originOffset).value();
     return intOffset == 0 || intOffset == 1;
   } else if (llvm::isa<Value>(originOffset)) {
-    auto op = originOffset.get<Value>().getDefiningOp();
+    auto op = cast<Value>(originOffset).getDefiningOp();
     if (op && llvm::isa<arith::AddIOp>(op)) {
       if (auto addOp = dyn_cast<arith::AddIOp>(op)) {
         if (auto constLHS = addOp.getLhs().getDefiningOp<arith::ConstantOp>()) {
@@ -153,10 +153,10 @@ recountReinterpretCastOffset(OpFoldResult originOffset, Builder &builder) {
       newOffset = builder.getIndexAttr(0);
     }
   } else if (llvm::isa<Value>(originOffset)) {
-    if (!traceOffset(originOffset.get<Value>().getDefiningOp())) {
+    if (!traceOffset(cast<Value>(originOffset).getDefiningOp())) {
       evenOrOdd = IndexMode::ODD_MODE;
       Operation *traceResult = findFirstMatchingOperandDef(
-          originOffset.get<Value>().getDefiningOp(), traceOffset);
+          cast<Value>(originOffset).getDefiningOp(), traceOffset);
       assert(traceResult->getNumResults() == 1 &&
              "Offset defining operation must have one result");
       newOffset = traceResult->getResult(0);

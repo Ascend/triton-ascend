@@ -390,15 +390,18 @@ void PropagateUnrealizedCastDown::rewriteIf(UnrealizedConversionCastOp &op,
     for (auto &bodyOp : *ifOp.thenBlock())
       b.clone(bodyOp, mapping);
   };
-  function_ref<void(OpBuilder &, Location)> elseBlockBuilder =
-      [&](OpBuilder &b, Location loc) {
-        for (auto &bodyOp : *ifOp.elseBlock())
-          b.clone(bodyOp, mapping);
-      };
-  if (!ifOp.elseBlock())
-    elseBlockBuilder = nullptr;
-  auto newOp = rewriter.create<scf::IfOp>(ifOp.getLoc(), ifOp.getCondition(),
-                                          thenBlockBuilder, elseBlockBuilder);
+  auto elseBlockBuilder = [&](OpBuilder &b, Location loc) {
+    for (auto &bodyOp : *ifOp.elseBlock())
+      b.clone(bodyOp, mapping);
+  };
+  scf::IfOp newOp;
+  if (ifOp.elseBlock()) {
+    newOp = rewriter.create<scf::IfOp>(ifOp.getLoc(), ifOp.getCondition(),
+                                       thenBlockBuilder, elseBlockBuilder);
+  } else {
+    newOp = rewriter.create<scf::IfOp>(ifOp.getLoc(), ifOp.getCondition(),
+                                       thenBlockBuilder, nullptr);
+  }
   for (auto attr : ifOp->getAttrs()) {
     if (!newOp->hasAttr(attr.getName()))
       newOp->setAttr(attr.getName(), attr.getValue());

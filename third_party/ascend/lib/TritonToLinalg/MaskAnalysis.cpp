@@ -262,7 +262,7 @@ LogicalResult MaskState::divStates(const MaskState &lhsState,
                                    const MaskState &rhsState,
                                    const Location &loc, OpBuilder &builder) {
   if (!lhsState.scalar && rhsState.scalar) {
-    if (isZeroIndex(rhsState.scalar)) {
+    if (isZeroInteger(rhsState.scalar)) {
       InFlightDiagnostic diag =
           emitError(loc)
           << "Unsupported scenario where rhs is zero constant in divide!";
@@ -421,8 +421,8 @@ LogicalResult MaskState::parseSel(arith::SelectOp selOp, const Location &loc,
     return failure();
   }
 
-  auto trueScalar = dyn_cast<IntegerAttr>(trueState.scalar.get<Attribute>());
-  auto falseScalar = dyn_cast<IntegerAttr>(falseState.scalar.get<Attribute>());
+  auto trueScalar = dyn_cast<IntegerAttr>(cast<Attribute>(trueState.scalar));
+  auto falseScalar = dyn_cast<IntegerAttr>(cast<Attribute>(falseState.scalar));
 
   if (trueScalar && falseScalar) {
     if(trueScalar.getInt() == 1 && falseScalar.getInt() == 0) {
@@ -542,7 +542,7 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location &loc,
   }
   case arith::CmpIPredicate::ne: {
     // only support lhs != 0
-    auto rhsScalar = dyn_cast<IntegerAttr>(rhsState.scalar.get<Attribute>());
+    auto rhsScalar = dyn_cast<IntegerAttr>(cast<Attribute>(rhsState.scalar));
     if (!rhsScalar || rhsScalar.getInt() != 0) {
       return failure();
     }

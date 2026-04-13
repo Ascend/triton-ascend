@@ -72,7 +72,7 @@ def _extract_scope_attributes(context_expr):
 def _py_value_to_mlir_attr(builder, value):
     """Convert Python value to MLIR attribute."""
     attr_creators = {
-        str: lambda v: builder.get_str_attr(v),
+        str: lambda v: builder.get_string_attr(v),
         bool: lambda v: builder.get_bool_attr(v),
         int: lambda v: builder.get_int32_attr(v),
         list: lambda v: builder.get_i64_array_attr(v),

@@ -54,7 +54,7 @@ from triton._C.libtriton.ascend import ir as ascend_ir
 import triton.language.core as tl
 
 import triton.extension.buffer.language as bl
-from triton.language.core import _constexpr_to_value
+from triton.language.core import _unwrap_if_constexpr
 from triton.backends.ascend.driver import NPUUtils
 
 from . import semantic as semantic
@@ -73,9 +73,9 @@ def builtin(fn: T) -> T:
 
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if "_builder" not in kwargs or kwargs["_builder"] is None:
+        if "_semantic" not in kwargs or kwargs["_semantic"] is None:
             raise ValueError("Did you forget to add @triton.jit ? "
-                             "(`_builder` argument must be provided outside of JIT functions.)")
+                             "(`_semantic` argument must be provided outside of JIT functions.)")
         return fn(*args, **kwargs)
 
     # also set triton_builtin to true so that CodeGenerator will recognize this function
@@ -164,15 +164,15 @@ ascend_address_space = ascend_address_space_group()
 
 
 @builtin
-def sub_vec_id(_builder=None) -> tl.tensor:
+def sub_vec_id(_semantic=None) -> tl.tensor:
     """
     Get the Vector Core index on the AI Core.
     """
-    return semantic.sub_vec_id(_builder)
+    return semantic.sub_vec_id(_semantic)
 
 
 @builtin
-def copy_from_ub_to_l1(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _builder: None) -> None:
+def copy_from_ub_to_l1(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _semantic: None) -> None:
     """
     Copies data from the Unified Buffer (UB) to the L1 Buffer.
 
@@ -183,11 +183,11 @@ def copy_from_ub_to_l1(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, b
     """
     from warnings import warn
     warn("copy_from_ub_to_l1 is deprecated, please use copy instead.")
-    return semantic.copy_from_ub_to_l1(src, dst, _builder)
+    return semantic.copy_from_ub_to_l1(src, dst, _semantic)
 
 
 @builtin
-def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _builder: None) -> None:
+def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _semantic: None) -> None:
     """
     Copies data from the Unified Buffer (UB) to the Unified Buffer (UB) or L1 Buffer.
 
@@ -196,14 +196,14 @@ def copy(src: Union[tl.tensor, bl.buffer], dst: Union[tl.tensor, bl.buffer], _bu
     :param dst: The destination buffer located Unified Buffer (UB) or L1 memory.
     :type dst: tl.tensor | bl.buffer
     """
-    return semantic.copy(src, dst, _builder)
+    return semantic.copy(src, dst, _semantic)
 
 
 def create_sync_block(sender, receiver, event_id, is_set: bool,
                       sender_pipe=None, receiver_pipe=None,
-                      _builder=None):
-    sender = _constexpr_to_value(sender)
-    receiver = _constexpr_to_value(receiver)
+                      _semantic=None):
+    sender = _unwrap_if_constexpr(sender)
+    receiver = _unwrap_if_constexpr(receiver)
     assert isinstance(sender, str) and (sender == "cube" or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
     assert isinstance(receiver, str) and (receiver == "cube" or receiver == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
     if isinstance(event_id, int):
@@ -220,28 +220,28 @@ def create_sync_block(sender, receiver, event_id, is_set: bool,
     if not isinstance(sender_pipe, PIPE) or not isinstance(receiver_pipe, PIPE):
         raise TypeError("sender_pipe and receiver_pipe must be instances of PIPE enum")
     if is_set:
-        return semantic.create_sync_block_set(sender, receiver, event_id, sender_pipe, receiver_pipe, _builder)
-    return semantic.create_sync_block_wait(sender, receiver, event_id, sender_pipe, receiver_pipe, _builder)
+        return semantic.create_sync_block_set(sender, receiver, event_id, sender_pipe, receiver_pipe, _semantic)
+    return semantic.create_sync_block_wait(sender, receiver, event_id, sender_pipe, receiver_pipe, _semantic)
 
 
 @builtin
-def sync_block_set(sender, receiver, event_id, sender_pipe=None, receiver_pipe=None, _builder=None):
-    return create_sync_block(sender, receiver, event_id, True, sender_pipe, receiver_pipe, _builder)
+def sync_block_set(sender, receiver, event_id, sender_pipe=None, receiver_pipe=None, _semantic=None):
+    return create_sync_block(sender, receiver, event_id, True, sender_pipe, receiver_pipe, _semantic)
 
 
 @builtin
-def sync_block_wait(sender, receiver, event_id, sender_pipe=None, receiver_pipe=None, _builder=None):
-    return create_sync_block(sender, receiver, event_id, False, sender_pipe, receiver_pipe, _builder)
+def sync_block_wait(sender, receiver, event_id, sender_pipe=None, receiver_pipe=None, _semantic=None):
+    return create_sync_block(sender, receiver, event_id, False, sender_pipe, receiver_pipe, _semantic)
 
 
 @builtin
-def sync_block_all(mode, event_id, _builder=None):
-    mode = _constexpr_to_value(mode)
-    event_id = _constexpr_to_value(event_id)
+def sync_block_all(mode, event_id, _semantic=None):
+    mode = _unwrap_if_constexpr(mode)
+    event_id = _unwrap_if_constexpr(event_id)
     assert isinstance(mode, str), f"mode: {mode} is not string"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
     assert mode in ("all_cube", "all_vector", "all", "all_sub_vector"), f"ERROR: mode = {mode}, only supports all_cube/all_vector/all/all_sub_vector"
-    _builder.sync_block_all(mode, event_id)
+    _semantic.builder.sync_block_all(mode, event_id)
 
 
 class FixpipeDMAMode(enum.Enum):
@@ -276,7 +276,7 @@ def fixpipe(
     dst: bl.buffer,
     dma_mode: FixpipeDMAMode = FixpipeDMAMode.NZ2ND,
     dual_dst_mode: FixpipeDualDstMode = FixpipeDualDstMode.NO_DUAL,
-    _builder=None,
+    _semantic=None,
 ) -> None:
     """
     Directly store a tensor on L0C to a local buffer via fixpipe.
@@ -291,7 +291,7 @@ def fixpipe(
     :param dma_mode: DMA transfer mode, "nz2nd" enables NZ to ND layout transformation
     :type dma_mode: str
     """
-    if not _builder.is_910_95():
+    if not _semantic.builder.is_910_95():
         raise RuntimeError("this feature is only supported on Ascend910_95")
     if not isinstance(src, tl.tensor):
         raise TypeError("src is not of tensor type")
@@ -329,7 +329,7 @@ def fixpipe(
             raise ValueError("16b NZ2DN Fixpipe first dim must be aligned to 16")
 
     return semantic.fixpipe(
-        src, dst, dma_mode, dual_dst_mode, FixpipePreQuantMode.NO_QUANT, FixpipePreReluMode.NO_RELU, _builder
+        src, dst, dma_mode, dual_dst_mode, FixpipePreQuantMode.NO_QUANT, FixpipePreReluMode.NO_RELU, _semantic
     )
 
 
@@ -351,13 +351,13 @@ class SYNC_IN_VF(enum.Enum):
 @builtin
 def debug_barrier(
     sync_mode: SYNC_IN_VF,
-    _builder=None,
+    _semantic=None,
 ) -> None:
-    return semantic.debug_barrier(sync_mode.name, _builder)
+    return semantic.debug_barrier(sync_mode.name, _semantic)
 
 
 @builtin
-def sub_vec_num(_builder=None) -> tl.constexpr:
+def sub_vec_num(_semantic=None) -> tl.constexpr:
     """
     Get the Vector Core Num on one AI Core.
     """

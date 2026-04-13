@@ -30,10 +30,10 @@ import pytest
 import test_common
 
 NBLOCKS = 1
-XS : tl.constexpr = 2
-YS : tl.constexpr = 4
-ZS : tl.constexpr = 8
-NUMEL : tl.constexpr = XS * ZS
+XS = tl.constexpr(2)
+YS = tl.constexpr(4)
+ZS = tl.constexpr(8)
+NUMEL = tl.constexpr(XS * ZS)
 
 @triton.jit
 def fn_broadcast(in_ptr0, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: tl.constexpr):
@@ -44,7 +44,7 @@ def fn_broadcast(in_ptr0, out_ptr0, L: tl.constexpr, M: tl.constexpr, N: tl.cons
     odx = lblk_idx[:, None, None] * N * M + mblk_idx[None, :, None] * N + nblk_idx[None, None, :]
     x = tl.load(in_ptr0 + idx)
     x1 = tl.load(out_ptr0 + odx)
-    ret = tl.broadcast(x, x1)
+    ret, _ = tl.broadcast(x, x1)
     tl.store(out_ptr0 + odx, ret)
 
 

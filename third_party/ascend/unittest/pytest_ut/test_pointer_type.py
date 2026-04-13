@@ -33,6 +33,7 @@ def kernel(ans_ptr, x_ptr):
     output_ptr = output_ptr.to(tl.pointer_type(val.dtype))
     tl.store(output_ptr, val)
 
+
 @pytest.mark.parametrize("literal, dtype_str",[[0, eval('torch.int8')], [0, eval('torch.int16')],
                                                [0, eval('torch.int32')], [0, eval('torch.int64')],
                                                [0, eval('torch.float16')], [0, eval('torch.float32')]])

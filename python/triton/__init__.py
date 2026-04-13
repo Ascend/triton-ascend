@@ -1,5 +1,5 @@
 """isort:skip_file"""
-__version__ = '3.2.0'
+__version__ = '3.5.0'
 
 # ---------------------------------------
 # Note: import order is significant here.
@@ -17,14 +17,17 @@ from .runtime import (
     InterpreterError,
     MockTensor,
 )
-from .runtime.jit import jit
-from .runtime._async_compile import AsyncCompileMode
+from .runtime.jit import constexpr_function, jit
+from .runtime._async_compile import AsyncCompileMode, FutureKernel
 from .compiler import compile, CompilationError
 from .errors import TritonError
+from .runtime._allocation import set_allocator
 
 from . import language
 from . import testing
 from . import tools
+
+must_use_result = language.core.must_use_result
 
 __all__ = [
     "AsyncCompileMode",
@@ -33,19 +36,21 @@ __all__ = [
     "CompilationError",
     "compile",
     "Config",
+    "constexpr_function",
+    "FutureKernel",
     "heuristics",
-    "impl",
     "InterpreterError",
     "jit",
     "JITFunction",
     "KernelInterface",
     "language",
     "MockTensor",
+    "must_use_result",
     "next_power_of_2",
-    "ops",
     "OutOfResources",
     "reinterpret",
     "runtime",
+    "set_allocator",
     "TensorWrapper",
     "TritonError",
     "testing",
@@ -58,10 +63,12 @@ __all__ = [
 # -------------------------------------
 
 
+@constexpr_function
 def cdiv(x: int, y: int):
     return (x + y - 1) // y
 
 
+@constexpr_function
 def next_power_of_2(n: int):
     """Return the smallest power of 2 greater than or equal to n"""
     n -= 1

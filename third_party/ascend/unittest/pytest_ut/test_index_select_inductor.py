@@ -20,7 +20,6 @@
 
 import triton
 import triton.language as tl
-from triton.compiler.compiler import AttrsDescriptor
 
 import torch
 import torch_npu

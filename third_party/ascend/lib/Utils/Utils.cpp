@@ -121,7 +121,7 @@ std::optional<int64_t> getLastStrideOfReinterpretCastOp(memref::ReinterpretCastO
 }
 
 bool isaPermutedMemRefType(MemRefType memRefType) {
-  auto [ptrStrides, ptrOffsets] = getStridesAndOffset(memRefType);
+  auto [ptrStrides, ptrOffsets] = memRefType.getStridesAndOffset();
   LLVM_DEBUG({
     llvm::dbgs()<<"---------- [BEG] ptrStrides ----------\n";
     for(auto stride: ptrStrides)llvm::dbgs()<<stride<<" ";llvm::dbgs()<<"\n";
@@ -1062,7 +1062,7 @@ llvm::FailureOr<ReduceWithIndexParams> getReduceWithIndexParams(triton::ReduceOp
 OpFoldResult getOpFoldResultOfLayoutInfo(Value value, OpBuilder &builder) {
   OpFoldResult constantFold = getAsOpFoldResult(value);
   if (llvm::isa<Attribute>(constantFold)) {
-    assert(isa<IntegerAttr>(constantFold.get<Attribute>()));
+    assert(isa<IntegerAttr>(cast<Attribute>(constantFold)));
     return constantFold;
   }
 

@@ -137,7 +137,8 @@ class ArgMinMaxBaseConverter : public OpConversionPattern<triton::ReduceOp> {
 public:
   ArgMinMaxBaseConverter(MLIRContext *context) : OpConversionPattern(context) {}
 
-  LogicalResult match(triton::ReduceOp op) const override final {
+  LogicalResult matchAndRewrite(triton::ReduceOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
     if (op.getBody()->getNumArguments() != 4) {
       return failure();
     }
@@ -167,15 +168,6 @@ public:
 
     LLVM_DEBUG(llvm::dbgs() << "Matching: " << *opsIt << "\n");
     auto indexSelectOp = dyn_cast<arith::SelectOp>(*opsIt++);
-    if (indexSelectOp) {
-      if (indexSelectOp.getCondition() != shouldUpdate ||
-          currIndex != indexSelectOp.getTrueValue() ||
-          reduceIndex != indexSelectOp.getFalseValue()) {
-        return failure();
-      }
-    } else {
-      return failure();
-    }
     if (!indexSelectOp || indexSelectOp.getCondition() != shouldUpdate ||
         currIndex != indexSelectOp.getTrueValue() ||
         reduceIndex != indexSelectOp.getFalseValue()) {
@@ -189,17 +181,13 @@ public:
               ArrayRef<Value>{valueSelectOp, indexSelectOp})) {
       return failure();
     }
-    return success();
-  }
 
-  void rewrite(triton::ReduceOp op, OpAdaptor adaptor,
-               ConversionPatternRewriter &rewriter) const override final {
+    // Rewrite phase: perform the actual conversion
     auto loc = op.getLoc();
     auto elemTypes = op.getElementTypes();
 
     auto valueType = elemTypes[0];
     // tl.argmin reorder
-    auto block = op.getBody();
     bool isUnsigned = false;
     if (isa<mlir::FloatType>(valueType)) {
       arith::CmpFOp cmpFOp;
@@ -321,6 +309,8 @@ public:
     } else {
       rewriter.replaceOp(op, linalgOp);
     }
+
+    return success();
   }
 };
 

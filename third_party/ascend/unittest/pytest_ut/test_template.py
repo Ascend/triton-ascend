@@ -30,9 +30,9 @@ import torch_npu
 import test_common
 
 NBLOCKS = 1
-X_SIZE : tl.constexpr = 4
-Y_SIZE : tl.constexpr = 64
-Z_SIZE : tl.constexpr = 32
+X_SIZE = tl.constexpr(4)
+Y_SIZE = tl.constexpr(64)
+Z_SIZE = tl.constexpr(32)
 NUMEL = X_SIZE * Y_SIZE * Z_SIZE
 
 def fn(input):

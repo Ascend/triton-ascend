@@ -445,7 +445,7 @@ void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::O
     if (srcOp->getBlock() == dstOp->getBlock()) {
         builder.setInsertionPoint(posOp);
     }
-    auto toMemrefOp = builder.create<bufferization::ToMemrefOp>(
+    auto toBufferOp = builder.create<bufferization::ToBufferOp>(
         loc,
         ubMemrefType,
         srcResult
@@ -493,12 +493,12 @@ void DAGSyncPass::insertVectorToCubeDataMovement(mlir::Operation *srcOp, mlir::O
         newAllocType
     );
 
-    builder.setInsertionPointAfter(toMemrefOp);
+    builder.setInsertionPointAfter(toBufferOp);
     // 3. 创建 copy 指令（src 是 ub memref，dst 是 cbuf memref）
     auto copyOp = builder.create<hivm::CopyOp>(
         loc,
         mlir::TypeRange{}, // 没有返回值
-        toMemrefOp.getResult(),  // src (memref in UB)
+        toBufferOp.getResult(),  // src (memref in UB)
         cbufAlloc                // dst (memref in CBUF)
     );
 
@@ -849,11 +849,11 @@ static void rewriteCopyChainForCbub(
 
   // 获取 copy 的输入（ins），应为 to_memref 的结果
   Value insVal = copyOp.getOperands()[0];
-  auto toMemRefOp = insVal.getDefiningOp<bufferization::ToMemrefOp>();
-  if (!toMemRefOp)
+  auto toBufferOp = insVal.getDefiningOp<bufferization::ToBufferOp>();
+  if (!toBufferOp)
     return;
 
-  Value inputTensor = toMemRefOp.getTensor();
+  Value inputTensor = toBufferOp.getTensor();
   auto inputTensorType = dyn_cast<RankedTensorType>(inputTensor.getType());
   if (!inputTensorType || inputTensorType.getRank() != 2)
     return;
@@ -875,7 +875,7 @@ static void rewriteCopyChainForCbub(
 
   auto loc = inputTensor.getLoc();
 
-  // Set insertion point before copyOp (or toMemRefOp)
+  // Set insertion point before copyOp (or toBufferOp)
   auto tensorOp = inputTensor.getDefiningOp();
   builder.setInsertionPointAfter(tensorOp);
 
@@ -909,17 +909,18 @@ static void rewriteCopyChainForCbub(
   markOp4d->setAttr("tiling_dim_mapping", tilingDimAttr4d);
 
   // Create new to_memref
-  builder.setInsertionPoint(toMemRefOp);
+  builder.setInsertionPoint(toBufferOp);
+  auto oldBufferType = cast<BaseMemRefType>(toBufferOp.getResult().getType());
   auto newMemRefType = MemRefType::get(
       newShape,
       elementType,
       mlir::AffineMap{},
-      toMemRefOp.getType().getMemorySpace());
-  auto newToMemRefOp = builder.create<bufferization::ToMemrefOp>(
-      toMemRefOp.getLoc(),
+      oldBufferType.getMemorySpace());
+  auto newtoBufferOp = builder.create<bufferization::ToBufferOp>(
+      toBufferOp.getLoc(),
       newMemRefType,
       reshape4DOp.getResult());
-  (*valueTypes)[newToMemRefOp.getResult()] = CoreType::VECTOR_ONLY;
+  (*valueTypes)[newtoBufferOp.getResult()] = CoreType::VECTOR_ONLY;
 
   // Create NEW copyOp (replacing the old one)
   builder.setInsertionPoint(copyOp);
@@ -934,7 +935,7 @@ static void rewriteCopyChainForCbub(
   // 替换 uses 并清理旧 op
   copyOp.replaceAllUsesWith(newCopyOp);
   copyOp.erase();
-  toMemRefOp.erase();
+  toBufferOp.erase();
 
   return;
 }

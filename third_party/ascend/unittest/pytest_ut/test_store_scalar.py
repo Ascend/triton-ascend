@@ -36,6 +36,7 @@ def sum_kernel_1(inp, mid, M, BLOCK_SIZE: tl.constexpr):
     mid_ptr = mid + pid
     tl.store(mid_ptr, sum_val)
 
+
 def test_case():
     inp = torch.ones(16, device="npu", dtype=torch.float32)
     mid = torch.empty(4, device="npu", dtype=torch.float32)

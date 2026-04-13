@@ -650,7 +650,7 @@ LogicalResult TritonToUnstructurePass::processIfYieldAddHoistOperations(ModuleOp
 {
     mlir::RewritePatternSet patterns(&getContext());
     patterns.add<CannonicalizerConverter::IfYieldAddHoistConverter>(patterns.getContext());
-    if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
         moduleOp.emitWarning("IfYieldAddHoist processing failed");
         return failure();
     }
@@ -710,7 +710,7 @@ void TritonToUnstructurePass::runOnOperation() {
     os << "Parsing done\n";
   });
 
-  if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns)))) {
+  if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
     moduleOp->emitError("failed to apply Patterns");
     signalPassFailure();
   }

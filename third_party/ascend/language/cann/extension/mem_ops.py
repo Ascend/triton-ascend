@@ -1,8 +1,7 @@
 import numbers
 import triton.language as tl
-from triton.language import semantic as real_semantic
 from triton.language.core import (
-    _constexpr_to_value,
+    _unwrap_if_constexpr,
     _tensor_member_fn,
     _unwrap_iterable,
     builtin,
@@ -11,24 +10,6 @@ from triton.language.core import (
     tensor,
     check_bit_width,
     _unwrap_if_constexpr,
-)
-from triton.language.semantic import (
-    wrap_tensor, 
-    _str_to_rounding_mode, 
-    not_equal, 
-    _str_to_dot_input_precision,
-    binary_op_type_checking_impl, 
-    integer_promote_impl, 
-    broadcast_impl_shape, 
-    _str_to_sem, 
-    _str_to_scope, 
-    bitcast,
-    bitwise_op_type_checking_impl,
-    to_tensor, 
-    _str_to_load_cache_modifier, 
-    _str_to_eviction_policy,
-    _str_to_padding_option, 
-    _canonicalize_boundary_check,
 )
 
 from typing import Optional, Tuple, List, overload, Union
@@ -48,7 +29,7 @@ def index_put(
     end_offset: tuple,
     start_offset: tuple,
     dst_stride: tuple,
-    _builder=None
+    _semantic=None
 ):
     """
     Index put values from a tensor into a destination tensor.
@@ -148,7 +129,7 @@ def index_put(
         if idx_rank != 1:
             # flatten index to 1D, shape (index.numel,)
             flat_numel = index.numel
-            index = real_semantic.reshape(index, (flat_numel,), True, _builder)
+            index = _semantic.reshape(index, (flat_numel,), True)
             idx_rank = 1
 
         if value.shape[dim] != index.shape[0]:
@@ -170,11 +151,11 @@ def index_put(
                                                    index_boundary, end_offset, start_offset, dst_stride), tl.void)
 
 
-    dim = _constexpr_to_value(dim)
-    index_boundary = _constexpr_to_value(index_boundary)
+    dim = _unwrap_if_constexpr(dim)
+    index_boundary = _unwrap_if_constexpr(index_boundary)
 
     return index_put_impl(ptr, index, value, dim, index_boundary,
-                          end_offset, start_offset, dst_stride, _builder)
+                          end_offset, start_offset, dst_stride, _semantic.builder)
 
 
 @_tensor_member_fn
@@ -188,7 +169,7 @@ def gather_out_to_ub(
     end_offset: tuple,
     start_offset: tuple,
     other=None,
-    _builder=None
+    _semantic=None
 ):
     """
     Gather from a source tensor in Global Memory (GM) to Unified Buffer (UB)
@@ -298,7 +279,7 @@ def gather_out_to_ub(
             raise ValueError(f"dim must satisfy 0<=dim<index.rank ({idx_rank}), got dim={dim}")
 
         if other is not None:
-            other = real_semantic.cast(other, src.dtype.element_ty, _builder)
+            other = _semantic.cast(other, src.dtype.element_ty)
 
         # src stride need to be i64
         src_stride = [_convert_elem_to_ir_value(_builder, elem, True) for elem in src_stride]
@@ -321,12 +302,12 @@ def gather_out_to_ub(
             other if other else None
         )
         ret_shape = [_unwrap_if_constexpr(s) for s in index.shape]
-        return wrap_tensor(ret, src.dtype.element_ty, ret_shape)
+        return _semantic.wrap_tensor(ret, src.dtype.element_ty, ret_shape)
 
-    dim = _constexpr_to_value(dim)
-    index_boundary = _constexpr_to_value(index_boundary)
+    dim = _unwrap_if_constexpr(dim)
+    index_boundary = _unwrap_if_constexpr(index_boundary)
     return gather_out_to_ub_impl(src, index, index_boundary, dim,
-                                 src_stride, end_offset, start_offset, other, _builder)
+                                 src_stride, end_offset, start_offset, other, _semantic.builder)
 
 
 @_tensor_member_fn
@@ -340,7 +321,7 @@ def scatter_ub_to_out(
     dst_stride: tuple,
     end_offset: tuple,
     start_offset: tuple,
-    _builder=None
+    _semantic=None
 ):
     """
     Scatter a tile from Unified Buffer (UB) into a destination tensor in Global Memory (GM)
@@ -471,15 +452,15 @@ def scatter_ub_to_out(
     def _is_ranked_tensor(x):
         return isinstance(x, tensor) and x.shape and len(x.shape) > 0
 
-    dim = _constexpr_to_value(dim)
-    index_boundary = _constexpr_to_value(index_boundary)
-    value = _constexpr_to_value(value)
+    dim = _unwrap_if_constexpr(dim)
+    index_boundary = _unwrap_if_constexpr(index_boundary)
+    value = _unwrap_if_constexpr(value)
 
     if not _is_ranked_tensor(value) or isinstance(value, constexpr):
         element_ty = ptr.type.scalar.element_ty
-        value = real_semantic.full(index.shape, value, element_ty, _builder)
+        value = _semantic.full(index.shape, value, element_ty)
     return scatter_ub_to_out_impl(ptr, value, index, index_boundary, dim,
-                                  dst_stride, end_offset, start_offset, _builder)
+                                  dst_stride, end_offset, start_offset, _semantic.builder)
 
 
 @_tensor_member_fn
@@ -491,7 +472,7 @@ def index_select_simd(
     src_shape,
     src_offset,
     read_shape,
-    _builder=None
+    _semantic=None
 ) -> tensor:
     """
     Parallel index_select operation from Global Memory to Unified Buffer (SIMD version).
@@ -611,7 +592,7 @@ def index_select_simd(
         out = _builder.create_index_select_simd(src.handle, index.handle, dim, newsrc_shape, newsrc_offset, read_shape, return_shape)
         return tl.tensor(out, output_ty)
 
-    dim = _constexpr_to_value(dim)
+    dim = _unwrap_if_constexpr(dim)
 
     # Process shape parameters: convert constexpr to values, keep tensors as-is
     def process_param(val):
@@ -619,18 +600,18 @@ def index_select_simd(
         if isinstance(val, tensor):
             return val
         else:
-            return _constexpr_to_value(val)
+            return _unwrap_if_constexpr(val)
 
     newsrc_shape = [
-        real_semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
+        _semantic.to_tensor(o) if isinstance(o, constexpr) else o
         for o in src_shape
     ]
     newsrc_offset = [
-        real_semantic.to_tensor(o, _builder) if isinstance(o, constexpr) else o
+        _semantic.to_tensor(o) if isinstance(o, constexpr) else o
         for o in src_offset
     ]
     assert len(index.shape) == 1, "index must be a 1D tensor"
 
     return index_select_simd_impl(
-        src, dim, index, newsrc_shape, newsrc_offset, read_shape, _builder
+        src, dim, index, newsrc_shape, newsrc_offset, read_shape, _semantic.builder
     )

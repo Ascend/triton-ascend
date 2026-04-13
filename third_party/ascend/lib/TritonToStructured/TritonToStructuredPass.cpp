@@ -104,7 +104,7 @@ void TritonToStructuredPass::populateTritonToStructuredPatterns(
 LogicalResult TritonToStructuredPass::processSplatBinaryOperations(ModuleOp moduleOp) {
     mlir::RewritePatternSet patterns(&getContext());
     patterns.add<CannonicalizerConverter::SplatCmpConverter>(patterns.getContext());
-    if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
         moduleOp.emitWarning("Splat binary op processing failed");
         return failure();
     }
@@ -117,8 +117,8 @@ void TritonToStructuredPass::runOnOperation() {
     RewritePatternSet canonicalizerPatterns(&getContext());
 
     this->populateTritonToStructuredCanonicalizationPatterns(canonicalizerPatterns);
-    if (failed(applyPatternsAndFoldGreedily(moduleOp,
-                                            std::move(canonicalizerPatterns)))) {
+    if (failed(applyPatternsGreedily(moduleOp,
+                                     std::move(canonicalizerPatterns)))) {
         moduleOp.emitWarning("Canonicalize failed");
     }
 
@@ -127,7 +127,7 @@ void TritonToStructuredPass::runOnOperation() {
                                        optimizeDynamicOffset,
                                        enableMaskFallbackConversion);
 
-    if (failed(applyPatternsAndFoldGreedily(moduleOp,
+    if (failed(applyPatternsGreedily(moduleOp,
                                             std::move(tritonToStructuredPatterns)))) {
         LLVM_DEBUG({
             moduleOp->emitRemark("PtrAnalysis: rewrite MemOp failed");

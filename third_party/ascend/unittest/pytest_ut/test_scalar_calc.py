@@ -27,6 +27,7 @@ import triton.language.extra.cann.libdevice as libdevice
 import pytest
 import test_common
 
+
 ### add
 @pytest.mark.parametrize('param_list',
                          [

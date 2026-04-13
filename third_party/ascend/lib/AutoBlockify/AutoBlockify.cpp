@@ -319,7 +319,7 @@ void AutoBlockifyPass::runOnOperation() {
     patterns.add<PropagateUnrealizedCastDown>(
         ctx, logicalBlockId, logicalBlockNum, autoBlockifySize);
 
-    if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(func, std::move(patterns)))) {
       moduleOp->emitError("failed to apply Patterns");
       signalPassFailure();
       return WalkResult::interrupt();

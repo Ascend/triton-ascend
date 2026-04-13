@@ -54,7 +54,7 @@ def _get_op_class(name):
 def _unwrap_constexpr(arg):
     if isinstance(arg, tl.constexpr):
         return arg.value
-    if isinstance(arg, tuple):
+    if isinstance(arg, (tuple, tl.tuple)):
         return tuple(_unwrap_constexpr(x) for x in arg)
     if isinstance(arg, list):
         return [_unwrap_constexpr(x) for x in arg]
@@ -63,64 +63,64 @@ def _unwrap_constexpr(arg):
     return arg
 
 
-def _to_value(value, builder, ty=None):
+def _to_value(value, _semantic=None, ty=None):
     # Try to use 'type' attribute if ty not set.
     ty = getattr(value, 'type', ty) if ty is None else ty
     if isinstance(value, tl.tensor):
         if not value.type.is_block() and isinstance(ty, tl.dtype) and value.type != ty:
             # For a scalar variable, if its type is not the expected one
             # that specified by type hint 'ty', insert a cast for it.
-            return tl.semantic.cast(value, ty, builder).handle
+            return _semantic.cast(value, ty).handle
         return value.handle
     if isinstance(value, bool):
-        return builder.get_int1(value)
+        return _semantic.builder.get_int1(value)
     if isinstance(value, int):
         if isinstance(ty, tl.dtype):
             if ty.is_int64():
-                return builder.get_int64(value)
+                return _semantic.builder.get_int64(value)
             if ty.is_uint64():
-                return builder.get_uint64(value)
+                return _semantic.builder.get_uint64(value)
             if ty.is_int32():
-                return builder.get_int32(value)
+                return _semantic.builder.get_int32(value)
             if ty.is_uint32():
-                return builder.get_uint32(value)
+                return _semantic.builder.get_uint32(value)
             if ty.is_int16():
-                return builder.get_int16(value)
+                return _semantic.builder.get_int16(value)
             if ty.is_uint16():
-                return builder.get_uint16(value)
+                return _semantic.builder.get_uint16(value)
             if ty.is_int8():
-                return builder.get_int8(value)
+                return _semantic.builder.get_int8(value)
             if ty.is_uint8():
-                return builder.get_uint8(value)
+                return _semantic.builder.get_uint8(value)
         # default int32
-        return builder.get_int32(value)
+        return _semantic.builder.get_int32(value)
     if isinstance(value, float):
         if isinstance(ty, tl.dtype):
             if ty.is_fp64():
-                return builder.get_fp64(value)
+                return _semantic.builder.get_fp64(value)
             if ty.is_fp32():
-                return builder.get_fp32(value)
+                return _semantic.builder.get_fp32(value)
             if ty.is_fp16():
-                return builder.get_fp16(value)
+                return _semantic.builder.get_fp16(value)
             if ty.is_bf16():
-                return builder.get_bf16(value)
+                return _semantic.builder.get_bf16(value)
         # default float32
-        return builder.get_fp32(value)
+        return _semantic.builder.get_fp32(value)
     if isinstance(value, tl.constexpr):
-        return _to_value(value.value, builder)
+        return _to_value(value.value, _semantic)
     raise TypeError(f"Unsupported argument type {value} : {type(value)}")
 
 
-def _to_operands(args, builder):
+def _to_operands(args, _semantic=None):
     operands = []
     for value in args:
         if value is None:
             continue
-        if isinstance(value, (list, tuple)):
+        if isinstance(value, (list, tuple, tl.tuple)):
             for item in value:
-                operands.append(_to_value(item, builder))
+                operands.append(_to_value(item, _semantic))
         else:
-            operands.append(_to_value(value, builder))
+            operands.append(_to_value(value, _semantic))
     return operands
 
 
@@ -130,10 +130,10 @@ def _get_element_type(ty):
     return ty
 
 
-def _args_to_operands(op, builder, args, kwargs):
+def _args_to_operands(op, _semantic, args, kwargs):
     if not op.signature.parameters:
         # Without parameters in signature, use the actual parameter order.
-        return _to_operands(itertools.chain(args, kwargs.values()), builder)
+        return _to_operands(itertools.chain(args, kwargs.values()), _semantic)
 
     # Convert arguments to operands according the signature.
     operands = []
@@ -143,12 +143,12 @@ def _args_to_operands(op, builder, args, kwargs):
         if value is None:
             continue
         ty = op.arg_type.get(param.name, param.annotation)
-        if isinstance(value, (list, tuple)):
+        if isinstance(value, (list, tuple, tl.tuple)):
             ty = _get_element_type(ty)
             for item in value:
-                operands.append(_to_value(item, builder, ty))
+                operands.append(_to_value(item, _semantic, ty))
         else:
-            operands.append(_to_value(value, builder, ty))
+            operands.append(_to_value(value, _semantic, ty))
     return operands
 
 
@@ -195,7 +195,7 @@ def _make_arg_attrs(op, builder):
 
 def _add_optional_attr(op, name, builder, attrs):
     if hasattr(op, name):
-        attrs[name] = builder.get_str_attr(getattr(op, name))
+        attrs[name] = builder.get_string_attr(getattr(op, name))
 
 
 def _add_bitcode_attr(op, builder, attrs):
@@ -206,7 +206,7 @@ def _add_bitcode_attr(op, builder, attrs):
     from pathlib import Path
     bitcode = Path(getattr(op, name))
     assert bitcode.exists(), f"Provided bitcode ({name}) not exist"
-    attrs[name] = builder.get_str_attr(str(bitcode.absolute()))
+    attrs[name] = builder.get_string_attr(str(bitcode.absolute()))
 
 
 def _add_optional_extra_buffer_attr(op, builder, attrs):
@@ -278,7 +278,7 @@ def _to_result(res, res_types):
         return None
     if n_res == 1:
         return tl.tensor(res[0], res_types[0])
-    return tuple(tl.tensor(res[i], res_types[i]) for i in range(n_res))
+    return tl.tuple(tl.tensor(res[i], res_types[i]) for i in range(n_res))
 
 
 def _init_op(op_class, *args, **kwargs):
@@ -291,7 +291,7 @@ def _init_op(op_class, *args, **kwargs):
     return op
 
 
-def custom_semantic(name: str, *args, _builder=None, **kwargs):
+def custom_semantic(name: str, *args, _semantic=None, **kwargs):
     name = _unwrap_constexpr(name)
     # Get op class according the name.
     op_class = _get_op_class(name)
@@ -302,23 +302,24 @@ def custom_semantic(name: str, *args, _builder=None, **kwargs):
     op = _init_op(op_class, *args, **kwargs)
     # Prepare inputs and outputs operands.
     out = kwargs.pop('out', [])
-    outs = out if isinstance(out, (list, tuple)) else [out]
-    outputs = _to_operands(outs, _builder)
-    inputs = _args_to_operands(op, _builder, args, kwargs)
+    outs = out if isinstance(out, (list, tuple, tl.tuple)) else [out]
+    outputs = _to_operands(outs, _semantic)
+    inputs = _args_to_operands(op, _semantic, args, kwargs)
+    builder = getattr(_semantic.builder, '_ascend_builder')
     # Setup attributes.
-    attrs = _make_attrs(op, _builder)
-    arg_attrs = _make_arg_attrs(op, _builder)
+    attrs = _make_attrs(op, builder)
+    arg_attrs = _make_arg_attrs(op, builder)
     # Build IR for the custom op.
-    res = _builder.create_custom_op(name, attrs, inputs, outputs, arg_attrs)
+    res = builder.create_custom_op(name, attrs, inputs, outputs, arg_attrs)
     # Results with same types as outputs.
     res_types = [out.type for out in outs]
     return _to_result(res, res_types)
 
 
 @core.builtin
-def custom(name: str, *args, _builder=None, **kwargs):
+def custom(name: str, *args, _semantic=None, **kwargs):
     """Invoke a custom operation with the given name and arguments."""
-    return custom_semantic(name, *args, _builder=_builder, **kwargs)
+    return custom_semantic(name, *args, _semantic=_semantic, **kwargs)
 
 
 def register_custom_op(op):

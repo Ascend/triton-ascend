@@ -1,7 +1,7 @@
 import triton.language as tl
-from triton.language import semantic, core, standard
+from triton.language import core
 from triton.language.core import (
-    _constexpr_to_value,
+    _unwrap_if_constexpr,
     _tensor_member_fn,
     _unwrap_iterable,
     builtin,
@@ -12,24 +12,6 @@ from triton.language.core import (
     _unwrap_if_constexpr,
     range
 )
-from triton.language.semantic import (
-    wrap_tensor, 
-    _str_to_rounding_mode, 
-    not_equal, 
-    _str_to_dot_input_precision,
-    binary_op_type_checking_impl, 
-    integer_promote_impl, 
-    broadcast_impl_shape, 
-    _str_to_sem, 
-    _str_to_scope, 
-    bitcast,
-    bitwise_op_type_checking_impl,
-    to_tensor, 
-    _str_to_load_cache_modifier, 
-    _str_to_eviction_policy,
-    _str_to_padding_option, 
-    _canonicalize_boundary_check,
-)
 
 from typing import Optional, Tuple, List, overload, Union
 from triton._C.libtriton import ir
@@ -38,7 +20,7 @@ from ._utils import custom_op
 
 @_tensor_member_fn
 @builtin
-def sync_block_all(mode, event_id, _builder=None):
+def sync_block_all(mode, event_id, _semantic=None):
     import warnings
 
     warnings.warn(
@@ -46,17 +28,17 @@ def sync_block_all(mode, event_id, _builder=None):
         DeprecationWarning,
         stacklevel=1,
     )
-    mode = _constexpr_to_value(mode)
-    event_id = _constexpr_to_value(event_id)
+    mode = _unwrap_if_constexpr(mode)
+    event_id = _unwrap_if_constexpr(event_id)
     assert isinstance(mode, str), f"mode: {mode} is not string"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
     assert mode == "all_cube" or mode == "all_vector" or mode == "all", f"ERROR: mode = {mode}, only supports all_cube/all_vector/all"
-    custom_op(_builder, "sync_block_all", mode=mode, event_id=event_id)
+    custom_op(_semantic.builder, "sync_block_all", mode=mode, event_id=event_id)
 
 
 @_tensor_member_fn
 @builtin
-def sync_block_set(sender, receiver, event_id, _builder=None):
+def sync_block_set(sender, receiver, event_id, _semantic=None):
     import warnings
 
     warnings.warn(
@@ -64,20 +46,20 @@ def sync_block_set(sender, receiver, event_id, _builder=None):
         DeprecationWarning,
         stacklevel=1,
     )
-    sender = _constexpr_to_value(sender)
-    receiver = _constexpr_to_value(receiver)
-    event_id = _constexpr_to_value(event_id)
+    sender = _unwrap_if_constexpr(sender)
+    receiver = _unwrap_if_constexpr(receiver)
+    event_id = _unwrap_if_constexpr(event_id)
     assert isinstance(sender, str) and (sender == "cube" or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
     assert isinstance(receiver, str) and (receiver == "cube" or receiver == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
     if sender == receiver:
         raise ValueError(f'Unexpected pair: {sender} -> {receiver}, only supports cube -> vector or vector -> cube')
-    custom_op(_builder, "sync_block_set", sender=sender, event_id=event_id)
+    custom_op(_semantic.builder, "sync_block_set", sender=sender, event_id=event_id)
 
 
 @_tensor_member_fn
 @builtin
-def sync_block_wait(sender, receiver, event_id, _builder=None):
+def sync_block_wait(sender, receiver, event_id, _semantic=None):
     import warnings
 
     warnings.warn(
@@ -85,15 +67,15 @@ def sync_block_wait(sender, receiver, event_id, _builder=None):
         DeprecationWarning,
         stacklevel=1,
     )
-    sender = _constexpr_to_value(sender)
-    receiver = _constexpr_to_value(receiver)
-    event_id = _constexpr_to_value(event_id)
+    sender = _unwrap_if_constexpr(sender)
+    receiver = _unwrap_if_constexpr(receiver)
+    event_id = _unwrap_if_constexpr(event_id)
     assert isinstance(sender, str) and (sender == "cube" or sender == "vector"), f"ERROR: sender = {sender}, only supports cube/vector"
     assert isinstance(receiver, str) and (receiver == "cube" or receiver == "vector"), f"ERROR: receiver = {receiver}, only supports cube/vector"
     assert isinstance(event_id, int) and (event_id >= 0) and (event_id < 16), f"event_id: {event_id} should be 0 ~ 15"
     if sender == receiver:
         raise ValueError(f'Unexpected pair: {sender} -> {receiver}, only supports cube -> vector or vector -> cube')
-    custom_op(_builder, "sync_block_wait", sender=sender, event_id=event_id)
+    custom_op(_semantic.builder, "sync_block_wait", sender=sender, event_id=event_id)
 
 
 class parallel(range):
@@ -124,8 +106,8 @@ def compile_hint_impl(ptr: tensor, hint_name: str, hint_val, builder: ir.builder
     elif isinstance(hint_val, int):
         hint_val = builder.get_int32_attr(hint_val)
     elif isinstance(hint_val, core.constexpr):
-        hint_val = builder.get_str_attr(hint_val.value)
-    elif isinstance(hint_val, list):
+        hint_val = builder.get_string_attr(hint_val.value)
+    elif isinstance(hint_val, (list, core.tuple)):
         # only support i64 array attr for now
         hint_val = builder.get_i64_array_attr(hint_val)
     else:
@@ -133,30 +115,30 @@ def compile_hint_impl(ptr: tensor, hint_name: str, hint_val, builder: ir.builder
     builder.create_annotation_mark(ptr.handle, hint_name, hint_val)
 
 @builtin
-def compile_hint(ptr, hint_name, hint_val=None, _builder=None):
+def compile_hint(ptr, hint_name, hint_val=None, _semantic=None):
     # simt mode does not support hint annotations
-    if _builder.is_simt_mode():
+    if _semantic.builder.is_simt_mode():
         return
 
     def _unwrap(val):
         return _unwrap_if_constexpr(val) if val else val
 
-    hint_name = _constexpr_to_value(hint_name)
+    hint_name = _unwrap_if_constexpr(hint_name)
     assert isinstance(hint_name, str), f"hint name: {hint_name} is not string"
-    if isinstance(hint_val, list):
+    if isinstance(hint_val, (list, core.tuple)):
         hint_val = [_unwrap(val) for val in hint_val]
     else:
         hint_val = _unwrap(hint_val)
     hint_val = _unwrap_if_constexpr(hint_val) if hint_val else hint_val
-    compile_hint_impl(ptr, hint_name, hint_val, _builder)
+    compile_hint_impl(ptr, hint_name, hint_val, _semantic.builder)
 
 @builtin
-def multibuffer(src: tensor, size, _builder=None):
+def multibuffer(src: tensor, size, _semantic=None):
     """
     Set multi_buffer for an existing tensor
     :src: tensor set to bufferize multiple time
     :size: number of copies
     """
-    buffer_size = _constexpr_to_value(size)
+    buffer_size = _unwrap_if_constexpr(size)
     assert isinstance(buffer_size, int) and buffer_size == 2, f"only support bufferize equals 2"
-    compile_hint_impl(src, "hivm.multi_buffer", buffer_size, _builder)
+    compile_hint_impl(src, "hivm.multi_buffer", buffer_size, _semantic.builder)

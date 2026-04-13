@@ -513,7 +513,7 @@ void BubbleUpOperationPass::runOnOperation() {
                BubbleUpExtract<tensor::ExtractSliceOp>>(ctx,
                                                         enableAggressiveMode);
 
-  if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns)))) {
+  if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
     moduleOp->emitError("failed to apply Patterns");
     signalPassFailure();
   }

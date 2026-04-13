@@ -11,3 +11,4 @@ twine
 wheel
 pandas
 setuptools
+nanobind>=2.4

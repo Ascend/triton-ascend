@@ -30,10 +30,10 @@ import pytest
 import test_common
 
 NBLOCKS = 1
-XS : tl.constexpr = 2
-YS : tl.constexpr = 4
-ZS : tl.constexpr = 8
-NUMEL : tl.constexpr = XS * ZS
+XS = tl.constexpr(2)
+YS = tl.constexpr(4)
+ZS = tl.constexpr(8)
+NUMEL = tl.constexpr(XS * ZS)
 
 @triton.jit
 def fn_broadcast_to(output_ptr, input_ptr, length):

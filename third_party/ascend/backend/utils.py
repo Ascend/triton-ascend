@@ -151,6 +151,61 @@ def _get_llvm_path(path: str, *paths) -> str:
     return os.path.join(root_path, path, *paths)
 
 
+def _get_triton_mlir_opt_path() -> str:
+    """
+    Get the path to triton-mlir-opt tool.
+    This tool is used to convert MLIR to Bytecode format, supporting both
+    MLIR native ops and AscendNPU-IR custom ops.
+    """
+    # First, try to find it in the installed package location
+    # triton/_C/ is where the extension module is installed
+    try:
+        import triton._C.libtriton as libtriton
+        libtriton_path = os.path.dirname(libtriton.__file__)
+        tool_path = os.path.join(libtriton_path, "triton-mlir-opt")
+        if os.path.exists(tool_path) and os.access(tool_path, os.X_OK):
+            return tool_path
+    except (ImportError, AttributeError):
+        pass
+    
+    # Fallback: try to find it in the build directory
+    # This is useful during development
+    build_path = os.getenv("TRITON_BUILD_DIR", "")
+    if build_path:
+        tool_path = os.path.join(build_path, "bin", "triton-mlir-opt")
+        if os.path.exists(tool_path) and os.access(tool_path, os.X_OK):
+            return tool_path
+    
+    # Last resort: try to find it in PATH
+    tool_path = shutil.which("triton-mlir-opt")
+    if tool_path:
+        return tool_path
+    
+    raise EnvironmentError(
+        "Could not find triton-mlir-opt tool. "
+        "It should be installed in triton/_C/ directory or available in PATH."
+    )
+
+
+def _get_bishengir_opt_path() -> str:
+    ascend_dir = os.path.dirname(os.path.abspath(__file__))
+    env = os.environ.copy()
+    bishengir_opt_path = os.path.join(ascend_dir, "bishengir", "bin", "bishengir-opt")
+    if os.path.exists(bishengir_opt_path):
+        npuir_env_path = os.path.dirname(bishengir_opt_path)
+        env["PATH"] = npuir_env_path + ":" + env["PATH"]
+    else:
+        bishengir_opt_path = shutil.which("bishengir-opt")
+        if bishengir_opt_path is None:
+            bishengir_opt_root = os.getenv("TRITON_NPU_COMPILER_PATH", "")
+            if bishengir_opt_root is None:
+                raise EnvironmentError(
+                    "Couldn't find executable bishengir-opt or TRITON_NPU_COMPILER_PATH"
+                )
+            bishengir_opt_path = os.path.join(bishengir_opt_root, "bishengir-opt")
+    return bishengir_opt_path, env
+
+
 def _get_npucompiler_path() -> str:
     ascend_dir = os.path.dirname(os.path.abspath(__file__))
     env = os.environ.copy()
@@ -453,11 +508,13 @@ def convert_sigtype_to_int(sigty: str):
         # Boolean
         "i1": 12,  # BOOL
         # Integer types
+        "i4": 29,  # INT4
         "i8": 2,  # INT8
         "i16": 6,  # INT16
         "i32": 3,  # INT32
         "i64": 9,  # INT64
         # Unsigned integer types
+        "u1": 30,  # UINT1
         "u8": 4,  # UINT8
         "u16": 7,  # UINT16
         "u32": 8,  # UINT32

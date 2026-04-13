@@ -29,7 +29,7 @@ def _is_int_like_elem(x) -> bool:
 
 
 def _assert_int_like_tuple(name: str, xs):
-    assert isinstance(xs, (tuple, list)), f"{name} should be a tuple/list, but got {type(xs)}"
+    assert isinstance(xs, (list, tuple, tl.tuple)), f"{name} should be a tuple/list, but got {type(xs)}"
     assert all(_is_int_like_elem(x) for x in xs), f"{name} should be integer"
 
 

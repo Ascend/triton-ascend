@@ -44,6 +44,8 @@ from triton.backends.ascend.utils import (
     _get_mlir_path,
     _get_npucompiler_path,
     _get_triton_adapter_opt_path,
+    _get_triton_mlir_opt_path,
+    _get_bishengir_opt_path,
     _is_ascend_sanitizer_enabled,
     _is_debug_line_info_disabled,
     _is_auto_map_parallel_blocks_enabled,
@@ -54,10 +56,8 @@ from triton.backends.ascend.driver import (
     NPUUtils
 )
 from triton.backends.compiler import (
-    AttrsDescriptor,
     BaseBackend,
     GPUTarget,
-    register_descriptor,
 )
 from triton.runtime import driver
 from triton.runtime.cache import get_dump_manager
@@ -166,6 +166,92 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             dump_manager.put(str(mod), "kernel.ttadapter.mlir", binary=False)
 
         return str(mod)
+
+
+def linalg_to_bc_by_triton_mlir_opt(linalg: str, metadata, opt):
+    """
+    Convert Linalg IR to MLIR Bytecode format using triton-mlir-opt.
+    This function supports both MLIR and BishengIR ops.
+    Args:
+        linalg: Linalg IR in text format
+        metadata: Compilation metadata
+        opt: Compilation options
+    Returns:
+        Bytecode data as bytes (not file path, to avoid temp directory cleanup issues)
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ttadapter_path = os.path.join(tmpdir, "kernel.ttadapter.mlir")
+        bc_path = os.path.join(tmpdir, "kernel.mlirbc")
+        Path(ttadapter_path).write_text(linalg)
+        
+        triton_mlir_opt_path = _get_triton_mlir_opt_path()
+
+        # The --emit-bytecode flag ensures output is in BC format
+        subprocess.run(
+            [
+                triton_mlir_opt_path,
+                ttadapter_path,
+                "--emit-bytecode",
+                "-o",
+                bc_path,
+            ],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+
+        # Read bytecode as binary before temp directory is cleaned up
+        with open(bc_path, "rb") as f:
+            bc_data = f.read()
+        
+        if opt.debug:
+            dump_manager = get_dump_manager(metadata["hash"])
+            dump_manager.put(bc_data, "kernel.mlirbc", binary=True)
+
+        return bc_data
+
+
+def bc_to_linalg_by_bishengir_opt(bc_data: bytes, metadata, opt):
+    """
+    Convert MLIR Bytecode to MLIR text format using bishengir-opt.
+    Args:
+        bc_data: Bytecode data as bytes
+        metadata: Compilation metadata
+        opt: Compilation options
+    Returns:
+        MLIR text as string
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bc_path = os.path.join(tmpdir, "kernel.mlirbc")
+        mlir_path = os.path.join(tmpdir, "kernel.mlir")
+
+        # Write bytecode data to temporary file
+        with open(bc_path, "wb") as f:
+            f.write(bc_data)
+
+        bishengir_opt_path, env = _get_bishengir_opt_path()
+
+        subprocess.run(
+            [
+                bishengir_opt_path,
+                bc_path,
+                "-o",
+                mlir_path,
+            ],
+            env=env,
+            capture_output=True,
+            check=True,
+            text=True
+        )
+
+        # Read the generated MLIR text
+        linalg_text = Path(mlir_path).read_text()
+        
+        if opt.debug:
+            dump_manager = get_dump_manager(metadata["hash"])
+            dump_manager.put(linalg_text, "kernel.mlir", binary=False)
+
+        return linalg_text
 
 
 def linalg_to_llir(linalg: str, metadata, opt):
@@ -403,7 +489,8 @@ def _save_npuir_debug_output(stdout_bytes: bytes, stderr_bytes: bytes, tmpdir: s
 def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
     linalg, metadata = _parse_linalg_metadata(linalg, metadata)
     with tempfile.TemporaryDirectory() as tmpdir:
-        ttadapter_path = os.path.join(tmpdir, "kernel.ttadapter.mlir")
+        tmp_file_name = "kernel.mlir" if opt.use_bytecode else "kernel.ttadapter.mlir"
+        ttadapter_path = os.path.join(tmpdir, tmp_file_name)
         Path(ttadapter_path).write_text(linalg)
         bin_file = os.path.join(tmpdir, "kernel")
         if _check_bishengir_api_change():
@@ -607,7 +694,8 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
 def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
     linalg, metadata = _parse_linalg_metadata(linalg, metadata)
     with tempfile.TemporaryDirectory() as tmpdir:
-        ttadapter_path = os.path.join(tmpdir, "kernel.ttadapter.mlir")
+        tmp_file_name = "kernel.mlir" if opt.use_bytecode else "kernel.ttadapter.mlir"
+        ttadapter_path = os.path.join(tmpdir, tmp_file_name)
         Path(ttadapter_path).write_text(linalg)
         bin_file = os.path.join(tmpdir, "kernel")
         if _check_bishengir_api_change():
@@ -884,6 +972,15 @@ class NPUOptions:
     compile_mode: str = "simd"
     mix_mode: str = ""
     simt_stack_limit: int = None
+    # use_bytecode:
+    # If True, the compilation flow is:
+    #   Linalg IR → MLIR Bytecode (via triton-mlir-opt)
+    #            → LLIR (via bishengir-opt)
+    #            → Binary (via bishengir-compile)
+    #
+    # If False, the compilation flow is:
+    #   Linalg IR → LLIR → Binary (via bishengir-compile directly)
+    use_bytecode: bool = True
     # take effect on the reorder instruction pattern for SIMT. The pattern is disabled by default.
     enable_simt_reorder_instruction: bool = False
     # disable simt fma optimization to get high precision
@@ -933,15 +1030,6 @@ class CPUOptions:
     def hash(self):
         key = "_".join([f"{name}-{val}" for name, val in self.__dict__.items()])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
-
-
-@register_descriptor
-class AscendAttrsDescriptor(AttrsDescriptor):
-
-    # For now we collect shapes of tensor at runtime.
-    # We comment out the following func but keep it for future reference.
-    def _add_backend_properties(self, params=None, values=None):
-        pass
 
 
 def ttir_to_npubin(mod, metadata, opt):
@@ -1001,6 +1089,8 @@ class AscendBackend(BaseBackend):
             self.binary_ext = "cpuasm"
         elif target.backend == "npu":
             self.binary_ext = "npubin"
+            # Include all binary file extensions (mlirbc is used in bytecode mode)
+            self.binary_extensions = {"npubin", "mlirbc"}
 
     def parse_options(self, opts) -> Any:
         # TODO: get available targets when building options?
@@ -1041,7 +1131,7 @@ class AscendBackend(BaseBackend):
             "tensor_kinds": metadata.tensor_kinds,
         }
 
-    def get_codegen_implementation(self):
+    def get_codegen_implementation(self, options):
         # Note: a dict of functions is required to generate vendor-specific code piecies
         #       e.g. convert custom types like fp8e4b15
         from triton.backends.ascend import _apply_ascend_patch
@@ -1052,10 +1142,7 @@ class AscendBackend(BaseBackend):
     def load_dialects(self, ctx):
         ascend.load_dialects(ctx)
 
-    def get_attrs_descriptor(self, params, args):
-        return AscendAttrsDescriptor(params, args)
-
-    def add_stages(self, stages, options):
+    def add_stages(self, stages, options, language):
         if self.target.backend == "npu":
             stages["ttir"] = lambda src, metadata: make_ttir(src, metadata, options)
             if options.force_simt_only:
@@ -1068,6 +1155,16 @@ class AscendBackend(BaseBackend):
             stages["ttadapter"] = lambda src, metadata: ttir_to_linalg(
                 src, metadata, options, named_ops=True
             )
+            # Support BC mode: convert Linalg IR to Bytecode format, then back to MLIR
+            if options.use_bytecode:
+                # Step 1: Convert Linalg IR to Bytecode using triton-mlir-opt
+                stages["mlirbc"] = lambda src, metadata: linalg_to_bc_by_triton_mlir_opt(
+                    src, metadata, options
+                )
+                # Step 2: Convert Bytecode back to MLIR text using bishengir-opt
+                stages["bcmlir"] = lambda src, metadata: bc_to_linalg_by_bishengir_opt(
+                    src, metadata, options
+                )
             if options.compile_on_910_95:
                 stages["npubin"] = (
                     lambda src, metadata: linalg_to_bin_enable_npu_compile_910_95(

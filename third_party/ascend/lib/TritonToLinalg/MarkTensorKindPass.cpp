@@ -151,7 +151,7 @@ void MarkTensorKindPass::runOnOperation() {
       MarkTensorKindPattern<TensorKind::INPUT_OUTPUT, triton::AtomicCASOp>
   >(&getContext());
 
-  (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+  (void)applyPatternsGreedily(getOperation(), std::move(patterns));
 }
 
 std::unique_ptr<OperationPass<ModuleOp>> triton::createMarkTensorKindPass() 

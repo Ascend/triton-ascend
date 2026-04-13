@@ -30,8 +30,21 @@ import inspect
 import sqlite3
 import threading
 import weakref
-from typing import Dict
 import ast
+from collections import OrderedDict
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Final,
+    Iterator,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+    overload,
+)
 
 import triton
 from triton._C import libentryC
@@ -42,7 +55,8 @@ torch_device_fn = torch.npu
 from .code_cache import config_cache_dir
 
 DEVICE_COUNT = torch_device_fn.device_count()
-major_version = int(triton.__version__.split(".")[0])
+version = triton.__version__.split(".")
+major_version, minor_version = eval(version[0]), eval(version[1])
 
 
 def quote_identifier(name: str) -> str:
@@ -67,11 +81,16 @@ class LibTuner(triton.runtime.Autotuner):
         restore_value,
         pre_hook=None,
         post_hook=None,
-        prune_configs_by: Dict = None,
-        warmup=25,
-        rep=100,
+        prune_configs_by: Optional[Dict] = None,
+        warmup=None,
+        rep=None,
         use_cuda_graph=False,
     ):
+        if major_version == 2 or (major_version == 3 and minor_version <= 1):
+            if warmup is None:
+                warmup = 25
+            if rep is None:
+                rep = 100
         if major_version == 2:
             super().__init__(
                 fn,
@@ -216,6 +235,29 @@ class LibEntry(triton.KernelInterface):
             if not p.is_constexpr and p.do_not_specialize
         ]
         self.lock = threading.Lock()
+        self.signature = fn.signature
+
+    def key(self, spec_args, dns_args, const_args):
+        def spec_arg(arg):
+            if hasattr(arg, "data_ptr"):
+                return (arg.dtype, arg.data_ptr() % self.divisibility == 0)
+            return (type(arg), arg)
+
+        def dns_arg(arg):
+            if hasattr(arg, "data_ptr"):
+                return arg.dtype
+            if not isinstance(arg, int):
+                return type(arg)
+            if -(2**31) <= arg and arg <= 2**31 - 1:
+                return "i32"
+            if 2**63 <= arg and arg <= 2**64 - 1:
+                return "u64"
+            return "i64"
+
+        spec_key = [spec_arg(arg) for arg in spec_args]
+        dns_key = [dns_arg(arg) for arg in dns_args]
+        # const args passed by position
+        return tuple(spec_key + dns_key + const_args)
 
     def run(self, *args, **kwargs):
         grid = kwargs["grid"]
@@ -224,19 +266,53 @@ class LibEntry(triton.KernelInterface):
         spec_args = []  # specialize arguments
         dns_args = []  # do not specialize arguments
         const_args = []  # constexpr arguments
-        k_args = []  # kernel arguments
-        arg_processor = libentryC.ArgProcessor(self.divisibility)
-        arg_processor.classify_arguments(
-            list(args),
-            kwargs,
-            self.jit_function.params,
-            set(self.specialize_indices),
-            set(self.do_not_specialize_indices)
-        )
+        k_args = OrderedDict()
+        param_names = list(self.signature.parameters.keys())
+        for i, arg in enumerate(args):
+            hashable_arg = arg
+            if (
+                hasattr(arg, "__class__")
+                and arg.__class__.__name__ == "TensorDescriptor"
+            ):
+                # Create a hashable representation of TensorDescriptor
+                hashable_arg = (
+                    "TensorDescriptor",
+                    tuple(arg.shape) if hasattr(arg, "shape") else None,
+                    tuple(arg.strides) if hasattr(arg, "strides") else None,
+                    tuple(arg.block_shape) if hasattr(arg, "block_shape") else None,
+                    arg.padding if hasattr(arg, "padding") else None,
+                    # Add other relevant attributes
+                )
+            if i in self.specialize_indices:
+                k_args[param_names[i]] = arg
+                spec_args.append(hashable_arg)
+            elif i in self.do_not_specialize_indices:
+                k_args[param_names[i]] = arg
+                dns_args.append(hashable_arg)
+            else:
+                if major_version == 3 and 3 <= minor_version <= 6:
+                    k_args[param_names[i]] = arg
+                const_args.append(hashable_arg)
+        for p in self.jit_function.params[len(args) :]:
+            if p.name in kwargs:
+                val = kwargs[p.name]
+            elif p.default is inspect._empty:
+                continue
+            else:
+                val = p.default
 
-        k_args = arg_processor.get_k_args()
+            if p.is_constexpr:
+                const_args.append(val)
+                if major_version == 3 and 3 <= minor_version <= 6:
+                    k_args[p.name] = val
+            elif p.do_not_specialize:
+                dns_args.append(val)
+                k_args[p.name] = val
+            else:
+                spec_args.append(val)
+                k_args[p.name] = val
 
-        entry_key = arg_processor.generate_key()
+        entry_key = self.key(spec_args, dns_args, const_args)
         device = torch_device_fn.current_device()
         cache = self.kernel_cache[device]
         while entry_key not in cache:
@@ -249,6 +325,8 @@ class LibEntry(triton.KernelInterface):
                 fn = self.fn
                 # collect constexpr arguments for grid computation
                 constexprs = {}
+                tune_constexprs = {}
+                heur_constexprs = {}
                 while not isinstance(fn, triton.runtime.JITFunction):
                     if isinstance(fn, triton.runtime.Autotuner):
                         config = fn.best_config
@@ -256,15 +334,17 @@ class LibEntry(triton.KernelInterface):
                         constexprs["num_stages"] = config.num_stages
                         constexprs["num_ctas"] = config.num_ctas
                         constexprs = {**constexprs, **config.kwargs}
+                        tune_constexprs = {**tune_constexprs, **config.kwargs}
                     elif isinstance(fn, triton.runtime.Heuristics):
                         for v, heur in fn.values.items():
-                            constexprs[v] = heur(
+                            heur_constexprs[v] = heur(
                                 {
                                     **dict(zip(fn.arg_names, args)),
                                     **kwargs,
                                     **constexprs,
                                 }
                             )
+                            constexprs[v] = heur_constexprs[v]
                     else:
                         raise RuntimeError("Invalid Runtime Function")
                     fn = fn.fn
@@ -275,10 +355,15 @@ class LibEntry(triton.KernelInterface):
                         and (p.default is not inspect._empty)
                     ):
                         constexprs[p.name] = p.default
-                cache[entry_key] = (kernel, constexprs)
+                cache[entry_key] = (
+                    kernel,
+                    constexprs,
+                    tune_constexprs,
+                    heur_constexprs,
+                )
             return kernel, constexprs
 
-        kernel, constexprs = cache[entry_key]
+        kernel, constexprs, tune_constexprs, heur_constexprs = cache[entry_key]
 
         if callable(grid):
             # collect all arguments to the grid fn，ie:
@@ -290,7 +375,27 @@ class LibEntry(triton.KernelInterface):
             grid = grid(meta)
         grid = grid + (1, 1)
 
-        kernel[grid[0:3]](*k_args)
+        if major_version == 3 and 3 <= minor_version <= 6:
+            all_args = []
+            missing_keys = []
+            for key in list(self.signature.parameters.keys()):
+                if key in k_args:
+                    all_args.append(k_args[key])
+                elif key in tune_constexprs:
+                    all_args.append(tune_constexprs[key])
+                elif key in heur_constexprs:
+                    all_args.append(heur_constexprs[key])
+                elif key in constexprs:
+                    all_args.append(constexprs[key])
+                else:
+                    missing_keys.append(key)
+                if len(missing_keys):
+                    raise RuntimeError(
+                        f"[libentry]: probably a bug, the following kernel params where not captured: {missing_keys}"
+                    )
+            kernel[grid[0:3]](*all_args)
+        else:
+            kernel[grid[0:3]](*k_args.values())
         return kernel, constexprs
 
 

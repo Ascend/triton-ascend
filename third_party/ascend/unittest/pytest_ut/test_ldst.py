@@ -24,6 +24,7 @@ import triton.language as tl
 import triton.language.math as tl_math
 import pytest
 
+
 def test_ldst_indirect_00():
 
     @triton.jit

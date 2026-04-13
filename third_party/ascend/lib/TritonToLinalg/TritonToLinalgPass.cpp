@@ -601,6 +601,7 @@ void TritonToLinalgPass::populateTritonToLinalgConversionPatterns(
   patterns.add<LoadStoreConverter::AtomicCASConverter>(patterns.getContext());
   patterns.add<TTOpConverters::MakeRangeConverter>(patterns.getContext());
   patterns.add<TTOpConverters::SplatConverter>(patterns.getContext());
+  patterns.add<TTOpConverters::UnsplatConverter>(patterns.getContext());
   patterns.add<TTOpConverters::ClampFConverter>(patterns.getContext());
   patterns.add<TTOpConverters::PreciseDivConverter>(patterns.getContext());
   // reduce converters
@@ -731,7 +732,7 @@ LogicalResult TritonToLinalgPass::processImplicitPermuteOperations(ModuleOp modu
   patterns.add<ImplicitPermute::AtomicCASConverter>(patterns.getContext());
   patterns.add<CannonicalizerConverter::SplatCmpConverter>(patterns.getContext());
 
-  if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns)))) {
+  if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
     LLVM_DEBUG({
       llvm::dbgs() << "ImplicitPermute: rewrite MemOp failed\n";
     });
@@ -825,8 +826,8 @@ void TritonToLinalgPass::runOnOperation() {
   RewritePatternSet canonicalizerPatterns(&getContext());
   // 1. Canonicalize load/store related patterns.
   this->populateTritonToLinalgCanonicalizationPatterns(canonicalizerPatterns);
-  if (failed(applyPatternsAndFoldGreedily(moduleOp,
-                                          std::move(canonicalizerPatterns)))) {
+  if (failed(applyPatternsGreedily(moduleOp,
+                                   std::move(canonicalizerPatterns)))) {
     moduleOp->emitError("failed to apply Canonicalizer Patterns");
     signalPassFailure();
   }
@@ -1068,7 +1069,7 @@ void TritonToLinalgPass::runOnOperation() {
     MemRefType syncBlockLockArgType =
         MemRefType::get(SmallVector<int64_t>(1, ShapedType::kDynamic),
                         IntegerType::get(context, 8));
-    func.insertArgument(syncBlockLockArgIdx, // argIndex
+    llvm::LogicalResult  syncBlockLockArg = func.insertArgument(syncBlockLockArgIdx, // argIndex
                         syncBlockLockArgType, // argType
                         nullptr, func->getLoc()); // dicAttr
     func->setAttr("SyncBlockLockArgIdx",
@@ -1081,7 +1082,7 @@ void TritonToLinalgPass::runOnOperation() {
     NamedAttribute workspaceArgAttr(StringAttr::get(context, "workspace"),
                                     UnitAttr::get(context));
 
-    func.insertArgument(/*argIndex*/ workspaceArgIdx,
+    llvm::LogicalResult workspaceArg = func.insertArgument(/*argIndex*/ workspaceArgIdx,
                         /*argType*/ workspaceArgType,
                         /*dicAttr*/ nullptr, func->getLoc());
     func->setAttr("WorkspaceArgIdx",

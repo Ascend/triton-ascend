@@ -333,14 +333,6 @@ def IndirectLoadOp : TT_Ascend_Op<"indirect_load", [
     attr-dict `->` type($result)
   }];
 
-  let builders = [
-    OpBuilder<(ins
-      "Value":$src,
-      "Value":$offsets,
-      "Value":$mask,
-      "Value":$other
-    )>
-  ];
 }
 
 
