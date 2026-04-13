@@ -25,6 +25,7 @@
 
 #include "mlir/Pass/Pass.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "bishengir/Dialect/HIVM/IR/HIVM.h"
 
 #include "mlir/IR/PatternMatch.h"
 
@@ -34,8 +35,6 @@
 #define GEN_PASS_DEF_DISCRETEMASKACCESSCONVERSION
 #include "ascend/triton-adapter/include/DiscreteMaskAccessConversion/Passes.h.inc"
 
-extern bool compileOn91095Flag;
-extern bool forceSimtTemplateFlag;
 
 namespace mlir {
 namespace triton {
