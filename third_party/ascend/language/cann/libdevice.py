@@ -140,6 +140,18 @@ def div_rz(arg0, arg1, _builder=None):
             (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_div_rz_fp32", core.dtype("fp32")),
         }, is_pure=True, _builder=_builder)
 
+@core.builtin
+def fast_dividef(arg0, arg1, _builder=None):
+    arg0 = semantic.to_tensor(arg0, _builder)
+    arg1 = semantic.to_tensor(arg1, _builder)
+    ret = semantic.fdiv(arg0, arg1, False, _builder)
+    return ret
+
+@core.builtin
+def fast_expf(arg0, _builder=None):
+    arg0 = semantic.to_tensor(arg0, _builder)
+    ret = core.tensor(_builder.create_exp(arg0.handle), arg0.type)
+    return ret
 
 @core.extern
 def fmod(arg0, arg1, _builder=None):
