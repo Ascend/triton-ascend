@@ -20,6 +20,7 @@
 
 import unittest.mock as mock
 import pytest
+import torch
 
 
 def MockAutoTilingTunerRun(self, *args, **kwargs):
@@ -87,3 +88,18 @@ def mock_autotuner():
         new=MockAutoTilingTunerRun
     ):
         yield
+
+
+def generate_tensor(shape, dtype):
+    if dtype == 'float32' or dtype == 'float16' or dtype == 'bfloat16':
+        return torch.randn(size=shape, dtype=eval('torch.' + dtype))
+    elif dtype == 'int32' or dtype == 'int64' or dtype == 'int16':
+        return torch.randint(low=0, high=2000, size=shape, dtype=eval('torch.' + dtype))
+    elif dtype == 'int8':
+        return torch.randint(low=0, high=127, size=shape, dtype=eval('torch.' + dtype))
+    elif dtype == 'bool':
+        return torch.randint(low=0, high=2, size=shape).bool()
+    elif dtype == 'uint8':
+        return torch.randint(low=0, high=255, size=shape, dtype=torch.uint8)
+    else:
+        raise ValueError('Invalid parameter \"dtype\" is found : {}'.format(dtype))
