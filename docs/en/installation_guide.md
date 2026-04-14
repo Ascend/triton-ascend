@@ -34,7 +34,6 @@ The preceding environment variable configurations take effect only in the curren
 | 3.2.0             | CANN 8.5.0           | 2026-01-16        |
 | 3.2.0rc4          | CANN 8.3.RC2<br>CANN 8.5.0.alpha001<br>CANN 8.3.RC1         | 2025/11/20<br>2025/11/12<br>2025/10/30         |
 
-
 ### Installing torch_npu
 
 The current torch_npu version is 2.7.1.
@@ -44,6 +43,7 @@ pip install torch_npu==2.7.1
 ```
 
 Note: If `ERROR: No matching distribution found for torch==2.7.1+cpu` is displayed, you can manually install Torch and then install torch_npu.
+
 ```bash
 pip install torch==2.7.1+cpu --index-url https://download.pytorch.org/whl/cpu
 ```
@@ -51,6 +51,7 @@ pip install torch==2.7.1+cpu --index-url https://download.pytorch.org/whl/cpu
 ## Installing Triton-Ascend Using Pip
 
 ### Latest Stable Version
+
 You can install the latest stable version of Triton-Ascend using pip.
 
 ```shell
@@ -58,7 +59,9 @@ pip install triton-ascend
 ```
 
 - Note: Community Triton and Triton-Ascend cannot coexist. When you install other software that depends on Triton, community Triton will be automatically installed, which will overwrite the installed Triton-Ascend directory.
+
 In this case, you need to uninstall community Triton and Triton-Ascend first, and then install Triton-Ascend.
+
 ```shell
 pip uninstall triton
 pip uninstall triton-ascend
@@ -66,11 +69,13 @@ pip install triton-ascend
 ```
 
 ### Nightly Build Version
+
 We provide daily updated nightly packages. You can run the following command to install them:
 
 ```shell
 pip install -i https://test.pypi.org/simple/ "triton-ascend<3.2.0rc" --pre --no-cache-dir
 ```
+
 You can also find all nightly build packages in [History](https://test.pypi.org/project/triton-ascend/#history).
 
 Note: If you encounter SSL-related errors when running the `pip install` command, add the `--trusted-host test.pypi.org --trusted-host test-files.pythonhosted.org` option to solve them.
@@ -119,15 +124,15 @@ pip install ninja cmake wheel pybind11 # build-time dependencies
 
 ### Building with LLVM
 
-Triton uses LLVM 20 to generate code for GPUs and CPUs. Similarly, the BiSheng Compiler of Ascend depends on LLVM to generate NPU code. Therefore, you need to compile the LLVM source code. Pay attention to the specific LLVM version of dependencies. LLVM build supports two methods. **You only need to follow either method**.
+Triton uses LLVM 22 to generate code for GPUs and CPUs. Similarly, the BiSheng Compiler of Ascend depends on LLVM to generate NPU code. Therefore, you need to compile the LLVM source code. Pay attention to the specific LLVM version of dependencies. LLVM build supports two methods. **You only need to follow either method**.
 
-#### Code preparation: Run the `git checkout` command to check out the specified LLVM version.
+#### Code preparation: Run the `git checkout` command to check out the specified LLVM version
 
    ```bash
    git clone --no-checkout https://github.com/llvm/llvm-project.git
    cd llvm-project
    git checkout fad3272286528b8a491085183434c5ad4b59ab92
-   wget https://gitcode.com/Ascend/triton-ascend/blob/main/third_party/ascend/llvm_patch/fad3272.patch
+   wget https://raw.gitcode.com/Ascend/triton-ascend/blobs/2b0a06eb21438359d6d0576b622e3bb5e0292d17/fad3272.patch
    git apply fad3272.patch
    ```
 
@@ -166,6 +171,12 @@ Triton uses LLVM 20 to generate code for GPUs and CPUs. Similarly, the BiSheng C
   ninja install
   ```
 
+- Step 4: Need to cp FILECHECK to your target installation path:
+
+   ```bash
+   cp  {PATH_TO}/llvm_project/build/bin/FileCheck ${LLVM_INSTALL_PREFIX}/bin/FileCheck
+   ```
+
 #### Cloning Triton-Ascend
 
 ```bash
@@ -176,8 +187,8 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend
 
 1. Install the source code.
 
-- Step 1: Ensure that the target installation path of LLVM (*${LLVM_INSTALL_PREFIX}*) has been set in the [Building with LLVM] section.
-- Step 2: Ensure that Clang 15 or later, LLD 15 or later, and ccache have been installed.
+   - Step 1: Ensure that the target installation path of LLVM (*${LLVM_INSTALL_PREFIX}*) has been set in the [Building with LLVM] section.
+   - Step 2: Ensure that Clang 15 or later, LLD 15 or later, and ccache have been installed.
 
    ```bash
    LLVM_SYSPATH=${LLVM_INSTALL_PREFIX} \
@@ -189,10 +200,10 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend
    python3 setup.py install
    ```
 
-Note 1: For the recommended GCC version, please refer to the earlier section "System Requirements". If the GCC version is earlier than 9.4.0, "ld.lld: error: unable to find library -lstdc++fs" may be reported, indicating that the linker cannot find the stdc++fs library.
-This library supports the file system features of versions earlier than GCC 9. In this case, you need to manually uncomment the related code snippet in the CMake file.
+   Note 1: For the recommended GCC version, please refer to the earlier section "System Requirements". If the GCC version is earlier than 9.4.0, "ld.lld: error: unable to find library -lstdc++fs" may be reported, indicating that the linker cannot find the stdc++fs library.
+   This library supports the file system features of versions earlier than GCC 9. In this case, you need to manually uncomment the related code snippet in the CMake file.
 
-triton-ascend/CMakeLists.txt
+   triton-ascend/CMakeLists.txt
 
    ```bash
    if (NOT WIN32 AND NOT APPLE)
@@ -200,25 +211,30 @@ triton-ascend/CMakeLists.txt
    endif()
    ```
 
-  After uncommenting the code snippet, rebuild the project to solve the problem.
+   After uncommenting the code snippet, rebuild the project to solve the problem.
 
 2. Run the Triton example.
 
    Install the runtime dependencies. Refer to the following command:
+
    ```bash
    # Pull the triton-ascend source code repository and examples (optional; required to pull the source code repository when running examples without source code compilation and installation).
    git clone https://gitcode.com/Ascend/triton-ascend.git
    cd triton-ascend && pip install -r requirements_dev.txt
    ```
+
    Run the [01-vector-add.py](../../third_party/ascend/tutorials/01-vector-add.py) instance.
+
    ```bash
    # Set the CANN environment variables (for example, as the root user and with the default installation path /usr/local/Ascend).
    source /usr/local/Ascend/ascend-toolkit/set_env.sh
    # Run the tutorials example.
    python3 ./third_party/ascend/tutorials/01-vector-add.py
    ```
+
     If an output similar to the following is displayed, the environment is correctly configured:
-    ```
+
+    ```python
     tensor([0.8329, 1.0024, 1.3639,  ..., 1.0796, 1.0406, 1.5811], device='npu:0')
     tensor([0.8329, 1.0024, 1.3639,  ..., 1.0796, 1.0406, 1.5811], device='npu:0')
     The maximum difference between torch and triton is 0.0
