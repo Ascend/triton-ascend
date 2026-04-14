@@ -395,6 +395,7 @@ Description of environment variables:
 **TRITON_DEBUG=1**: enables all debugging outputs (including compilation and runtime printing).
 
 ### 5.2 Compilation Error Debugging
+
 When the `ttir.mlir` → `ttadapter.mlir` conversion fails, the `ttadapter.mlir` cannot be generated and the `MLIRCompileError` error is reported.
 You need to locate the fault at the Triton-Ascend code layer. Triton-Ascend contains the Python and C++ code layers. You need to locate the error code segment based on the call stack information in the error log and use the corresponding debugging method.
 
