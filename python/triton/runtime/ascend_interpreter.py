@@ -724,7 +724,7 @@ class AscendInterpreterBuilder(InterpreterBuilder):
     def get_i64_array_attr(self, val):      
         return [int(x) for x in val]
 
-    def create_annotation(self, ptr_data, hint_name: str, hint_val):
+    def create_annotation_mark(self, ptr_data, hint_name: str, hint_val):
         if hint_name == "overflow_mode":
             raise ValueError(f"overflow_mode is not supported in interpreter mode, may have accuracy issues")
         else:
