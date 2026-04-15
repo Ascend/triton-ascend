@@ -106,6 +106,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         enable_select_analysis = metadata["enable_select_analysis"]
         compile_on_910_95 = metadata["compile_on_910_95"]
         force_simt_template = metadata["force_simt_template"]
+        enable_sync_block_lock = metadata["enable_sync_block_lock"]
         enable_mask_fallback_conversion = metadata["enable_mask_fallback_conversion"]
         optimize_dynamic_offset = metadata["optimize_dynamic_offset"]
         auto_blockify_size = metadata["auto_blockify_size"]
@@ -134,7 +135,8 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         ascend.passes.ttir.add_discrete_mask_access_conversion(
             pm,
             compile_on_910_95,
-            force_simt_template
+            force_simt_template,
+            enable_sync_block_lock
         )
         ascend.passes.ttir.add_triton_to_annotation(pm)
         ascend.passes.ttir.add_triton_to_unstructure(
@@ -962,6 +964,7 @@ class NPUOptions:
     parallel_mode: str = "simd"
     force_simt_only: bool = False
     force_simt_template: bool = False
+    enable_sync_block_lock: bool = False
     # only take effect on the simt-only & simd-simt-mix scenarios
     shared_mem_dynamic_size: int = None
     # enable_bishengir_simt_optimization is passed as
