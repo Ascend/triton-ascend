@@ -60,6 +60,7 @@ pip install triton-ascend
 
 - Note: Community Triton and Triton-Ascend cannot coexist. When you install other software that depends on Triton, community Triton will be automatically installed, which will overwrite the installed Triton-Ascend directory.
 In this case, you need to uninstall community Triton and Triton-Ascend first, and then install Triton-Ascend.
+
 ```shell
 pip uninstall triton
 pip uninstall triton-ascend
@@ -177,7 +178,7 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend
 
 #### Building Triton-Ascend
 
-1. Install the source code.
+1.Install the source code.
 
 - Step 1: Ensure that the target installation path of LLVM (*${LLVM_INSTALL_PREFIX}*) has been set in the [Building with LLVM] section.
 - Step 2: Ensure that Clang 15 or later, LLD 15 or later, and ccache have been installed.
@@ -205,7 +206,7 @@ triton-ascend/CMakeLists.txt
 
   After uncommenting the code snippet, rebuild the project to solve the problem.
 
-2. Run the Triton example.
+2.Run the Triton example.
 
    Install the runtime dependencies. Refer to the following command:
 

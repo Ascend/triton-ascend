@@ -315,6 +315,7 @@ def masked_fill(inp, expand_mask, value):
 ```
 
 ### Why Does the UBSIZE Out of Memory Error Occur?
+
 Improper data tiling can lead to excessive unaligned memory access or computation. Consider a 2D data transfer of shape `(64, 32)` as an example. The corresponding stride is `(12832, 128)`. If aligned memory access is required, the stride becomes `(32, 1)`. In unaligned access scenarios, an additional axis of size `1` is added to the innermost dimension, yielding a shape of `(64, 32, 4)`. Because the hardware mandates 32-byte UB memory alignment in vector operator scenarios, the corresponding stride is recalculated as `(12832, 128, 1)`, assuming `type=float16`.
 
 ### Discrete Memory Access and Inefficient Scalar Mapping Observed by Line-by-Line Code Comparison
@@ -324,6 +325,7 @@ Set the environment variable *TRITON_DEBUG* to **1**, save **~/.triton/cache/xxx
 ```diff
 bishengir-compile xxx.ttadapter --target=Ascend910B3 --enable-auto-multi-buffer=True --enable-hfusion-compile=true --enable-hivm-compile=true --enable-triton-kernel-compile=true --hivm-compile-args=bishengir-print-ir-after=hivm-inject-sync  
 ```
+
 Compare the Triton kernel's logic with the internal operations of the output intermediate representations (IRs) to identify any operations that are not mapped to instructions. 
 Check whether pure scalar transfer or computation exists in the HIVM IR phase without being mapped to SIMD instructions. If such cases exist, they will create a significant performance bottleneck.   
 

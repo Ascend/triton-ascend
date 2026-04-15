@@ -304,7 +304,7 @@ Features:
 
 Usage:
 
-1. In the Triton kernel, add the `tl.static_print` statement for the constant parameters to be debugged.
+1.In the Triton kernel, add the `tl.static_print` statement for the constant parameters to be debugged.
 
 ```python
 import triton.language as tl
@@ -333,7 +333,7 @@ def triton_kernel(
     tl.store(out_ptr0 + idx, tmp2)
 ```
 
-2. Set the environment variable and run the program for compilation.
+2.Set the environment variable and run the program for compilation.
 
 ```bash
 # Enable Triton debugging output (including static_print).
@@ -350,7 +350,7 @@ Setting the environment variable `TRITON_DEVICE_PRINT` to `1` can enable the `tl
 
 **Usage:**
 
-1. In the Triton kernel, add the `tl.device_print` statement for the variables to be printed.
+1.In the Triton kernel, add the `tl.device_print` statement for the variables to be printed.
 
 ```python
 import triton.language as tl
@@ -365,7 +365,7 @@ def triton_kernel(out_ptr0, in_ptr0, in_ptr1, XBLOCK: tl.constexpr):
     tl.store(out_ptr0 + idx, tmp2)
 ```
 
-2. Set the environment variable `TRITON_DEVICE_PRINT` to `1` and run the program. The window displays the value of the variable.
+2.Set the environment variable `TRITON_DEVICE_PRINT` to `1` and run the program. The window displays the value of the variable.
 
 ```bash
 # Enable Triton debugging output (including device_print).
@@ -395,6 +395,7 @@ Description of environment variables:
 **TRITON_DEBUG=1**: enables all debugging outputs (including compilation and runtime printing).
 
 ### 5.2 Compilation Error Debugging
+
 When the `ttir.mlir` → `ttadapter.mlir` conversion fails, the `ttadapter.mlir` cannot be generated and the `MLIRCompileError` error is reported.
 You need to locate the fault at the Triton-Ascend code layer. Triton-Ascend contains the Python and C++ code layers. You need to locate the error code segment based on the call stack information in the error log and use the corresponding debugging method.
 

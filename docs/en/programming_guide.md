@@ -279,11 +279,11 @@ Implement basic data operation operators (such as addition, subtraction, multipl
 
 ### Development Procedure
 
-1. Determine the operator function. 
+1.Determine the operator function. 
 -Determine the shapes and data types (such as float16, float32, and int32) of the input and output tensors. 
 -Check whether broadcast and boundary processing are required. 
  
-2. Write kernel functions. 
+2.Write kernel functions. 
 Single-kernel computation corresponds to block-level data processing.   
 Single-kernel data computation example: vector addition 
 
@@ -337,14 +337,14 @@ f'{torch.max(torch.abs(output_torch - output_triton))}')
 # The maximum difference between torch and triton is 0.0
 ```
 
-3. Key points of single-kernel computation
+3.Key points of single-kernel computation
 -Block-level data processing: Each computing block is responsible for a small segment of data, ensuring parallelism.
 
 -Boundary check: Use **mask** or **if (tid < N)** to avoid out-of-bounds access.
 
 -Block size selection: Properly set the block and grid.
  
-4. Performance points 
+4.Performance points 
 (1) Memory access optimization 
 -Ensure sequential access. 
 -Use the aligned stride to avoid cross-row/cross-column jump access. 
