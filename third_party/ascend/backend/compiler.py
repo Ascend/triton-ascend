@@ -51,6 +51,7 @@ from triton.backends.ascend.utils import (
     _is_auto_map_parallel_blocks_enabled,
     downgrade_llir,
     force_disable_ffts,
+    triton_enable_libdevice_simt,
 )
 from triton.backends.ascend.driver import (
     NPUUtils
@@ -819,11 +820,9 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
                 _compile_option_list += \
                     [f"--link-aicore-bitcode={bitcode}"]
 
-        enable_libdevice = os.getenv("TRITON_ENABLE_LIBDEVICE", False)
-        if (enable_libdevice):
-            _compile_option_list += [
-                f"--link-aicore-bitcode={get_libdevice()}"
-            ]
+        _compile_option_list += [
+            f"--link-aicore-bitcode={get_libdevice()}"
+        ]
 
         disable_size_align_for_cast = metadata["disable_size_align_for_cast"]
         if disable_size_align_for_cast is not None:
@@ -1064,6 +1063,13 @@ def ttir_to_npubin(mod, metadata, opt):
                 _compile_option_list += ["--enable-simt-reorder-instruction=true"]
             if opt.disable_fma:
                 _compile_option_list += [f"--disable-fma"]
+            enable_libdevice_simt = triton_enable_libdevice_simt()
+            if (enable_libdevice_simt):
+                bisheng_options = metadata["bisheng_options"]
+                if bisheng_options is not None:
+                    _compile_option_list += [
+                        f"--append-bisheng-options={bisheng_options}"
+                    ]
 
         npu_compiler_path, env = _get_npucompiler_path()
         cmd_list = (

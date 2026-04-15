@@ -1585,7 +1585,7 @@ LogicalResult ExternElementwiseClOpConverter::matchAndRewrite(
     auto extFunc = dyn_cast_or_null<SymbolOpInterface>(
         SymbolTable::lookupSymbolIn(mod, op.getSymbol()));
     // std::string symbol = op.getSymbol().str();
-    bool is_libdevice = llvm::is_contained(libdeviceOps, op.getSymbol()) && getEnvBool("TRITON_ENABLE_LIBDEVICE", false);
+    bool is_libdevice = llvm::is_contained(libdeviceOps, op.getSymbol()) && getEnvBool("TRITON_ENABLE_LIBDEVICE_SIMT", false);
     if (!extFunc) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&mod->getRegion(0).front());
