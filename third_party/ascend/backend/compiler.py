@@ -257,114 +257,6 @@ def bc_to_linalg_by_bishengir_opt(bc_data: bytes, metadata, opt):
         return linalg_text
 
 
-def linalg_to_llir(linalg: str, metadata, opt):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        ttadapter_path = os.path.join(tmpdir, "kernel.ttadapter.mlir")
-        llmlir_path = os.path.join(tmpdir, "kernel.llir.mlir")
-        llir_path = os.path.join(tmpdir, "kernel.ll")
-        Path(ttadapter_path).write_text(linalg)
-        mlir_opt_path = _get_mlir_path("bin", "mlir-opt")
-        # TritonAdapter-MLIR to LLVM-MLIR
-        subprocess.check_call(
-            [
-                mlir_opt_path,
-                ttadapter_path,
-                "--convert-linalg-to-affine-loops",
-                "--eliminate-empty-tensors",
-                "--empty-tensor-to-alloc-tensor",
-                "--one-shot-bufferize=allow-return-allocs-from-loops=true",
-                "--lower-affine",
-                "--convert-linalg-to-loops",
-                "--convert-scf-to-cf",
-                "--convert-cf-to-llvm",
-                "--convert-arith-to-llvm",
-                "--convert-math-to-llvm",
-                "--convert-complex-to-llvm",
-                "--convert-vector-to-llvm",
-                "--convert-index-to-llvm",
-                "--memref-expand",
-                "--expand-strided-metadata",
-                "--finalize-memref-to-llvm",
-                "--convert-func-to-llvm",
-                # Lowering memrefs creates more affine.apply ops.
-                # Lowering these affine ops again creates further arith ops,
-                # so we have to run these two passes again here.
-                "--lower-affine",
-                "--convert-arith-to-llvm",
-                # Remove all unrealized casts created
-                "--reconcile-unrealized-casts",
-                "-o",
-                llmlir_path,
-            ]
-        )
-        if opt.debug:
-            dump_manager = get_dump_manager(metadata["hash"])
-            dump_manager.put(
-                Path(llmlir_path).read_text(), "kernel.llir.mlir", binary=False
-            )
-
-        # LLVM-MLIR to LLVM-IR
-        mlir_translate_path = _get_mlir_path("bin", "mlir-translate")
-        subprocess.check_call(
-            [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
-        )
-        if opt.debug:
-            dump_manager = get_dump_manager(metadata["hash"])
-            dump_manager.put(Path(llir_path).read_text(), "kernel.ll", binary=False)
-
-        return Path(llir_path).read_text()
-
-
-def llir_to_cpuasm(llir: str, metadata, opt):
-    # add metadata at final stage
-    # Note: Compiled Kernel requires to estimate size of shared memory to occupy
-    # Currently, CPU backend requires no limit on shared memory size
-    metadata["shared"] = 1
-    # We can get a function name (C naming) from
-    # LLVM-IR by getting the first "define void @".
-    fn_name = llir.split("define void @")[1].split("(")[0].strip()
-    metadata["name"] = fn_name + " cpu"
-    with tempfile.TemporaryDirectory() as tmpdir:
-        src_path = os.path.join(tmpdir, "kernel.ll")
-        linked_path = os.path.join(tmpdir, "kernel_linked.ll")
-        dst_path = os.path.join(tmpdir, "kernel.s")
-
-        llir = downgrade_llir(llir)
-        if opt.debug:
-            dump_manager = get_dump_manager(metadata["hash"])
-            dump_manager.put(llir, "kernel_downgrade.ll", binary=False)
-
-        Path(src_path).write_text(llir)
-
-        linker_path = _get_llvm_path("bin", "llvm-link")
-        libclc_path = _get_llvm_path("lib", "clc", "libspirv-aarch64--.bc")
-        subprocess.check_call(
-            [
-                linker_path,
-                src_path,
-                libclc_path,
-                "--only-needed",
-                "-S",
-                "-o",
-                linked_path,
-            ]
-        )
-        if opt.debug:
-            dump_manager = get_dump_manager(metadata["hash"])
-            dump_manager.put(
-                Path(linked_path).read_text(), "kernel_linked.ll", binary=False
-            )
-
-        llc_path = _get_llvm_path("bin", "llc")
-        subprocess.check_call([llc_path, linked_path, "-o", dst_path])
-        if opt.debug:
-            dump_manager = get_dump_manager(metadata["hash"])
-            dump_manager.put(Path(dst_path).read_text(), "kernel.s", binary=False)
-
-        # Actually it's text-format assembly.  Use read_text().
-        return Path(dst_path).read_text()
-
-
 def __get_metadata_attr_by_callback(lib, postfix: str, metadata, meta_key: str):
     func_symbol = metadata["kernel_name"] + postfix
     if hasattr(lib, func_symbol):
@@ -1010,28 +902,6 @@ class NPUOptions:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-@dataclass(frozen=True)
-class CPUOptions:
-    debug: bool = False
-    llvm_version: int = 15
-    kernel_name: str = "triton_"
-
-    cluster_dims: tuple = (1, 1, 1)
-    num_warps: int = -1
-    num_ctas: int = -1
-    num_stages: int = -1
-
-    enable_warp_specialization: bool = False
-    enable_persistent: bool = False
-    optimize_epilogue: bool = False
-    enable_fp_fusion: bool = True
-    allow_fp8e4nv: bool = False
-    max_num_imprecise_acc_default: int = 0
-    extern_libs: dict = None
-
-    def hash(self):
-        key = "_".join([f"{name}-{val}" for name, val in self.__dict__.items()])
-        return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def ttir_to_npubin(mod, metadata, opt):
@@ -1090,13 +960,11 @@ class AscendBackend(BaseBackend):
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == "cpu" or target.backend == "npu"
+        return target.backend == "npu"
 
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
-        if target.backend == "cpu":
-            self.binary_ext = "cpuasm"
-        elif target.backend == "npu":
+        if target.backend == "npu":
             self.binary_ext = "npubin"
             # Include all binary file extensions (mlirbc is used in bytecode mode)
             self.binary_extensions = {"npubin", "mlirbc"}
@@ -1112,12 +980,10 @@ class AscendBackend(BaseBackend):
             args.setdefault("arch", self.target.arch)
             options = NPUOptions(**args)
         else:
-            args = {
-                k: opts[k]
-                for k in CPUOptions.__dataclass_fields__.keys()
-                if k in opts
-            }
-            options = CPUOptions(**args)
+            raise NotImplementedError(
+                f"Backend '{self.target.backend}' is not supported. "
+                "Please ensure the target backend is set to 'npu'."
+            )
         return options
 
     def pack_metadata(self, metadata):
@@ -1187,15 +1053,9 @@ class AscendBackend(BaseBackend):
                     )
                 )
         else:
-            stages["ttir"] = lambda src, metadata: make_ttir(src, metadata, options)
-            stages["ttadapter"] = lambda src, metadata: ttir_to_linalg(
-                src, metadata, options
-            )
-            stages["llir"] = lambda src, metadata: linalg_to_llir(
-                src, metadata, options
-            )
-            stages["cpuasm"] = lambda src, metadata: llir_to_cpuasm(
-                src, metadata, options
+            raise NotImplementedError(
+                f"Backend '{self.target.backend}' is not supported. "
+                "Please ensure the target backend is set to 'npu'."
             )
 
     @functools.lru_cache()
