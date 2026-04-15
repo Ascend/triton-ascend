@@ -151,7 +151,7 @@ triton: upload-triton ## Build and upload Triton wheel to OBS
 .PHONY: upload-pypi
 upload-pypi: $(PYPI_CONFIG) install-deps ## Build and upload Triton wheel to PyPI
 	mkdir -p pkg_cache; \
-	for PY in python3.9 python3.10 python3.11; do \
+	for PY in python3.9 python3.10 python3.11 python3.12 python3.13; do \
 		echo "Building wheel for $$PY..."; \
 		rm -rf build dist; \
 		make package-pypi PYTHON=$$PY IS_MANYLINUX=True; \
