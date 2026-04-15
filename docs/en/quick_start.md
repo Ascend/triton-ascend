@@ -6,10 +6,13 @@ Triton-Ascend is an optimized version of Triton that adapts to Huawei Ascend chi
 While being compatible with the core syntax of Triton, Ascend is optimized for features of Ascend NPUs, including automatic parsing of kernel function parameters, memory access logic optimization, and security deployment mechanism optimization.
 
 ## Online Documents
+
 Complete online documents and network materials are provided, covering environment setup, operator development, optimization practices, and FAQ, to help you get started quickly. For details, see the [online documents](https://triton-ascend.readthedocs.io/zh-cn/latest/index.html).
 
 ## Environment Requirements
+
 ### Hardware Requirements
+
 Supported OS: Linux (AArch64/x86_64)
 
 Supported Ascend products: Atlas A2/A3 series
@@ -17,6 +20,7 @@ Supported Ascend products: Atlas A2/A3 series
 Minimum hardware configuration: single-device 32 GB graphics memory (recommended)
 
 ### Software Dependency
+
 Python (Python 3.9 to Python 3.11), CANN_TOOLKIT, CANN_OPS, [requirements.txt](../../requirements.txt), and [requirements_dev.txt](../../requirements_dev.txt)
 
 For details about the CANN installation and configuration script, see [CANN installation description](https://www.hiascend.com/document/detail/zh/canncommercial/850/softwareinst/instg/instg_0000.html?Mode=PmIns&InstallType=local&OS=Ubuntu). Developers can select the CANN version, product series, CPU architecture, operating system, and installation method to find the corresponding installation commands.
@@ -32,15 +36,19 @@ The environment variable configuration above takes effect only in the current te
 Users can add the command source `${HOME}/Ascend/ascend-toolkit/set_env.sh` to an environment variable configuration file (such as .bashrc) as needed.
 
 You can run the following command to install the requirements:
+
 ```shell
 pip install -r requirements.txt -r requirements_dev.txt
 ```
 
 ## Environment Setup
+
 You can set up the Triton-Ascend environment by referring to section "Preparing the Environment" in [Installation Guide](installation_guide.md).
 
 ### Obtaining the Triton-Ascend Software Package
+
 You can install the latest stable version package using the CLI.
+
 ```shell
 pip install triton-ascend
 ```
@@ -55,12 +63,13 @@ You can also download the nightly package from the [download link](https://test.
 
 ## Example for Running Triton
 
-Run the [01-vector-add.py](../../ascend/examples/tutorials/01-vector-add.py) instance.
+Run the [01-vector-add.py](../../third_party/ascend/tutorials/01-vector-add.py) instance.
+
 ```bash
 # Set the CANN environment variables (for example, as the root user and with the default installation path /usr/local/Ascend).
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
 # Pull the triton-ascend source code repository and examples (optional; required to pull the source code repository when running examples without source code compilation and installation).
 git clone https://gitcode.com/Ascend/triton-ascend.git
 # Run the tutorials example.
-python3 ./triton-ascend/ascend/examples/tutorials/01-vector-add.py
+python3 ./triton-ascend/third_party/ascend/tutorials/01-vector-add.py
 ```
