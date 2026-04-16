@@ -71,9 +71,9 @@ This project extends the support for Huawei Ascend NPU (using the CANN software 
 | 2    | `tl.extract_slice(full, offsets, sizes, strides)`     | Extracts a slice tensor from another tensor according to the specified offset, size, and stride.<br>**Returns**: slice tensor.<br>**full**: source tensor. The slice is extracted from this tensor.<br>**offsets**: offset (integer tuple) on the source tensor.<br>**sizes**: size (integer tuple) of the slice tensor.<br>**strides**: stride (integer tuple) on the source tensor.                       |
 | 3    | `tl.get_element(source, offset)`                      | Reads a tensor with dimensions and returns a single element at the specified offset.<br>**source**: source tensor.<br>**offset**: offset (integer tuple) of the element to be extracted.  |
 
-## 3.2 Triton-Ascend
+### 3.2 Triton-Ascend
 
-### 3.2.1 Compiler Options
+#### 3.2.1 Compiler Options
 
 |No.| NPU Option                                   | Hardware Platform    | Description|
 | --- | --------------------------------------------- | ---------- | ----- |
@@ -95,7 +95,7 @@ This project extends the support for Huawei Ascend NPU (using the CANN software 
 | 16  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only). It enables or disables the ND (n-dimensional) to NZ (non-zero) layout transformation.|
 | 17  | auto_blockify_size                            | NPU        | Autotune option. It enables or disables AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
 
-### 3.2.2 SIMD Compiler
+#### 3.2.2 SIMD Compiler
 
 | No.| Pass                   | Purpose                                                                  | IR Conversion                |
 | ------ | ---------------------- |----------------------------------------------------------------------| ----------------------- |
@@ -104,7 +104,7 @@ This project extends the support for Huawei Ascend NPU (using the CANN software 
 | 3      | triton-to-linalg       | memory/reduction/view/creation/math/arith/linear algebra to linalgir | ttir->linalgir          |
 | 4      | triton-to-other        | ttir->hivm/hfusion/llvm                                              | ttir->hivm/hfusion/llvm |
 
-#### 3.2.2.1 TritonToStructured
+##### 3.2.2.1 TritonToStructured
 
 The integer division and modulo operations in pointer expressions and mask expressions are converted to tensor operations to regenerate OPs such as load and store.
 
@@ -122,7 +122,7 @@ The integer division and modulo operations in pointer expressions and mask expre
 | RewriteWhile             | Handles pointer overlapping operations in the `while` loop body.                                                         | Complex pointer path transformation that contains conditional branches (`if`) in the loop body is not supported.                                        |
 | RewriteFor               | Handles pointer overlapping operations in the `for` loop body.                       |                                              |
 
-#### 3.2.2.2 TritonToUnstructured
+##### 3.2.2.2 TritonToUnstructured
 
 | No.| Pass/Converter                             | Description |
 |------|-------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -130,7 +130,7 @@ The integer division and modulo operations in pointer expressions and mask expre
 | 2    | triton-to-unstructured           | Converts the tensor operations identified by `discrete-mask-access-conversion` and containing discrete axes into scalar memory access based on explicit scalar loops.|
 | 3    | bubble-up-operation                       | Bubbles up `extract op/extract_slice` for optimization. This can optimize data locality. In some scenarios, unnecessary loops generated after the transformation can be eliminated, thereby improving the execution efficiency of the generated code.|
 
-##### 3.2.2.2.1 discrete-mask-access-conversion
+###### 3.2.2.2.1 discrete-mask-access-conversion
 
 | Converter                 | Description|
 |----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -138,7 +138,7 @@ The integer division and modulo operations in pointer expressions and mask expre
 | DiscreteMaskLoadConversion  | Analyzes the mask and converts the original load operation into the following sequences if it is non-contiguous:<br>1. load (loading all content of the source tensor)<br>2. select (selecting the source tensor content based on the mask, and setting the masked part to the other value)                    |
 | DiscreteMaskAtomicAddConversion | Analyzes the mask and converts the original atomic_add operation into the following sequences if it is non-contiguous:<br>1. select (selecting the value based on the mask and setting the masked part to **0**)<br>2. atomic_add (regenerating the atomic_add operation using the select result)|
 
-##### 3.2.2.2.2 triton-to-unstructured
+###### 3.2.2.2.2 triton-to-unstructured
 
 | TritonToUnstructured Converter| Description|
 |---|---|
@@ -147,16 +147,16 @@ The integer division and modulo operations in pointer expressions and mask expre
 | UnstructuredMemAccessConverter\<triton::AtomicRMWOp\> | Converts AtomicRMWOp into a multi-loop scalar atomic operation.|
 | UnstructuredMemAccessConverter\<triton::AtomicCASOp\> | Converts AtomicCASOp into a multi-loop scalar atomic operation.|
 
-##### 3.2.2.2.3 bubble-up-operation
+###### 3.2.2.2.3 bubble-up-operation
 
 | Converter| Description|
 |---|---|
 | BubbleUpExtract\<tensor::ExtractOp\> | Bubbles up extract op, avoiding unnecessary loops in some scenarios.|
 | BubbleUpExtract\<tensor::ExtractSliceOp\> | Bubbles up extract op/extract_slice, avoiding unnecessary loops in some scenarios.|
 
-#### 3.2.2.3 TritonToLinalg
+##### 3.2.2.3 TritonToLinalg
 
-##### 3.2.2.3.1 triton-to-linalg
+###### 3.2.2.3.1 triton-to-linalg
 
 TritonToLinalg converts ttir to linalg ir.
 
@@ -203,7 +203,7 @@ TritonToLinalg converts ttir to linalg ir.
 | PtrToIntConverter                          | triton::PtrToIntOp                                           |
 | MakeTensorPtrConverter                     | triton::PtrToIntOp to arith::IndexCastOp                     |
 
-#### 3.2.2.4 other passes 
+##### 3.2.2.4 other passes 
 
 | Pass| Description| Core Converter| Description|
 |---|---|---|---|
@@ -212,7 +212,7 @@ TritonToLinalg converts ttir to linalg ir.
 | triton-to-hivm | Processes the block synchronization operations (`tl.sync_block_all`, `tl.sync_block_set`, and `tl.sync_block_wait`) of Triton and converts them into the cross-core synchronization instruction in the `HIVM` dialect of Ascend NPU. These instructions are used to manage synchronization and data dependencies in the multi-core pipeline, which is the key to pipeline optimization.| TritonCustomOpToHIVMSyncOpConversion | Converts Triton synchronization instructions to HIVM synchronization instructions.<br>• `sync_block_all`: synchronizes blocks globally.<br>• `sync_block_set`: sets a synchronization point.<br>• `sync_block_wait`: waits for a synchronization point.|
 | triton-to-llvm | Converts the inline assembly operation (`tl.inline_assembly`) in Triton to the inline assembly in the LLVM dialect, and finally maps it to a CCE hardware intrinsic function of Ascend NPU.| ElementwiseInlineAsmOpConversion | Converts `triton::ElementwiseInlineAsmOp` to `LLVM::InlineAsmOp`.|
 
-### 3.2.3 Ascend affinitive Operators
+#### 3.2.3 Ascend affinitive Operators
 
 | No.| Operator | Description|
 |---|---|---|
