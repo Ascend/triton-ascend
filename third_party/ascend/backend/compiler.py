@@ -624,8 +624,9 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
                 _compile_option_list += \
                     [f"--link-aicore-bitcode={bitcode}"]
 
-        _compile_option_list += \
-            [f"--link-aicore-bitcode={get_libdevice()}"]
+        enable_libdevice = os.getenv("TRITON_ENABLE_LIBDEVICE", False)
+        if enable_libdevice:
+            _compile_option_list += [f"--link-aicore-bitcode={get_libdevice()}"]
 
         disable_size_align_for_cast = metadata["disable_size_align_for_cast"]
         if disable_size_align_for_cast is not None:
