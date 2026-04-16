@@ -71,9 +71,9 @@
 | 2    | `tl.extract_slice(full, offsets, sizes, strides)`     | 按照指定的偏移量（offsets）、尺寸（sizes）和步幅（strides）参数，从另一个张量中提取一个切片张量。<br>**返回值**：切片张量。<br>**full**：源张量，从此张量中提取切片。<br>**offsets**：源张量上的偏移量（整数元组）。<br>**sizes**：切片张量的尺寸（整数元组）。<br>**strides**：源张量上的步幅（整数元组）。                        |
 | 3    | `tl.get_element(source, offset)`                      | 读取一个具有维度的张量，并返回指定偏移量处的单个元素。<br>**source**：源张量。<br>**offset**：元素提取位置的偏移量（整数元组）。   |
 
-## 3.2 Triton-Ascend
+### 3.2 Triton-Ascend
 
-### 3.2.1 Compiler Options
+#### 3.2.1 Compiler Options
 
 |序号| NPUOptions                                    | 硬件平台     | 用途 |
 | --- | --------------------------------------------- | ---------- | ----- |
@@ -95,7 +95,7 @@
 | 16  | enable_nd2nz_on_vector                        | NPU        | Autotune option (CV-fused kernels only): Enable or disable the ND (n-dimensional) to NZ (non-zero) layout transformation. |
 | 17  | auto_blockify_size                            | NPU        | Autotune option: Enable or disable AutoBlockify pass. It is ignored when TRITON_ALL_BLOCKS_PARALLEL is not set |
 
-### 3.2.2 SIMD compiler
+#### 3.2.2 SIMD compiler
 
 | 序号 | Pass                   | 目的                                                                   | IR 转换                 |
 | ------ | ---------------------- |----------------------------------------------------------------------| ----------------------- |
@@ -104,7 +104,7 @@
 | 3      | triton-to-linalg       | memory/reduction/view/creation/math/arith/linear algebra to linalgir | ttir->linalgir          |
 | 4      | triton-to-other        | ttir->hivm/hfusion/llvm                                              | ttir->hivm/hfusion/llvm |
 
-#### 3.2.2.1 TritonToStructured
+##### 3.2.2.1 TritonToStructured
 
 处理指针表达式和mask表达式中的整除取余，通过升维的方法，去除整除取余后重新生成load/store 等OP。
 
@@ -122,7 +122,7 @@
 | RewriteWhile             | 处理 `while` 循环体内的指针叠加操作。                                                          | 不支持循环体内包含条件分支 (`if`) 的复杂指针路径变换。                                         |
 | RewriteFor               | 处理 `for` 循环体内的指针叠加操作。                        |                                              |
 
-#### 3.2.2.2 TritonToUnstructured
+##### 3.2.2.2 TritonToUnstructured
 
 | 序号 | Pass / 转换器                              | 描述  |
 |------|-------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -130,7 +130,7 @@
 | 2    | triton-to-unstructured           | 将经过`discrete-mask-access-conversion`识别出的、包含离散轴（Discrete Axes）的张量操作，转换为基于显式标量循环的标量访存。 |
 | 3    | bubble-up-operation                       | 主要对`extract op/extract_slice`顺序上移优化。这可以优化数据局部性，有些场景能消除转换后产生的不必要的循环，从而提升生成代码的执行效率。 |
 
-##### 3.2.2.2.1 discrete-mask-access-conversion
+###### 3.2.2.2.1 discrete-mask-access-conversion
 
 | 转换器名称                  | 描述|
 |----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -138,7 +138,7 @@
 | DiscreteMaskLoadConversion  | 首先进行mask分析，如果mask分析结果是非连续的，将原始的load操作转化为以下序列：<br>1. load（加载源tensor的所有内容）<br>2. select（根据mask挑选源tensor内容，被掩盖部分设置为other值）                     |
 | DiscreteMaskAtomicAddConversion | 首先进行mask分析，如果mask分析结果是非连续的，将原始的atomic_add操作转化为以下序列：<br>1. select（根据mask挑选value的值，被掩盖部分设为0）<br>2. atomic_add（使用select后的结果重新生成atomic_add操作） |
 
-##### 3.2.2.2.2 triton-to-unstructured
+###### 3.2.2.2.2 triton-to-unstructured
 
 | TritonToUnstructured Converters | 描述 |
 |---|---|
@@ -147,16 +147,16 @@
 | UnstructuredMemAccessConverter\<triton::AtomicRMWOp\> | 将AtomicRMWOp转化为多重循环标量Atomic操作 |
 | UnstructuredMemAccessConverter\<triton::AtomicCASOp\> | 将AtomicCASOp转化为多重循环标量Atomic操作 |
 
-##### 3.2.2.2.3 bubble-up-operation
+###### 3.2.2.2.3 bubble-up-operation
 
 | 转换器名称 | 描述 |
 |---|---|
 | BubbleUpExtract\<tensor::ExtractOp\> | extract op顺序上移优化，在某些场景可以避免产生不必要的循环 |
 | BubbleUpExtract\<tensor::ExtractSliceOp\> | extract op/extract_slice顺序上移优化，在某些场景可以避免产生不必要的循环 |
 
-#### 3.2.2.3 TritonToLinalg
+##### 3.2.2.3 TritonToLinalg
 
-##### 3.2.2.3.1 triton-to-linalg
+###### 3.2.2.3.1 triton-to-linalg
 
 TritonToLinalg converts ttir to linalg ir.
 
@@ -203,7 +203,7 @@ TritonToLinalg converts ttir to linalg ir.
 | PtrToIntConverter                          | triton::PtrToIntOp                                           |
 | MakeTensorPtrConverter                     | triton::PtrToIntOp to arith::IndexCastOp                     |
 
-#### 3.2.2.4 other passes 
+##### 3.2.2.4 other passes 
 
 | Pass名称 | 功能描述 | 核心转换器 | 转换器描述 |
 |---|---|---|---|
@@ -212,7 +212,7 @@ TritonToLinalg converts ttir to linalg ir.
 | triton-to-hivm | 处理Triton的块同步操作 (`tl.sync_block_all`, `tl.sync_block_set`, `tl.sync_block_wait`)，将其转换为Ascend NPU的`HIVM`方言中的跨核心同步指令。这些指令用于管理多核流水线中的同步与数据依赖，是流水优化的关键。 | TritonCustomOpToHIVMSyncOpConversion | 实现Triton同步指令到HIVM同步指令的转换：<br>• `sync_block_all`：全局块同步<br>• `sync_block_set`：设置同步点<br>• `sync_block_wait`：等待同步点 |
 | triton-to-llvm | 将Triton中的内联汇编操作 (`tl.inline_assembly`) 转换为LLVM方言的内联汇编，并最终映射为Ascend NPU的CCE硬件固有函数（Intrinsics） | ElementwiseInlineAsmOpConversion | 将 `triton::ElementwiseInlineAsmOp` 转换为 `LLVM::InlineAsmOp` |
 
-### 3.2.3 Ascend affinitive Operators
+#### 3.2.3 Ascend affinitive Operators
 
 | 序号 | Operator | 功能描述 |
 |---|---|---|
