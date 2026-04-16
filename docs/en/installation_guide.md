@@ -185,7 +185,7 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend
 
 #### Building Triton-Ascend
 
-1. Install the source code.
+1.Install the source code.
 
    - Step 1: Ensure that the target installation path of LLVM (*${LLVM_INSTALL_PREFIX}*) has been set in the [Building with LLVM] section.
    - Step 2: Ensure that Clang 15 or later, LLD 15 or later, and ccache have been installed.
@@ -213,7 +213,7 @@ git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend
 
    After uncommenting the code snippet, rebuild the project to solve the problem.
 
-2. Run the Triton example.
+2.Run the Triton example.
 
    Install the runtime dependencies. Refer to the following command:
 
