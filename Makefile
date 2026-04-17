@@ -209,24 +209,27 @@ $(LLVM_TARBALL): apply-patch-llvm ## Build LLVM and package tarball
 			-DLLVM_BUILD_TOOLS=ON \
 			llvm-project/llvm; \
 	elif [ "$(OS_ID)" = "almalinux" ]; then \
-		/opt/python/cp38-cp38/bin/python3 -m pip install -r llvm-project/mlir/python/requirements.txt; \
-		PATH=/opt/python/cp38-cp38/bin:$$PATH; \
+		$(PYTHON) -m ensurepip > /dev/null 2>&1 || true; \
+		$(PYTHON) -m pip install --upgrade pip; \
+		$(PYTHON) -m pip install pybind11 numpy "nanobind>=2.4" -r llvm-project/mlir/python/requirements.txt; \
+		PY_VER=$$($(PYTHON) -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'); \
 		cmake -GNinja -Bllvm-project/build \
 			-DCMAKE_BUILD_TYPE=Release \
 			-DCMAKE_C_COMPILER=clang \
 			-DCMAKE_CXX_COMPILER=clang++ \
-			-DCMAKE_ASM_COMPILER=clang \
 			-DCMAKE_LINKER=lld \
 			-DCMAKE_CXX_FLAGS="-Wno-everything" \
 			-DCMAKE_INSTALL_PREFIX=$(LLVM_INSTALL_DIR) \
-			-DPython3_EXECUTABLE=/opt/python/cp38-cp38/bin/python3 \
+			-DPython3_EXECUTABLE=$(PYTHON) \
+			-DPython3_FIND_STRATEGY=LOCATION \
+			-DPython3_FIND_VIRTUALENV=ONLY \
+			-Dpybind11_DIR=$$($(PYTHON) -c 'import pybind11; print(pybind11.get_cmake_dir())') \
+			-Dnanobind_DIR=$$($(PYTHON) -c 'import nanobind; print(nanobind.cmake_dir())') \
 			-DLLVM_ENABLE_PROJECTS="mlir;lld" \
 			-DMLIR_ENABLE_BINDINGS_PYTHON=ON \
 			-DLLVM_INSTALL_UTILS=ON \
 			-DLLVM_ENABLE_ASSERTIONS=ON \
 			-DLLVM_ENABLE_TERMINFO=OFF \
-			-DLLVM_BUILD_UTILS=ON \
-			-DLLVM_BUILD_TOOLS=ON \
 			-DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU" \
 			llvm-project/llvm; \
 	else \
