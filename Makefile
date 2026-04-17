@@ -259,6 +259,13 @@ llvm: ## Conditional build and upload of LLVM
 # ======================
 # Tests
 # ======================
+.PHONY: test-mlir
+test-mlir: ## Run MLIR FileCheck tests
+	@BUILD_LOC=$$(find $(CURDIR) -maxdepth 3 -type d -name "build" | head -1); \
+	BUILD_DIR=$$($(PYTHON) -c "import sysconfig, sys; plat_name=sysconfig.get_platform(); python_version=sysconfig.get_python_version(); print(f'$${BUILD_LOC}/cmake.{plat_name}-{sys.implementation.name}-{python_version}')"); \
+	TEST_MLIR_DIR="$${BUILD_DIR}/third_party/ascend/unittest/"; \
+	lit -v $$TEST_MLIR_DIR
+
 .PHONY: test-unit
 test-unit: ## Run unit tests
 	cd third_party/ascend/unittest/pytest_ut && $(PYTEST) -s -v -n $(NUM_PROCS) --dist=loadfile
