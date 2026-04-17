@@ -62,15 +62,78 @@ You can also download the nightly package from the [download link](https://test.
 - Note 2: If you download the nightly package for installation, select the Python version and architecture (AArch64/x86_64) of your server when selecting the Triton-Ascend package.
 - Note 3: The nightly package is built every day. Developers submit MRs frequently. Note that if the package does not pass the stable test, function bugs may exist.
 
-## Example for Running Triton
+## Quick Environment Setup with Docker
 
-Run the [01-vector-add.py](../../third_party/ascend/tutorials/01-vector-add.py) instance.
+We provide a Dockerfile to help you build a Docker environment image. During installation, the corresponding CANN Toolkit and Kernel packages will be automatically downloaded from the official CANN website. You need to specify CANN-related parameters for your machine using `--build-arg`.
+
+| Parameter Name | Default Value | Available Options |
+|----------------|---------------|----------------------------------------|
+| CHIP_TYPE      | A3            | A3, 910B |
+| CANN_VERSION   | 8.5.0 (Recommended) | 8.5.0, 8.3.RC1, 8.3.RC2, 8.2.RC1, 8.2.RC2 |
+
+You can check the NPU model on your system using the `npu-smi` command.
+
+For the machines corresponding to different `CHIP_TYPE` options, refer to the table below:
+
+| Option No. | **CHIP_TYPE Value** | Corresponding Server/Product Series | Typical Server Model |
+|:----------:|:-------------------:|:----------------------------------:|:-----------------------------------:|
+| 1 | `A3` | Atlas A3 Training Series | Atlas 900 A3 SuperPoD |
+| 2 | `A2` | Atlas A2 Training Series | Atlas 800T A2 |
 
 ```bash
-# Set the CANN environment variables (for example, as the root user and with the default installation path /usr/local/Ascend).
+git clone https://gitcode.com/Ascend/triton-ascend.git && cd triton-ascend
+docker build \
+--build-arg CHIP_TYPE=A3 \
+--build-arg CANN_VERSION=8.5.0 \
+-t triton-ascend-image:latest -f ./docker/Dockerfile .
+```
+
+To start a container from this image, you can use the following command as a reference:
+
+```bash
+docker run -u 0 -dit --shm-size=512g --name=triton-ascend_container --net=host --privileged \
+--security-opt seccomp=unconfined \
+--device=/dev/davinci0 \
+--device=/dev/davinci1 \
+--device=/dev/davinci2 \
+--device=/dev/davinci3 \
+--device=/dev/davinci4 \
+--device=/dev/davinci5 \
+--device=/dev/davinci6 \
+--device=/dev/davinci7 \
+--device=/dev/davinci_manager \
+--device=/dev/devmm_svm \
+--device=/dev/hisi_hdc \
+-v /usr/local/dcmi:/usr/local/dcmi \
+-v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+-v /usr/local/sbin/npu-smi:/usr/local/sbin/npu-smi \
+-v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
+-v /home:/home \
+-v /etc/ascend_install.info:/etc/ascend_install.info \
+triton-ascend-image:latest \
+/bin/bash
+
+# Enter the container
+docker exec -u root -it triton-ascend_container /bin/bash
+```
+
+## Running Triton Examples
+
+Run the example: [01-vector-add.py](../../third_party/ascend/tutorials/01-vector-add.py)
+
+```bash
+# Set CANN environment variables (using the default root installation path `/usr/local/Ascend` as an example)
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
-# Pull the triton-ascend source code repository and examples (optional; required to pull the source code repository when running examples without source code compilation and installation).
+# Clone the triton-ascend repository and examples (optional; required for running examples if not installed from source)
 git clone https://gitcode.com/Ascend/triton-ascend.git
-# Run the tutorials example.
+# Run the tutorials example:
 python3 ./triton-ascend/third_party/ascend/tutorials/01-vector-add.py
+```
+
+Output similar to the following indicates that your environment is correctly configured.
+
+```shell
+tensor([0.8329, 1.0024, 1.3639,  ..., 1.0796, 1.0406, 1.5811], device='npu:0')
+tensor([0.8329, 1.0024, 1.3639,  ..., 1.0796, 1.0406, 1.5811], device='npu:0')
+The maximum difference between torch and triton is 0.0
 ```

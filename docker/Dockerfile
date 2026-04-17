@@ -3,6 +3,8 @@ FROM ubuntu:22.04
 SHELL ["/bin/bash", "-c"]
 ARG CHIP_TYPE=A3
 ARG CANN_VERSION=8.5.0
+RUN if [ "$CHIP_TYPE" = "A2" ]; then \
+    CHIP_TYPE="910b";
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ="Asia/shanghai" \
     CHIP_TYPE=${CHIP_TYPE} \
@@ -55,6 +57,9 @@ RUN apt install --yes --no-install-recommends --no-install-suggests \
     zlib1g-dev && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-15 100 && \
+    update-alternatives --install /usr/bin/lld lld /usr/bin/lld-15 100
 
 RUN curl -sSLk https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
     python3.9 /tmp/get-pip.py && \
