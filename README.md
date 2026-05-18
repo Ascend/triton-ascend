@@ -1,4 +1,8 @@
-# Triton-Ascend
+# Triton Ascend has moved to [triton-lang/triton-ascend](https://github.com/triton-lang/triton-ascend). 
+
+If you have some work on this repo, please migrate to the new repository.
+
+This repository will be archived.
 
 ## Project Overview and Value Proposition
 

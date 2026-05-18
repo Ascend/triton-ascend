@@ -1,4 +1,8 @@
-# Triton-Ascend
+# Triton Ascend 已经迁移到 [triton-lang/triton-ascend](https://github.com/triton-lang/triton-ascend)。 
+
+如果你在这个仓库下有存量工作，请迁移到新的仓库。
+
+当前仓库将被归档。
 
 ## 项目简介与价值主张
 
